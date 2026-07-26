@@ -52,7 +52,26 @@ fun ExpanderScreen(viewModel: MainViewModel) {
                 }
             }
             
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
+            ) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Text("💡 خطوة تفعيل الخدمة في أندرويد 13/14 (مهم جداً):", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    Text("1. اضغط زر الإعدادات أعلاه ⚙️ للذهاب لإمكانية الوصول.\n2. إذا ظهرت لك عبارة (إعداد مقيد / Restricted setting):\nاذهب إلى إعدادات الهاتف ← التطبيقات ← مدير Starlink ← اضغط (⋮) بالأعلى ← (السماح بالإعدادات المقيدة).", fontSize = 12.sp)
+                    Spacer(modifier = Modifier.height(6.dp))
+                    TextButton(onClick = {
+                        val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                            data = android.net.Uri.fromParts("package", context.packageName, null)
+                        }
+                        context.startActivity(intent)
+                    }) {
+                        Text("فتح معلومات التطبيق للسماح بالإعداد المقيد")
+                    }
+                }
+            }
             
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(shortcuts, key = { it.id }) { shortcut ->

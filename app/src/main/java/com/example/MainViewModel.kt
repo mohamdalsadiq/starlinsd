@@ -66,32 +66,104 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _isScanning.value = true
         
         viewModelScope.launch(Dispatchers.IO) {
-            val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-            val dhcp = wifiManager.dhcpInfo
-            val ipAddress = dhcp.ipAddress
-            if (ipAddress == 0) {
-                _isScanning.value = false
-                return@launch
+            val foundIps = mutableSetOf<String>()
+
+            // Method 1: Read ARP table (/proc/net/arp)
+            try {
+                val file = java.io.File("/proc/net/arp")
+                if (file.exists()) {
+                    file.forEachLine { line ->
+                        val parts = line.split(Regex("\\s+"))
+                        if (parts.size >= 4 && parts[0] != "IP" && parts[2] == "0x2") {
+                            val arpIp = parts[0]
+                            if (arpIp != "0.0.0.0" && !arpIp.startsWith("127.")) {
+                                foundIps.add(arpIp)
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {}
+
+            // Method 2: Discover base subnet IP
+            var baseSubnet = getLocalSubnet(context)
+            if (baseSubnet.isEmpty()) {
+                baseSubnet = "192.168.1"
             }
-            
-            val ipString = String.format("%d.%d.%d", ipAddress and 0xff, ipAddress shr 8 and 0xff, ipAddress shr 16 and 0xff)
-            val jobs = (2..60).map { i ->
+
+            // Ping active range
+            val jobs = (2..254).map { i ->
                 async {
-                    val testIp = "$ipString.$i"
+                    val testIp = "$baseSubnet.$i"
                     try {
-                        val process = Runtime.getRuntime().exec("ping -c 1 -W 1 $testIp")
-                        val exitVal = process.waitFor()
-                        if (exitVal == 0) {
-                            val inet = InetAddress.getByName(testIp)
-                            val hostName = inet.hostName
-                            handleDeviceFound(testIp, hostName, context)
+                        val inet = InetAddress.getByName(testIp)
+                        if (inet.isReachable(300)) {
+                            foundIps.add(testIp)
+                        } else {
+                            val process = Runtime.getRuntime().exec("ping -c 1 -w 1 $testIp")
+                            if (process.waitFor() == 0) {
+                                foundIps.add(testIp)
+                            }
                         }
                     } catch (e: Exception) {}
                 }
             }
             jobs.awaitAll()
+
+            // Save discovered devices
+            for (ip in foundIps) {
+                try {
+                    val inet = InetAddress.getByName(ip)
+                    val hostName = inet.hostName
+                    handleDeviceFound(ip, if (hostName != ip) hostName else "جهاز متصل", context)
+                } catch (e: Exception) {
+                    handleDeviceFound(ip, "جهاز متصل", context)
+                }
+            }
+
             _isScanning.value = false
         }
+    }
+
+    fun addManualDevice(ip: String, name: String) {
+        val trimmedIp = ip.trim()
+        val trimmedName = if (name.isBlank()) "جهاز يدوياً ($trimmedIp)" else name.trim()
+        viewModelScope.launch(Dispatchers.IO) {
+            val existing = db.deviceDao().getByIp(trimmedIp)
+            if (existing == null) {
+                db.deviceDao().insert(Device(ip = trimmedIp, name = trimmedName, endTime = 0))
+            }
+        }
+    }
+
+    private fun getLocalSubnet(context: Context): String {
+        try {
+            val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            val dhcp = wifiManager.dhcpInfo
+            val ipAddress = dhcp.ipAddress
+            if (ipAddress != 0) {
+                return String.format("%d.%d.%d", ipAddress and 0xff, ipAddress shr 8 and 0xff, ipAddress shr 16 and 0xff)
+            }
+            
+            // Fallback to NetworkInterface
+            val interfaces = java.net.NetworkInterface.getNetworkInterfaces()
+            while (interfaces.hasMoreElements()) {
+                val iface = interfaces.nextElement()
+                if (!iface.isLoopback && iface.isUp) {
+                    val addrs = iface.inetAddresses
+                    while (addrs.hasMoreElements()) {
+                        val addr = addrs.nextElement()
+                        if (addr is java.net.Inet4Address && !addr.isLoopbackAddress) {
+                            val host = addr.hostAddress ?: ""
+                            val parts = host.split(".")
+                            if (parts.size == 4) {
+                                return "${parts[0]}.${parts[1]}.${parts[2]}"
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {}
+        return "192.168.1"
     }
 
     private suspend fun handleDeviceFound(ip: String, hostName: String, context: Context) {

@@ -27,6 +27,7 @@ fun NetworkScreen(viewModel: MainViewModel) {
     val devices by viewModel.devices.collectAsState()
     val isScanning by viewModel.isScanning.collectAsState()
     val context = LocalContext.current
+    var showAddManualDialog by remember { mutableStateOf(false) }
     
     val activeDevicesCount = devices.count { (!it.isPaused && it.endTime > System.currentTimeMillis()) || (it.isPaused && it.remainingWhenPaused > 0) }
 
@@ -36,21 +37,62 @@ fun NetworkScreen(viewModel: MainViewModel) {
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("الأجهزة المشتركة: $activeDevicesCount", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-            Button(onClick = { viewModel.startScan(context) }, enabled = !isScanning) {
-                Icon(Icons.Default.Refresh, contentDescription = "تحديث")
-                Spacer(Modifier.width(4.dp))
-                Text(if (isScanning) "جاري الفحص..." else "فحص الشبكة")
+            Text("الأجهزة المشتركة: $activeDevicesCount", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+            Row {
+                IconButton(onClick = { showAddManualDialog = true }) {
+                    Icon(Icons.Default.Add, contentDescription = "إضافة جهاز يدوياً")
+                }
+                Button(onClick = { viewModel.startScan(context) }, enabled = !isScanning) {
+                    Icon(Icons.Default.Refresh, contentDescription = "تحديث")
+                    Spacer(Modifier.width(4.dp))
+                    Text(if (isScanning) "جاري..." else "فحص")
+                }
             }
         }
         
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(12.dp))
         
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(devices, key = { it.id }) { device ->
                 DeviceCard(device, viewModel)
             }
         }
+    }
+
+    if (showAddManualDialog) {
+        var ipInput by remember { mutableStateOf("") }
+        var nameInput by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showAddManualDialog = false },
+            title = { Text("إضافة جهاز بالـ IP يدوياً") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = ipInput,
+                        onValueChange = { ipInput = it },
+                        label = { Text("عنوان IP (مثال: 192.168.1.50)") },
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = nameInput,
+                        onValueChange = { nameInput = it },
+                        label = { Text("اسم الجهاز (اختياري)") },
+                        singleLine = true
+                    )
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    if (ipInput.isNotBlank()) {
+                        viewModel.addManualDevice(ipInput, nameInput)
+                    }
+                    showAddManualDialog = false
+                }) { Text("إضافة") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAddManualDialog = false }) { Text("إلغاء") }
+            }
+        )
     }
 }
 
