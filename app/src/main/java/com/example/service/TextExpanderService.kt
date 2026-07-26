@@ -29,27 +29,26 @@ class TextExpanderService : AccessibilityService() {
             val node = event.source ?: return
             val text = event.text?.joinToString("") ?: return
             
-            // Look for matching shortcut when user types space
-            val words = text.split(Regex("\\s+"))
-            val hasTrailingSpace = text.takeLastWhile { it.isWhitespace() }.isNotEmpty()
-            
-            if (hasTrailingSpace && words.size > 1) {
-                val lastTypedWord = words[words.size - 2] // Because split keeps empty string at end if there's trailing space
-                
-                val matched = shortcuts.find { it.keyword == lastTypedWord }
-                if (matched != null) {
-                    val matchResult = Regex("(^|\\s)(${Regex.escape(matched.keyword)})(\\s)$").find(text)
-                    if (matchResult != null) {
-                        val prefix = text.substring(0, matchResult.range.first + matchResult.groups[1]!!.value.length)
+            // Look for matching shortcut when user types space or newline
+            if (text.endsWith(" ") || text.endsWith("\n")) {
+                val words = text.trimEnd().split(Regex("\\s+"))
+                if (words.isNotEmpty()) {
+                    val lastWord = words.last()
+                    val matched = shortcuts.find { it.keyword == lastWord }
+                    
+                    if (matched != null) {
+                        // Reconstruct text
+                        val beforeWord = text.substring(0, text.length - lastWord.length - 1)
                         val expanded = processPhrase(matched.phrase)
-                        val suffix = matchResult.groups[3]!!.value
-                        val newText = prefix + expanded + suffix
+                        val suffix = text.substring(text.length - 1)
+                        val newText = beforeWord + expanded + suffix
                         
                         val args = Bundle().apply {
                             putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, newText)
                         }
                         node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
                         
+                        // Try to set cursor to the end
                         val selectionArgs = Bundle().apply {
                             putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, newText.length)
                             putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, newText.length)

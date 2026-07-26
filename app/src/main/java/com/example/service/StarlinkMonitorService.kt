@@ -162,8 +162,10 @@ class StarlinkMonitorService : Service() {
             scope.async {
                 val testIp = "$ipString.$i"
                 try {
-                    val inet = InetAddress.getByName(testIp)
-                    if (inet.isReachable(1000)) {
+                    val process = Runtime.getRuntime().exec("ping -c 1 -W 1 $testIp")
+                    val exitVal = process.waitFor()
+                    if (exitVal == 0) {
+                        val inet = InetAddress.getByName(testIp)
                         val hostName = inet.hostName
                         handleDeviceFound(testIp, hostName)
                     }
