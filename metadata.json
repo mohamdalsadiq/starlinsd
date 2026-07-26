@@ -1,0 +1,6 @@
+{
+  "name": "مدير Starlink",
+  "description": "نظام شامل لإدارة أجهزة شبكة الواي فاي وتتبع أوقات الاشتراكات، مع ميزة التوسيع التلقائي للنصوص المتقدمة والاختصارات.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

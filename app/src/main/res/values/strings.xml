@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">مدير Starlink</string>
+    <string name="accessibility_service_description">تستخدم هذه الخدمة لاستبدال اختصارات النصوص تلقائياً بنصوص كاملة في جميع التطبيقات لدعم ميزة Text Expander.</string>
+</resources>
