@@ -7,9 +7,13 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
     - uses: actions/checkout@v4
@@ -21,17 +25,34 @@ jobs:
         distribution: 'temurin'
 
     - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@v3
+      uses: gradle/actions/setup-gradle@v4
+
+    - name: Set up Android SDK
+      uses: android-actions/setup-android@v3
+
+    - name: Install Android SDK packages
+      run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
 
     - name: Generate debug.keystore
       run: |
         keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "C=US, O=Android, CN=Android Debug"
 
-    - name: Build Debug APK
-      run: gradle assembleDebug
+    - name: Test, lint, and build Debug APK
+      run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+
+    - name: Upload verification reports
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: verification-reports
+        if-no-files-found: ignore
+        path: |
+          app/build/reports/
+          app/build/test-results/
 
     - name: Upload APK Artifact
       uses: actions/upload-artifact@v4
       with:
         name: app-debug
         path: app/build/outputs/apk/debug/app-debug.apk
+        if-no-files-found: error
