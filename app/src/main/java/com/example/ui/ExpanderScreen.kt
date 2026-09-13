@@ -8,6 +8,8 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.unit.dp
 import com.example.db.Plan
 import com.example.db.Shortcut
@@ -33,7 +35,7 @@ import com.example.domain.TextRules
             Text(s.phrase)
             Text(if (s.planId == null) "نص فقط · لا يسجّل إيرادًا" else "باقة: ${plans.find { it.id == s.planId }?.name ?: "غير متاحة"} · ${if (s.payment == "BANK") "بنكك" else "كاش"}")
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Switch(s.enabled, { save(s.copy(enabled = it)) }, enabled = !busy)
+                Switch(s.enabled, { save(s.copy(enabled = it)) }, enabled = !busy, modifier = Modifier.semantics { contentDescription = "تفعيل الاختصار ${s.keyword}" })
                 Text(if (s.enabled) "مفعّل" else "متوقف")
                 TextButton(enabled = !busy, onClick = { editing = s }) { Text("تعديل") }
                 TextButton(enabled = !busy, onClick = { deleting = s }) { Text("حذف") }

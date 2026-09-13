@@ -36,6 +36,8 @@
 ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
 ```
 
+أضف `-Proborazzi.test.record=true` للأمر لحفظ صورة اللوحة من اختبار الواجهة. CI يفعل ذلك تلقائيًا ويضع الصورة ضمن تقارير التحقق.
+
 مخرج APK: `app/build/outputs/apk/debug/app-debug.apk`. GitHub Actions يحفظ APK بعد نجاح البوابات وتقارير الاختبارات وLint. اختبارات الجهاز المتصل منفصلة:
 
 ```sh

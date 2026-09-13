@@ -34,7 +34,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             finally { busy.value = false }
         } }
     }
-    fun refresh() { if (!busy.value) work { SubscriptionAlarms.refresh(getApplication()) } }
+    fun refresh() {
+        viewModelScope.launch {
+            if (!commands.tryLock()) return@launch
+            try { withContext(Dispatchers.IO) { SubscriptionAlarms.refresh(getApplication()) } }
+            catch (e: CancellationException) { throw e }
+            catch (_: Exception) { message.value = "تعذّر تحديث المواعيد؛ أعد فتح التطبيق للمحاولة." }
+            finally { commands.unlock() }
+        }
+    }
     fun create(client: String, plan: Long, payment: String) = work {
         repo.insert(repo.prepare(client, plan, payment, "manual"))
         SubscriptionAlarms.refresh(getApplication())

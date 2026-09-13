@@ -1,11 +1,9 @@
 package com.example
 
-import android.graphics.Bitmap
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.*
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -18,7 +16,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
-import java.io.File
+import com.github.takahirom.roborazzi.captureRoboImage
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36], qualifiers = "w360dp-h800dp-mdpi")
@@ -37,7 +35,6 @@ class ManagerUiTest {
         compose.onNodeWithText("1000 ج.س").assertIsDisplayed()
         compose.onNodeWithText("بنكك: 1250 ج.س").assertIsDisplayed()
         compose.onNodeWithText("كاش: 0 ج.س").assertIsDisplayed()
-        val file = File("build/reports/ui/dashboard.png").apply { parentFile.mkdirs() }
-        compose.onRoot().captureToImage().asAndroidBitmap().let { bitmap -> file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) } }
+        compose.onRoot().captureRoboImage("build/reports/ui/dashboard.png")
     }
 }

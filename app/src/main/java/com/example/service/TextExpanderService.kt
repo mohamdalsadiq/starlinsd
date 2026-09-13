@@ -31,12 +31,19 @@ class TextExpanderService : AccessibilityService() {
     private var processing = false
     private var lastApplied: Pair<Int, String>? = null
     private var collection: Job? = null
-    private val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ -> allowed = ExpanderHealth.allowed(this) }
+    private val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ -> updateAllowedApps() }
+    private fun updateAllowedApps() {
+        allowed = ExpanderHealth.allowed(this)
+        serviceInfo?.let { info ->
+            info.packageNames = allowed.ifEmpty { setOf(packageName) }.toTypedArray()
+            serviceInfo = info
+        }
+    }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         ExpanderHealth.connected.value = true
-        allowed = ExpanderHealth.allowed(this)
+        updateAllowedApps()
         ExpanderHealth.preferences(this).registerOnSharedPreferenceChangeListener(listener)
         collection?.cancel()
         collection = scope.launch {

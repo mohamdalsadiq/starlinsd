@@ -9,6 +9,8 @@ import android.os.Build
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -234,7 +236,7 @@ internal fun amount(minor: Long) = "${Money.show(minor)} ج.س"
     }, name.isNotBlank() && name.length <= 60 && m != null && m in 1..525600 && (home || c != null && b != null)) {
         Field("اسم الباقة", name, { name = it })
         Field("المدة بالدقائق", minutes, { minutes = it })
-        Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(home, { home = it }); Text("✅ أهل البيت · دون إيراد") }
+        Row(Modifier.fillMaxWidth().toggleable(home, role = Role.Checkbox, onValueChange = { home = it }), verticalAlignment = Alignment.CenterVertically) { Checkbox(home, null); Text("✅ أهل البيت · دون إيراد") }
         if (!home) {
             Field("السعر كاش بالجنيه", cash, { cash = it })
             Field("السعر بنكك بالجنيه", bank, { bank = it })
@@ -308,7 +310,7 @@ internal fun amount(minor: Long) = "${Money.show(minor)} ج.س"
     }
     AlertDialog(onDismissRequest = dismiss, title = { Text("تطبيقات الاختصارات") }, text = {
         LazyColumn { item { Text("فعّل فقط التطبيقات التي تريد استبدال النص داخلها.") }; items(apps, key = { it.first }) { (pkg, name) ->
-            Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(pkg in selected, { selected = if (it) selected + pkg else selected - pkg }); Text(name) }
+            Row(Modifier.fillMaxWidth().toggleable(pkg in selected, role = Role.Checkbox, onValueChange = { selected = if (it) selected + pkg else selected - pkg }), verticalAlignment = Alignment.CenterVertically) { Checkbox(pkg in selected, null); Text(name) }
         } }
     }, confirmButton = { Button(onClick = { ExpanderHealth.preferences(context).edit().putStringSet("apps", selected).apply(); dismiss() }) { Text("حفظ") } }, dismissButton = { TextButton(onClick = dismiss) { Text("إلغاء") } })
 }
