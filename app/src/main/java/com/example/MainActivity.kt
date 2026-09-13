@@ -20,17 +20,21 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         requestedSession = intent.getStringExtra("SESSION_ID")
         setContent {
-            val colors = if (isSystemInDarkTheme()) darkColorScheme(primary = Color(0xFF76D9C3), secondary = Color(0xFFE9B66D))
-                else lightColorScheme(primary = Color(0xFF006B58), onPrimary = Color.White,
-                    primaryContainer = Color(0xFFD8F1E9), secondary = Color(0xFF8A561B),
-                    background = Color(0xFFF7F8F3), surface = Color(0xFFF7F8F3))
-            MaterialTheme(colorScheme = colors) {
-                CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
-                    ManagerApp(model, requestedSession)
-                }
-            }
+            ManagerTheme { ManagerApp(model, requestedSession) }
         }
     }
     override fun onResume() { super.onResume(); model.refresh() }
     override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); requestedSession = intent.getStringExtra("SESSION_ID") }
+}
+
+
+@Composable
+fun ManagerTheme(content: @Composable () -> Unit) {
+    val colors = if (isSystemInDarkTheme()) darkColorScheme(primary = Color(0xFF76D9C3), secondary = Color(0xFFE9B66D))
+        else lightColorScheme(primary = Color(0xFF006B58), onPrimary = Color.White,
+            primaryContainer = Color(0xFFD8F1E9), secondary = Color(0xFF8A561B),
+            background = Color(0xFFF7F8F3), surface = Color(0xFFF7F8F3))
+    MaterialTheme(colorScheme = colors) {
+        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl, content = content)
+    }
 }
