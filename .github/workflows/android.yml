@@ -40,6 +40,22 @@ jobs:
     - name: Test, lint, and build Debug APK
       run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
 
+    - name: Summarize verification and render preview
+      if: always()
+      run: |
+        python - <<'PYCODE'
+        import base64, pathlib, xml.etree.ElementTree as ET
+        for p in pathlib.Path('app/build/test-results').rglob('TEST-*.xml'):
+            suite = ET.parse(p).getroot()
+            print('TEST_SUMMARY', suite.attrib)
+            for failure in suite.findall('.//failure'):
+                print('TEST_FAILURE', (failure.text or '')[:4000])
+        for p in pathlib.Path('app/build/reports/ui').glob('*.png'):
+            print('UI_PREVIEW_BASE64', p.name, base64.b64encode(p.read_bytes()).decode())
+        for p in pathlib.Path('app/schemas').rglob('*.json'):
+            print('ROOM_SCHEMA_BASE64', str(p), base64.b64encode(p.read_bytes()).decode())
+        PYCODE
+
     - name: Upload verification reports
       if: always()
       uses: actions/upload-artifact@v4
@@ -49,6 +65,7 @@ jobs:
         path: |
           app/build/reports/
           app/build/test-results/
+          app/schemas/
 
     - name: Upload APK Artifact
       uses: actions/upload-artifact@v4

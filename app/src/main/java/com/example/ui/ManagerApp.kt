@@ -111,7 +111,7 @@ internal fun amount(minor: Long) = "${Money.show(minor)} ج.س"
     }
 }
 
-@Composable private fun Dashboard(sessions: List<Session>, config: BusinessSettings, now: Long, add: () -> Unit) {
+@Composable internal fun Dashboard(sessions: List<Session>, config: BusinessSettings, now: Long, add: () -> Unit) {
     val today = Calendar.getInstance().apply { timeInMillis = now; set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0) }.timeInMillis
     val earned = sessions.filter { it.recognized > 0 && !it.home }
     val daily = earned.filter { it.recognized >= today && it.recognized <= now }
@@ -180,7 +180,7 @@ internal fun amount(minor: Long) = "${Money.show(minor)} ج.س"
         item { Title("المشتركون", "كل اشتراك يحتفظ بسعره وشروطه وقت التسجيل") }
         item { Button(onClick = add, enabled = !busy) { Text("اشتراك جديد") } }
         item { Field("ابحث بالاسم أو الباقة", search, { search = it }) }
-        item { Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) { labels.forEach { (id, title) -> Choice(title, filter == id) { filter = id } } }
+        item { Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) { labels.forEach { (id, title) -> Choice(title, filter == id) { filter = id } } } }
         if (rows.isEmpty()) item { Panel { Text("لا توجد اشتراكات هنا بعد. سجّل مشتركًا أو غيّر البحث.") } }
         items(rows, key = { it.id }) { s -> Panel {
             Text("${if (s.home) "✅ " else ""}${s.client}", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)

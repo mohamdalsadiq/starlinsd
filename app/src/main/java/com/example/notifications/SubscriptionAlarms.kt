@@ -1,6 +1,7 @@
 package com.example.notifications
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.*
 import android.content.*
 import android.content.pm.PackageManager
@@ -27,10 +28,16 @@ object SubscriptionAlarms {
     fun exactAllowed(context: Context): Boolean = Build.VERSION.SDK_INT < 31 ||
         (context.getSystemService(Context.ALARM_SERVICE) as AlarmManager).canScheduleExactAlarms()
 
-    fun notificationsAllowed(context: Context): Boolean =
-        (Build.VERSION.SDK_INT < 33 || ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) &&
-            NotificationManagerCompat.from(context).areNotificationsEnabled()
+    fun notificationsAllowed(context: Context): Boolean {
+        val runtime = Build.VERSION.SDK_INT < 33 || ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        val channel = if (Build.VERSION.SDK_INT >= 26) (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).getNotificationChannel(CHANNEL) else null
+        val channelEnabled = Build.VERSION.SDK_INT < 26 || channel == null || channel.importance != NotificationManager.IMPORTANCE_NONE
+        return runtime && channelEnabled && NotificationManagerCompat.from(context).areNotificationsEnabled()
+    }
 
+    // Both notification and exact-alarm permissions are checked immediately before use,
+    // including a SecurityException fallback if access changes.
+    @SuppressLint("MissingPermission")
     suspend fun refresh(context: Context) = lock.withLock {
         val app = context.applicationContext
         val repo = SubscriptionRepository(app)
