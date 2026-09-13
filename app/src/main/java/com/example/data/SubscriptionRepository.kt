@@ -64,6 +64,7 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
     suspend fun addSales(batchId: String, lines: List<Pair<Int, Long>>, payment: String) = db.withTransaction {
         require(runCatching { UUID.fromString(batchId) }.isSuccess) { "معرّف العملية غير صالح" }
         require(payment in listOf("CASH", "BANK") && lines.size in 1..20) { "راجع بيانات الدخل" }
+        if (dao.hasSaleBatch("$batchId:%")) return@withTransaction
         val settings = dao.settings() ?: BusinessSettings()
         val now = time()
         require(lines.all { (count, price) -> count in 1..100000 && price in 1..99999999999 }) { "أدخل عددًا وسعرًا موجبين" }

@@ -16,3 +16,9 @@
 local.properties
 .env
 debug.keystore
+
+*.p12
+*.jks
+*-signing-kit.zip
+signing-password.txt
+__pycache__/

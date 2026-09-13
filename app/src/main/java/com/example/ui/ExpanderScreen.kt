@@ -91,7 +91,7 @@ import com.example.domain.TextRules
         val plan = plans.find { it.id == planId }
         Text(TextRules.render(phrase.text, System.currentTimeMillis(), "محمد", System.currentTimeMillis() + (plan?.minutes ?: 0) * 60000L,
             plan?.let { com.example.domain.Money.show(if (payment == "BANK") it.bank else it.cash) }.orEmpty(), plan?.minutes?.toString().orEmpty(), code = if (planId != null) "1" else ""))
-        if (planId != null) Text("الاسم اختياري عند الكتابة. مثال: اكتب ${keyword.ifBlank { "mm" }} ثم مسافة؛ سيظهر الاسم التلقائي ورقم الاشتراك في سجل المشتركين والتنبيه.", style = MaterialTheme.typography.bodySmall)
+        if (planId != null) Text("الاسم اختياري عند الكتابة. مثال: اكتب ${keyword.ifBlank { "mm" }} ثم مسافة؛ سيضاف [1] تلقائيًا بعد النص ثم [2] للاشتراك التالي. الرقم نفسه يظهر في السجل والتنبيه. الأرقام المشغولة لا تتكرر.", style = MaterialTheme.typography.bodySmall)
     }
     if (futureTime) FutureTimeForm({ futureTime = false }) { insert(it); futureTime = false }
 }

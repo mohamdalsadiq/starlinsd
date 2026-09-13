@@ -38,7 +38,7 @@ jobs:
         keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "C=US, O=Android, CN=Android Debug"
 
     - name: Test, lint, and build Debug APK
-      run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug -Proborazzi.test.record=true --stacktrace
+      run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleRelease -PunsignedRelease -Proborazzi.test.record=true --stacktrace
 
     - name: Summarize verification
       if: always()
@@ -72,4 +72,33 @@ jobs:
       with:
         name: app-debug
         path: app/build/outputs/apk/debug/app-debug.apk
+        if-no-files-found: error
+
+    - name: Bundle unsigned release for local signing
+      run: |
+        python - <<'PYCODE'
+        import os, pathlib, zipfile, json, base64, hashlib
+        sdk = pathlib.Path(os.environ['ANDROID_HOME']) / 'build-tools/36.0.0'
+        files = {
+            'slotra-unsigned.apk': pathlib.Path('app/build/outputs/apk/release/app-release-unsigned.apk'),
+            'apksigner.jar': sdk / 'lib/apksigner.jar',
+            'zipalign': sdk / 'zipalign',
+            'lib64/libc++.so': sdk / 'lib64/libc++.so',
+        }
+        with zipfile.ZipFile('build/slotra-unsigned.zip', 'w', zipfile.ZIP_DEFLATED) as archive:
+            for name, path in files.items(): archive.write(path, name)
+        # Public unsigned build bytes only. This read-only transfer also works
+        # when the artifact provider's signed URL cannot be read by the workspace.
+        payload = pathlib.Path('build/slotra-unsigned.zip').read_bytes()
+        print('UNSIGNED_SHA256', hashlib.sha256(payload).hexdigest())
+        for index, offset in enumerate(range(0, len(payload), 24000)):
+            print('UNSIGNED_PART', index, base64.b64encode(payload[offset:offset+24000]).decode())
+        print('UNSIGNED_BYTES', len(payload))
+        PYCODE
+
+    - name: Upload unsigned release
+      uses: actions/upload-artifact@v4
+      with:
+        name: slotra-unsigned-release
+        path: build/slotra-unsigned.zip
         if-no-files-found: error

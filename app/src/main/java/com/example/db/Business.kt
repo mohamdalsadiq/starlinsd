@@ -34,6 +34,7 @@ data class SlotReservation(@PrimaryKey val number: Int, val sessionId: String, v
 
 @Dao
 interface BusinessDao {
+    @Query("SELECT EXISTS(SELECT 1 FROM manual_sales WHERE id LIKE :prefix)") suspend fun hasSaleBatch(prefix: String): Boolean
     @Query("SELECT * FROM manual_sales ORDER BY at DESC") fun observeManualSales(): Flow<List<ManualSale>>
     @Query("SELECT * FROM manual_sales ORDER BY at DESC") suspend fun manualSales(): List<ManualSale>
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertManualSale(sale: ManualSale): Long

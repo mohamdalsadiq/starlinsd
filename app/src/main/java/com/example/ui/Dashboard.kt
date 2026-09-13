@@ -10,6 +10,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -69,7 +70,7 @@ private fun dateLabel(at: Long, pattern: String = "EEEE، d MMMM yyyy") = Simple
     if (calendar) HistoryCalendar(report, sessions, manualSales, now, selectedDay) { calendar = false }
     LazyColumn(Modifier.fillMaxSize().testTag("dashboard-list"), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
         item { Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            androidx.compose.foundation.Image(androidx.compose.ui.res.painterResource(com.example.R.drawable.slotra_mark), null, Modifier.size(48.dp))
+            androidx.compose.foundation.Image(androidx.compose.ui.res.painterResource(com.example.R.drawable.slotra_mark), null, Modifier.size(48.dp).clip(RoundedCornerShape(14.dp)))
             Column { Title("Slotra", dateLabel(now)) }
         } }
         item { Button(onClick = add, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)) { Icon(Icons.Default.PersonAdd, null); Spacer(Modifier.width(8.dp)); Text("تسجيل اشتراك") } }

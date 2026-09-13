@@ -45,6 +45,6 @@ class ManagerUiTest {
         compose.onNodeWithTag("open-history").performClick()
         compose.onNodeWithTag("history-calendar").assertIsDisplayed()
         compose.onNodeWithTag("selected-day-revenue").assertTextEquals("1,000 ج.س")
-        compose.onRoot().captureRoboImage("build/reports/ui/calendar.png")
+        compose.onNodeWithTag("history-calendar").captureRoboImage("build/reports/ui/calendar.png")
     }
 }
