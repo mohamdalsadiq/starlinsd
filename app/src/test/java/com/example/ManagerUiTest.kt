@@ -40,5 +40,11 @@ class ManagerUiTest {
         compose.onNodeWithTag("dashboard-list").performScrollToNode(hasTestTag("cycle-profit"))
         compose.onNodeWithTag("cycle-profit").assertTextEquals("500 ج.س").assertIsDisplayed()
         compose.onRoot().captureRoboImage("build/reports/ui/cycle-profit.png")
+        compose.onNodeWithTag("dashboard-list").performScrollToNode(hasTestTag("open-history"))
+        compose.onRoot().captureRoboImage("build/reports/ui/recent-days.png")
+        compose.onNodeWithTag("open-history").performClick()
+        compose.onNodeWithTag("history-calendar").assertIsDisplayed()
+        compose.onNodeWithTag("selected-day-revenue").assertTextEquals("1,000 ج.س")
+        compose.onRoot().captureRoboImage("build/reports/ui/calendar.png")
     }
 }

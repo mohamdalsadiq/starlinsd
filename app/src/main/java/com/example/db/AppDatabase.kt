@@ -58,7 +58,7 @@ interface ShortcutDao {
     @Query("SELECT * FROM shortcuts") suspend fun list(): List<Shortcut>
 }
 
-@Database(entities = [Device::class, Shortcut::class, Plan::class, Session::class, BusinessSettings::class, Sequence::class], version = 3, exportSchema = true)
+@Database(entities = [Device::class, Shortcut::class, Plan::class, Session::class, BusinessSettings::class, Sequence::class, ManualSale::class, SlotReservation::class], version = 4, exportSchema = true)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun deviceDao(): DeviceDao
     abstract fun shortcutDao(): ShortcutDao
@@ -82,10 +82,17 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL("CREATE TABLE IF NOT EXISTS sequences (name TEXT NOT NULL PRIMARY KEY, `next` INTEGER NOT NULL)")
             }
         }
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE settings ADD COLUMN maxSubscribers INTEGER NOT NULL DEFAULT 50")
+                db.execSQL("CREATE TABLE IF NOT EXISTS manual_sales (id TEXT NOT NULL PRIMARY KEY, at INTEGER NOT NULL, count INTEGER NOT NULL, unitPrice INTEGER NOT NULL, amount INTEGER NOT NULL, cashEquivalent INTEGER NOT NULL, payment TEXT NOT NULL, premiumBps INTEGER NOT NULL)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS slot_reservations (number INTEGER NOT NULL PRIMARY KEY, sessionId TEXT NOT NULL, expires INTEGER NOT NULL)")
+            }
+        }
         fun getDatabase(context: Context): AppDatabase =
             instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, "app_db")
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                     .build().also { instance = it }
             }
     }

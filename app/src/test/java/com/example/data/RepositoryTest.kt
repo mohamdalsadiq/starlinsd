@@ -80,14 +80,75 @@ class RepositoryTest {
         repo.insert(first)
         val second = repo.prepare("", p.id, "CASH", "mm")
         repo.insert(second)
-        assertEquals("مشترك 001", first.client); assertEquals("002", second.reference)
-        assertEquals("مشترك 001 001", com.example.domain.TextRules.render("%client% %code%", now, first.client, code = first.reference))
+        assertEquals("مشترك 1", first.client); assertEquals("2", second.reference)
+        assertEquals("مشترك 1 1", com.example.domain.TextRules.render("%client% %code%", now, first.client, code = first.reference))
         repo.rename(first.id, "هاتف محمد")
         val renamed = repo.dao.session(first.id)!!
-        assertEquals("هاتف محمد", renamed.client); assertEquals("001", renamed.reference)
+        assertEquals("هاتف محمد", renamed.client); assertEquals("1", renamed.reference)
         assertEquals(first.amount, renamed.amount); assertEquals(first.started, renamed.started)
         repo.saveSettings(BusinessSettings())
-        assertEquals("003", repo.prepare("", p.id, "CASH", "mm").reference)
+        assertEquals("3", repo.prepare("", p.id, "CASH", "mm").reference)
+    }
+
+    @Test fun subscriberPoolReservesReusesAndRejectsWhenFull() = runBlocking {
+        repo.saveSettings(BusinessSettings(maxSubscribers = 2))
+        val p = repo.dao.plans().first { it.minutes == 180 && !it.home }
+        val first = repo.prepare("", p.id, "CASH", "mm")
+        val second = repo.prepare("", p.id, "CASH", "mm")
+        assertEquals("1", first.reference); assertEquals("2", second.reference)
+        assertTrue(runCatching { repo.prepare("", p.id, "CASH", "mm") }.isFailure)
+        repo.release(first.id)
+        val reused = repo.prepare("", p.id, "CASH", "mm")
+        assertEquals("1", reused.reference)
+        repo.insert(reused); repo.insert(second)
+        repo.changeState(second.id, "PAUSE")
+        assertTrue(runCatching { repo.saveSettings(BusinessSettings(maxSubscribers = 1)) }.isFailure)
+        repo.changeState(reused.id, "CANCEL")
+        assertEquals("1", repo.prepare("", p.id, "CASH", "mm").reference)
+        assertEquals("🌹04:00🌹[1]", com.example.domain.TextRules.withReference("🌹04:00🌹", "1"))
+        assertEquals("🌹04:00🌹[1]", com.example.domain.TextRules.withReference("🌹04:00🌹[1] ", "1"))
+    }
+    @Test fun expiredReservationAndOverdueSessionDoNotHoldNumbers() = runBlocking {
+        repo.saveSettings(BusinessSettings(maxSubscribers = 1))
+        val p = repo.dao.plans().first { it.minutes == 60 && !it.home }
+        val lost = repo.prepare("", p.id, "CASH", "mm")
+        now += 60001
+        val next = repo.prepare("", p.id, "CASH", "mm")
+        assertEquals("1", next.reference)
+        assertTrue(runCatching { repo.insert(lost) }.isFailure)
+        repo.insert(next); now += 61 * Rules.MINUTE
+        assertEquals("1", repo.prepare("", p.id, "CASH", "mm").reference)
+        assertEquals("ENDED", repo.dao.session(next.id)!!.state)
+    }
+    @Test fun manualRevenueAddsImmediatelyAndDuplicateConfirmIsIdempotent() = runBlocking {
+        val id = java.util.UUID.randomUUID().toString()
+        repo.addSales(id, listOf(10 to 50000L, 10 to 100000L), "CASH")
+        repo.addSales(id, listOf(10 to 50000L, 10 to 100000L), "CASH")
+        val rows = repo.dao.manualSales()
+        assertEquals(2, rows.size); assertEquals(1500000L, rows.sumOf { it.amount })
+        assertEquals(20, rows.sumOf { it.count }); assertTrue(repo.dao.sessions().isEmpty())
+        repo.addSales(java.util.UUID.randomUUID().toString(), listOf(1 to 125000L), "BANK")
+        assertEquals(1600000L, repo.dao.manualSales().sumOf { it.cashEquivalent })
+    }
+    @Test fun backupRestoresAllDataAndRejectsCorruptionWithoutChangingLedger() = runBlocking {
+        val s = start(); now += 31 * Rules.MINUTE; repo.reconcile()
+        repo.addSales(java.util.UUID.randomUUID().toString(), listOf(10 to 50000L), "BANK")
+        repo.saveSettings(BusinessSettings(maxSubscribers = 75))
+        val backup = repo.exportJson()
+        val parsed = BackupData.parse(backup)
+        assertEquals(1, parsed.rows.getValue("manual_sales").size)
+        repo.rename(s.id, "changed")
+        repo.restoreJson(backup)
+        assertEquals("محمد", repo.dao.session(s.id)!!.client)
+        assertEquals(75, repo.dao.settings()!!.maxSubscribers)
+        assertEquals(400000L, repo.dao.manualSales().single().cashEquivalent)
+        val bad = org.json.JSONObject(backup)
+        bad.getJSONArray("manual_sales").getJSONObject(0).put("amount", -1)
+        assertTrue(runCatching { repo.restoreJson(bad.toString()) }.isFailure)
+        assertEquals(500000L, repo.dao.manualSales().single().amount)
+        assertEquals(1, repo.dao.sessions().size)
+        bad.getJSONArray("manual_sales").getJSONObject(0).put("amount", 500000).put("sql", "DROP TABLE sessions")
+        assertTrue(runCatching { repo.restoreJson(bad.toString()) }.isFailure)
     }
 
 }

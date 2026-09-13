@@ -80,6 +80,8 @@ internal fun amount(minor: Long): String {
     var newSession by rememberSaveable { mutableStateOf(false) }
     val plans by vm.plans.collectAsStateWithLifecycle()
     val sessions by vm.sessions.collectAsStateWithLifecycle()
+    val manualSales by vm.manualSales.collectAsStateWithLifecycle()
+    var bulk by rememberSaveable { mutableStateOf(false) }
     val shortcuts by vm.shortcuts.collectAsStateWithLifecycle()
     val config by vm.settings.collectAsStateWithLifecycle()
     val busy by vm.busy.collectAsStateWithLifecycle()
@@ -102,7 +104,7 @@ internal fun amount(minor: Long): String {
             if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
             Box(Modifier.weight(1f)) {
                 when (tab) {
-                    0 -> Dashboard(sessions, config ?: BusinessSettings(), now) { newSession = true }
+                    0 -> Dashboard(sessions, config ?: BusinessSettings(), now, manualSales, { bulk = true }) { newSession = true }
                     1 -> SessionsScreen(sessions, now, requestedSession, busy, { newSession = true }, vm::change, vm::rename)
                     2 -> PlansScreen(plans, config?.premiumBps ?: 2500, busy, vm::savePlan)
                     3 -> ShortcutsScreen(shortcuts, plans, busy, vm::saveShortcut, vm::deleteShortcut)
@@ -111,6 +113,7 @@ internal fun amount(minor: Long): String {
             }
         }
     }
+    if (bulk) BulkSalesForm(config?.premiumBps ?: 2500, { bulk = false }) { id, lines, payment -> vm.addSales(id, lines, payment); bulk = false }
     if (newSession) SessionForm(plans.filter { it.enabled }, { newSession = false }) { client, plan, payment ->
         vm.create(client, plan, payment); newSession = false; tab = 1
     }
@@ -138,12 +141,12 @@ internal fun amount(minor: Long): String {
     var filter by rememberSaveable { mutableStateOf("ALL") }
     var cancel by remember { mutableStateOf<Session?>(null) }
     val labels = listOf("ALL" to "الكل", "ACTIVE" to "نشط", "PAUSED" to "متوقف", "ENDED" to "منتهٍ", "CANCELLED" to "ملغي", "HOME" to "أهل البيت")
-    val rows = sessions.filter { (filter == "ALL" || it.state == filter || filter == "HOME" && it.home) && (it.client.contains(search, true) || it.plan.contains(search, true)) }
+    val rows = sessions.filter { (filter == "ALL" || it.state == filter || filter == "HOME" && it.home) && (it.client.contains(search, true) || it.plan.contains(search, true) || it.reference.contains(search.trim())) }
         .sortedByDescending { it.id == requested }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Title("المشتركون", "كل اشتراك يحتفظ بسعره وشروطه وقت التسجيل") }
         item { Button(onClick = add, enabled = !busy) { Text("اشتراك جديد") } }
-        item { Field("ابحث بالاسم أو الباقة", search, { search = it }) }
+        item { Field("ابحث بالاسم أو الرقم أو الباقة", search, { search = it }) }
         item { Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) { labels.forEach { (id, title) -> Choice(title, filter == id) { filter = id } } } }
         if (rows.isEmpty()) item { Panel { Text("لا توجد اشتراكات هنا بعد. سجّل مشتركًا أو غيّر البحث.") } }
         items(rows, key = { it.id }) { s -> Panel {
@@ -227,6 +230,9 @@ internal fun amount(minor: Long): String {
     val devices by vm.devices.collectAsStateWithLifecycle()
     val notificationRequest = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { vm.refresh() }
     val export = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { it?.let(vm::export) }
+    val importing = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { it?.let(vm::previewRestore) }
+    val pendingRestore by vm.pendingRestore.collectAsStateWithLifecycle()
+    val backupStatus by vm.backupStatus.collectAsStateWithLifecycle()
     val component = ComponentName(context, TextExpanderService::class.java)
     val enabled = remember(now, bound) { Settings.Secure.getString(context.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES).orEmpty().split(':').any { ComponentName.unflattenFromString(it) == component } }
     fun open(intent: Intent) { try { context.startActivity(intent) } catch (_: Exception) { vm.message.value = "هذا الإعداد غير متاح هنا؛ افتحه من إعدادات الهاتف." } }
@@ -262,12 +268,19 @@ internal fun amount(minor: Long): String {
             Text("تغيير الأسعار أو النسبة لا يعيد تسعير السجلات السابقة. سجّل المصروفات بالقيمة المكافئة للكاش.")
         } }
         item { Panel {
-            SectionHeading(Icons.Default.Save, "البيانات والتصدير")
+            SectionHeading(Icons.Default.CloudDone, "النسخ الاحتياطي والاستعادة")
             Text("${devices.size} من سجلات الأجهزة القديمة محفوظة. التصدير يشمل المشتركين والباقات والإعدادات والاختصارات والأجهزة.")
-            TextButton(enabled = !busy, onClick = { export.launch("starlink-records-${SimpleDateFormat("yyyy-MM-dd", Locale.ROOT).format(Date())}.json") }) { Text("تصدير السجل JSON") }
-            Text("التصدير للقراءة والأرشفة؛ استيراد النسخ لم يُضف بعد.", style = MaterialTheme.typography.bodySmall)
+            TextButton(enabled = !busy, onClick = { export.launch("slotra-backup-${SimpleDateFormat("yyyy-MM-dd", Locale.ROOT).format(Date())}.json") }) { Text("حفظ نسخة · Google Drive أو ملف") }
+            OutlinedButton(enabled = !busy, onClick = { importing.launch(arrayOf("application/json", "application/octet-stream")) }) { Text("استعادة نسخة محفوظة") }
+            Text(backupStatus, style = MaterialTheme.typography.bodySmall)
+            Text("اختر Google Drive من قائمة مواقع الحفظ إن كان مثبّتًا. احفظ نسخة بعد عملك؛ نقلها لهاتف آخر يتم باختيار الملف نفسه. النسخة ملف خاص بك، ولا تشاركه علنًا.", style = MaterialTheme.typography.bodySmall)
+            Text("نسخ Android التلقائي مفعّل ويعتمد على إعدادات حساب Google والنظام. لا يغني عن حفظ ملف يمكنك استعادته بنفسك.", style = MaterialTheme.typography.bodySmall)
         } }
     }
+    pendingRestore?.let { preview -> AlertDialog(onDismissRequest = vm::dismissRestore,
+        title = { Text("استعادة هذه النسخة؟") }, text = { Text("${preview.summary}\nحُفظت: ${stamp(preview.exportedAt)}\nستستبدل السجل الحالي بالكامل. احفظ نسخة منه أولًا إن أردت الاحتفاظ به.") },
+        confirmButton = { Button(enabled = !busy, onClick = vm::confirmRestore) { Text("استبدال واستعادة") } },
+        dismissButton = { TextButton(onClick = vm::dismissRestore) { Text("إلغاء") } }) }
     if (edit && config != null) AccountingForm(config, { edit = false }) { vm.saveSettings(it); edit = false }
     if (appsDialog) AppsForm({ appsDialog = false; vm.refresh() })
 }
@@ -289,6 +302,8 @@ internal fun amount(minor: Long): String {
 
 @Composable private fun AccountingForm(s: BusinessSettings, dismiss: () -> Unit, save: (BusinessSettings) -> Unit) {
     val format = remember { SimpleDateFormat("yyyy-MM-dd", Locale.ROOT).apply { isLenient = false } }
+    var maximum by rememberSaveable { mutableStateOf(s.maxSubscribers.toString()) }
+    val maxNumber = Money.normalize(maximum).toIntOrNull()
     var grace by rememberSaveable { mutableStateOf(s.graceMinutes.toString()) }
     var premium by rememberSaveable { mutableStateOf(Money.show(s.premiumBps.toLong())) }
     var usd by rememberSaveable { mutableStateOf(Money.show(s.usdCents)) }
@@ -301,11 +316,13 @@ internal fun amount(minor: Long): String {
     val endExclusive = last?.let { Calendar.getInstance().apply { timeInMillis = it; add(Calendar.DAY_OF_MONTH, 1) }.timeInMillis }
     val g = Money.normalize(grace).toIntOrNull(); val p = Money.parse(premium)
     val u = Money.parse(usd); val r = Money.parse(rate); val e = Money.parse(expenses)
-    val valid = g != null && g in 0..1440 && p != null && p in 0..100000 && u != null && r != null && e != null &&
+    val valid = maxNumber != null && maxNumber in 1..10000 && g != null && g in 0..1440 && p != null && p in 0..100000 && u != null && r != null && e != null &&
         (start.isBlank() && end.isBlank() || begin != null && begin > 0 && endExclusive != null && endExclusive > begin)
     Form("إعدادات الحساب", dismiss, {
-        save(s.copy(graceMinutes = g!!, premiumBps = p!!.toInt(), usdCents = u!!, bankRate = r!!, expenses = e!!, cycleStart = begin ?: 0, cycleEnd = endExclusive ?: 0))
+        save(s.copy(maxSubscribers = maxNumber!!, graceMinutes = g!!, premiumBps = p!!.toInt(), usdCents = u!!, bankRate = r!!, expenses = e!!, cycleStart = begin ?: 0, cycleEnd = endExclusive ?: 0))
     }, valid) {
+        Field("أرقام المشتركين من 1 إلى", maximum, { maximum = it })
+        Text("الافتراضي 50. يُضاف [الرقم] تلقائيًا بعد نص اختصار الاشتراك، ولا يتكرر بين الاشتراكات النشطة أو المتوقفة مؤقتًا.")
         Field("تثبيت سعر الباقة بعد كم دقيقة؟", grace, { grace = it })
         Field("زيادة بنكك ٪", premium, { premium = it })
         Field("اشتراك Starlink بالدولار", usd, { usd = it })

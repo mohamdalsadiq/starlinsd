@@ -4,7 +4,7 @@ import java.util.Calendar
 import java.util.TimeZone
 
 /** Values are minor SDG units; bank amounts are already normalized at sale time. */
-data class Income(val at: Long, val value: Long, val amount: Long, val bank: Boolean)
+data class Income(val at: Long, val value: Long, val amount: Long, val bank: Boolean, val units: Int = 1)
 data class DailyIncome(val day: Long, val revenue: Long, val cash: Long, val bank: Long, val profit: Long?, val sales: Int)
 data class RevenueReport(val days: List<DailyIncome>, val cycleRevenue: Long, val covered: Long,
     val remainingCost: Long?, val cycleProfit: Long?, val cost: Long?)
@@ -34,7 +34,7 @@ object Revenue {
         val days = valid.groupBy { day(it.at, zone) }.map { (d, sales) ->
             val inCycle = knownCycle && d >= day(start, zone) && d <= day(end - 1, zone)
             DailyIncome(d, sales.sumOf { it.value }, sales.filter { !it.bank }.sumOf { it.amount },
-                sales.filter { it.bank }.sumOf { it.amount }, if (inCycle) profits[d] ?: 0 else null, sales.size)
+                sales.filter { it.bank }.sumOf { it.amount }, if (inCycle) profits[d] ?: 0 else null, sales.sumOf { it.units })
         }.sortedByDescending { it.day }
         return RevenueReport(days, collected, if (knownCycle) minOf(collected, cost!!) else 0,
             if (knownCycle) (cost!! - collected).coerceAtLeast(0) else null,

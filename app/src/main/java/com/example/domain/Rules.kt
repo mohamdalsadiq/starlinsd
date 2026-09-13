@@ -42,6 +42,11 @@ object Rules {
 
 data class Expansion(val keyword: String, val client: String, val from: Int, val to: Int)
 object TextRules {
+    fun withReference(text: String, reference: String): String {
+        val suffix = "[$reference]"
+        return text.trimEnd().let { if (it.endsWith(suffix)) it else it + suffix }
+    }
+
     fun match(text: String, start: Int, end: Int, keywords: Set<String>): Expansion? {
         if (start != end || start !in 1..text.length || !text[start - 1].isWhitespace()) return null
         val wordEnd = start - 1

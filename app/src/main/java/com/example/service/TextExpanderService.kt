@@ -64,14 +64,17 @@ class TextExpanderService : AccessibilityService() {
         val shortcut = shortcuts.first { it.keyword == match.keyword }
         processing = true
         scope.launch {
+            val repo = SubscriptionRepository(this@TextExpanderService)
+            var reservationId: String? = null
             try {
-                val repo = SubscriptionRepository(this@TextExpanderService)
                 val session = shortcut.planId?.let { repo.prepare(match.client, it, shortcut.payment, shortcut.keyword) }
+                reservationId = session?.id
                 val now = session?.started ?: System.currentTimeMillis()
-                val replacement = TextRules.render(shortcut.phrase, now, session?.client ?: match.client,
+                val rendered = TextRules.render(shortcut.phrase, now, session?.client ?: match.client,
                     end = session?.let { it.started + it.duration } ?: now,
                     price = session?.let { Money.show(it.amount) }.orEmpty(),
                     duration = session?.let { (it.duration / 60000).toString() }.orEmpty(), code = session?.reference.orEmpty())
+                val replacement = if (session == null) rendered else TextRules.withReference(rendered, session.reference)
                 if (!node.refresh() || !safe(node) || node.text?.toString() != text ||
                     node.textSelectionStart != start || node.textSelectionEnd != start || pkg !in ExpanderHealth.allowed(this@TextExpanderService)) return@launch
                 val expanded = text.replaceRange(match.from, match.to, replacement)
@@ -91,11 +94,14 @@ class TextExpanderService : AccessibilityService() {
                     Toast.makeText(this@TextExpanderService, "تم تسجيل ${session.client}", Toast.LENGTH_SHORT).show()
                 }
             } catch (e: CancellationException) { throw e }
-            catch (_: Exception) {
-                val message = "تعذّر إكمال الاختصار؛ راجع سجل المشتركين قبل المحاولة مجددًا."
+            catch (e: Exception) {
+                val message = e.message ?: "تعذّر إكمال الاختصار؛ راجع سجل المشتركين قبل المحاولة مجددًا."
                 getSharedPreferences("service_health", 0).edit().putString("error", message).apply()
                 Toast.makeText(this@TextExpanderService, message, Toast.LENGTH_LONG).show()
-            } finally { processing = false }
+            } finally {
+                withContext(NonCancellable) { reservationId?.let { runCatching { repo.release(it) } } }
+                processing = false
+            }
         }
     }
 

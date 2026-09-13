@@ -50,26 +50,30 @@ import java.util.*
 }
 private fun dateLabel(at: Long, pattern: String = "EEEE، d MMMM yyyy") = SimpleDateFormat(pattern, Locale.forLanguageTag("ar")).format(Date(at))
 
-@Composable internal fun Dashboard(sessions: List<Session>, config: BusinessSettings, now: Long, add: () -> Unit) {
+@Composable internal fun Dashboard(sessions: List<Session>, config: BusinessSettings, now: Long, manualSales: List<ManualSale> = emptyList(), addSales: () -> Unit = {}, add: () -> Unit) {
     val today = Revenue.day(now)
-    val income = remember(sessions) { sessions.filter { it.recognized > 0 && !it.home }.map { Income(it.recognized, it.cashEquivalent, it.amount, it.payment == "BANK") } }
+    val income = remember(sessions, manualSales) { sessions.filter { it.recognized > 0 && !it.home }.map { Income(it.recognized, it.cashEquivalent, it.amount, it.payment == "BANK") } + manualSales.map { Income(it.at, it.cashEquivalent, it.amount, it.payment == "BANK", it.count) } }
     val billBank = Money.bill(config.usdCents, config.bankRate)
     val billCash = Money.bankToCash(billBank, config.premiumBps)
     val configured = config.cycleStart > 0 && config.cycleEnd > config.cycleStart && config.usdCents > 0 && config.bankRate > 0
     val report = remember(income, config, now) { Revenue.report(income, config.cycleStart, config.cycleEnd, if (configured) billCash + config.expenses else null, now) }
     val daily = report.days.firstOrNull { it.day == today } ?: DailyIncome(today, 0, 0, 0, if (configured && now in config.cycleStart until config.cycleEnd) 0 else null, 0)
     val daysLeft = ((config.cycleEnd - maxOf(now, config.cycleStart)).coerceAtLeast(0) + 86399999) / 86400000
-    var historyRange by rememberSaveable { mutableIntStateOf(7) }
-    val history = remember(report, today, historyRange, config.cycleStart, config.cycleEnd, configured) {
-        val byDay = report.days.associateBy { it.day }
-        if (historyRange == 0) report.days else List(historyRange) { index ->
-            val d = Calendar.getInstance().apply { timeInMillis = today; add(Calendar.DAY_OF_MONTH, -index) }.timeInMillis
-            byDay[d] ?: DailyIncome(d, 0, 0, 0, if (configured && d >= config.cycleStart && d < config.cycleEnd) 0 else null, 0)
-        }
-    }
+    var calendar by rememberSaveable { mutableStateOf(false) }
+    var selectedDay by rememberSaveable { mutableLongStateOf(today) }
+    val byDay = remember(report) { report.days.associateBy { it.day } }
+    val history = remember(byDay, today) { List(3) { index ->
+        val d = Calendar.getInstance().apply { timeInMillis = today; add(Calendar.DAY_OF_MONTH, -index) }.timeInMillis
+        byDay[d] ?: DailyIncome(d, 0, 0, 0, null, 0)
+    } }
+    if (calendar) HistoryCalendar(report, sessions, manualSales, now, selectedDay) { calendar = false }
     LazyColumn(Modifier.fillMaxSize().testTag("dashboard-list"), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
-        item { Title("لوحة الحساب", dateLabel(now)) }
+        item { Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            androidx.compose.foundation.Image(androidx.compose.ui.res.painterResource(com.example.R.drawable.slotra_mark), null, Modifier.size(48.dp))
+            Column { Title("Slotra", dateLabel(now)) }
+        } }
         item { Button(onClick = add, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)) { Icon(Icons.Default.PersonAdd, null); Spacer(Modifier.width(8.dp)); Text("تسجيل اشتراك") } }
+        item { OutlinedButton(onClick = addSales, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Icon(Icons.Default.AddCard, null); Spacer(Modifier.width(8.dp)); Text("إضافة دخل بعدد الأجهزة") } }
         item { Panel {
             SectionHeading(Icons.Default.AccountBalanceWallet, "إيراد اليوم", "${daily.sales} اشتراكًا مثبتًا · ${dateLabel(today, "d MMMM")}")
             MoneyLine("إجمالي الإيراد بقيمة الكاش", daily.revenue, "today-revenue", strong = true)
@@ -126,24 +130,19 @@ private fun dateLabel(at: Long, pattern: String = "EEEE، d MMMM yyyy") = Simple
             MoneyLine("الربح بعد تغطية التكلفة", report.cycleProfit!!, "cycle-profit", strong = true)
             Text("الربح تقديري حسب التكلفة والمصروفات المدخلة. تغييرهما يعيد حساب التقرير، ولا يغيّر أسعار الاشتراكات المحفوظة.", style = MaterialTheme.typography.bodySmall)
         } }
-        item { SectionHeading(Icons.Default.History, "سجل الأيام", "إيراد كل يوم وربحه من الدورة المحددة") }
-        item { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Choice("7 أيام", historyRange == 7) { historyRange = 7 }
-            Choice("30 يومًا", historyRange == 30) { historyRange = 30 }
-            Choice("كل السجل", historyRange == 0) { historyRange = 0 }
-        } }
-        if (history.isEmpty()) item { Text("لا توجد إيرادات مثبتة بعد؛ سيظهر سجل الأيام تلقائيًا بعد التثبيت.") }
-        items(history, key = { it.day }) { d -> Panel {
-            Text(if (d.day == today) "اليوم · ${dateLabel(d.day, "d MMMM yyyy")}" else dateLabel(d.day), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            Text("${d.sales} اشتراكًا مثبتًا", style = MaterialTheme.typography.labelMedium)
-            MoneyLine("إيراد اليوم · قيمة كاش", d.revenue)
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                Column(Modifier.weight(1f)) { MoneyLine("كاش", d.cash) }
-                Column(Modifier.weight(1f)) { MoneyLine("بنكك", d.bank) }
+        item { Panel {
+            SectionHeading(Icons.Default.History, "آخر 3 أيام", "اضغط اليوم لعرض الدخل والربح بالتفصيل")
+            history.forEachIndexed { index, day ->
+                if (index > 0) HorizontalDivider()
+                TextButton(onClick = { selectedDay = day.day; calendar = true }, modifier = Modifier.fillMaxWidth().testTag("recent-day-$index"), contentPadding = PaddingValues(vertical = 8.dp)) {
+                    Column(Modifier.weight(1f), horizontalAlignment = Alignment.Start) {
+                        Text(if (day.day == today) "اليوم" else dateLabel(day.day, "EEEE، d MMMM"), color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.titleSmall)
+                        Text("${day.sales} اشتراك · ${if (day.profit == null) "الربح غير محدد" else "الربح ${amount(day.profit)}"}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Text(amount(day.revenue), fontWeight = FontWeight.Bold)
+                }
             }
-            HorizontalDivider()
-            if (d.profit != null) MoneyLine("الربح بعد التغطية", d.profit)
-            else Text("الربح غير محسوب: هذا اليوم خارج دورة بتكلفة محددة.", style = MaterialTheme.typography.bodySmall)
+            OutlinedButton(onClick = { selectedDay = today; calendar = true }, modifier = Modifier.fillMaxWidth().testTag("open-history")) { Icon(Icons.Default.CalendarMonth, null); Spacer(Modifier.width(8.dp)); Text("تصفّح الشهرين") }
         } }
     }
 }
