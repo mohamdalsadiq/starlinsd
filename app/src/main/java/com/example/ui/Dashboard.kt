@@ -60,14 +60,14 @@ private fun dateLabel(at: Long, pattern: String = "EEEE، d MMMM yyyy") = Simple
     val daily = report.days.firstOrNull { it.day == today } ?: DailyIncome(today, 0, 0, 0, if (configured && now in config.cycleStart until config.cycleEnd) 0 else null, 0)
     val daysLeft = ((config.cycleEnd - maxOf(now, config.cycleStart)).coerceAtLeast(0) + 86399999) / 86400000
     var historyRange by rememberSaveable { mutableIntStateOf(7) }
-    val history = remember(report, today, historyRange) {
+    val history = remember(report, today, historyRange, config.cycleStart, config.cycleEnd, configured) {
         val byDay = report.days.associateBy { it.day }
         if (historyRange == 0) report.days else List(historyRange) { index ->
             val d = Calendar.getInstance().apply { timeInMillis = today; add(Calendar.DAY_OF_MONTH, -index) }.timeInMillis
             byDay[d] ?: DailyIncome(d, 0, 0, 0, if (configured && d >= config.cycleStart && d < config.cycleEnd) 0 else null, 0)
         }
     }
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+    LazyColumn(Modifier.fillMaxSize().testTag("dashboard-list"), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
         item { Title("لوحة الحساب", dateLabel(now)) }
         item { Button(onClick = add, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)) { Icon(Icons.Default.PersonAdd, null); Spacer(Modifier.width(8.dp)); Text("تسجيل اشتراك") } }
         item { Panel {
