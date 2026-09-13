@@ -17,8 +17,8 @@ android {
     applicationId = "com.aistudio.starlinkmanager.zbxpq"
     minSdk = 24
     targetSdk = 36
-    versionCode = 1
-    versionName = "1.0"
+    versionCode = 2
+    versionName = "2.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -47,7 +47,11 @@ android {
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       signingConfig = signingConfigs.getByName("release")
     }
-    debug { signingConfig = signingConfigs.getByName("debugConfig") }
+    debug {
+      signingConfig = signingConfigs.getByName("debugConfig")
+      applicationIdSuffix = ".preview"
+      versionNameSuffix = "-preview"
+    }
   }
   compileOptions {
     sourceCompatibility = JavaVersion.VERSION_11
@@ -134,3 +138,5 @@ dependencies {
   "ksp"(libs.androidx.room.compiler)
   "ksp"(libs.moshi.kotlin.codegen)
 }
+
+ksp { arg("room.schemaLocation", "$projectDir/schemas") }
