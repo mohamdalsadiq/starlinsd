@@ -63,11 +63,11 @@ private fun dateLabel(at: Long, pattern: String = "EEEE، d MMMM yyyy") = Simple
     var calendar by rememberSaveable { mutableStateOf(false) }
     var selectedDay by rememberSaveable { mutableLongStateOf(today) }
     val byDay = remember(report) { report.days.associateBy { it.day } }
-    val history = remember(byDay, today) { List(3) { index ->
+    val history = remember(byDay, today, configured, config.cycleStart, config.cycleEnd) { List(3) { index ->
         val d = Calendar.getInstance().apply { timeInMillis = today; add(Calendar.DAY_OF_MONTH, -index) }.timeInMillis
-        byDay[d] ?: DailyIncome(d, 0, 0, 0, null, 0)
+        byDay[d] ?: DailyIncome(d, 0, 0, 0, if (configured && d in Revenue.day(config.cycleStart) until config.cycleEnd) 0 else null, 0)
     } }
-    if (calendar) HistoryCalendar(report, sessions, manualSales, now, selectedDay) { calendar = false }
+    if (calendar) HistoryCalendar(report, sessions, manualSales, now, selectedDay, config.cycleStart, config.cycleEnd) { calendar = false }
     LazyColumn(Modifier.fillMaxSize().testTag("dashboard-list"), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
         item { Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             androidx.compose.foundation.Image(androidx.compose.ui.res.painterResource(com.example.R.drawable.slotra_mark), null, Modifier.size(48.dp).clip(RoundedCornerShape(14.dp)))

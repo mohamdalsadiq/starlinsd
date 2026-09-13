@@ -89,8 +89,9 @@ import com.example.domain.TextRules
         if (planId != null) Payment(payment) { payment = it }
         Text("معاينة النص", style = MaterialTheme.typography.labelLarge)
         val plan = plans.find { it.id == planId }
-        Text(TextRules.render(phrase.text, System.currentTimeMillis(), "محمد", System.currentTimeMillis() + (plan?.minutes ?: 0) * 60000L,
-            plan?.let { com.example.domain.Money.show(if (payment == "BANK") it.bank else it.cash) }.orEmpty(), plan?.minutes?.toString().orEmpty(), code = if (planId != null) "1" else ""))
+        val preview = TextRules.render(phrase.text, System.currentTimeMillis(), "محمد", System.currentTimeMillis() + (plan?.minutes ?: 0) * 60000L,
+            plan?.let { com.example.domain.Money.show(if (payment == "BANK") it.bank else it.cash) }.orEmpty(), plan?.minutes?.toString().orEmpty(), code = if (planId != null) "1" else "")
+        Text(if (plan == null) preview else TextRules.withReference(preview, "1"))
         if (planId != null) Text("الاسم اختياري عند الكتابة. مثال: اكتب ${keyword.ifBlank { "mm" }} ثم مسافة؛ سيضاف [1] تلقائيًا بعد النص ثم [2] للاشتراك التالي. الرقم نفسه يظهر في السجل والتنبيه. الأرقام المشغولة لا تتكرر.", style = MaterialTheme.typography.bodySmall)
     }
     if (futureTime) FutureTimeForm({ futureTime = false }) { insert(it); futureTime = false }

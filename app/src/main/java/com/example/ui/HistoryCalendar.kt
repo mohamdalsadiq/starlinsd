@@ -24,7 +24,7 @@ import com.example.domain.*
 import java.text.SimpleDateFormat
 import java.util.*
 
-@Composable internal fun HistoryCalendar(report: RevenueReport, sessions: List<Session>, manual: List<ManualSale>, now: Long, initialDay: Long, dismiss: () -> Unit) {
+@Composable internal fun HistoryCalendar(report: RevenueReport, sessions: List<Session>, manual: List<ManualSale>, now: Long, initialDay: Long, cycleStart: Long, cycleEnd: Long, dismiss: () -> Unit) {
     val today = Revenue.day(now)
     val currentMonth = remember(today) { Calendar.getInstance().apply { timeInMillis = today; set(Calendar.DAY_OF_MONTH, 1) }.timeInMillis }
     var offset by rememberSaveable { mutableIntStateOf(if (initialDay < currentMonth) -1 else 0) }
@@ -32,7 +32,7 @@ import java.util.*
     val month = remember(currentMonth, offset) { Calendar.getInstance().apply { timeInMillis = currentMonth; add(Calendar.MONTH, offset) } }
     val nextMonth = remember(month) { (month.clone() as Calendar).apply { add(Calendar.MONTH, 1) }.timeInMillis }
     val byDay = remember(report) { report.days.associateBy { it.day } }
-    val daily = byDay[selected] ?: DailyIncome(selected, 0, 0, 0, null, 0)
+    val daily = byDay[selected] ?: DailyIncome(selected, 0, 0, 0, if (report.cost != null && selected in Revenue.day(cycleStart) until cycleEnd) 0 else null, 0)
     val monthRevenue = remember(report, month, nextMonth) { report.days.filter { it.day >= month.timeInMillis && it.day < nextMonth }.sumOf { it.revenue } }
     val dayEnd = remember(selected) { Calendar.getInstance().apply { timeInMillis = selected; add(Calendar.DAY_OF_MONTH, 1) }.timeInMillis }
     val daySessions = remember(sessions, selected) { sessions.filter { !it.home && it.recognized in selected until dayEnd } }
@@ -84,7 +84,7 @@ import java.util.*
                     }
                     if (daily.profit != null) MoneyLine("الربح بعد تغطية الدورة", daily.profit)
                     else Text("الربح غير محدد لهذا اليوم؛ اضبط دورة تشمل هذا التاريخ.", style = MaterialTheme.typography.bodySmall)
-                    Text("${daily.sales} اشتراكًا · ${daySessions.size} من المؤقتات · ${dayManual.sumOf { it.count }} جهازًا بإدخال يدوي", style = MaterialTheme.typography.bodySmall)
+                    Text("${daily.sales} اشتراكًا · ${daySessions.size} من المؤقتات · ${dayManual.sumOf { it.count.toLong() }} جهازًا بإدخال يدوي", style = MaterialTheme.typography.bodySmall)
                 } }
                 items(dayManual, key = { "sale-${it.id}" }) { sale -> ListItem(headlineContent = { Text("${sale.count} جهاز × ${amount(sale.unitPrice)}") }, supportingContent = { Text("إدخال يدوي · ${stamp(sale.at)} · ${if (sale.payment == "BANK") "بنكك" else "كاش"}") }, trailingContent = { Text(amount(sale.amount), fontWeight = FontWeight.Bold) }) }
                 items(daySessions, key = { "session-${it.id}" }) { s -> ListItem(headlineContent = { Text("[${s.reference.ifBlank { s.id.take(8) }}] ${s.client}") }, supportingContent = { Text("${s.plan} · ${stamp(s.recognized)}") }, trailingContent = { Text(amount(s.amount)) }) }

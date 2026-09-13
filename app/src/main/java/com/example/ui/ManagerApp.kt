@@ -88,6 +88,8 @@ internal fun amount(minor: Long): String {
     val message by vm.message.collectAsStateWithLifecycle()
     val host = remember { SnackbarHostState() }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    // Income must appear as soon as a sale arrives, even between timer ticks.
+    LaunchedEffect(sessions, manualSales) { now = System.currentTimeMillis() }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(lifecycle) { lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
         while (true) { now = System.currentTimeMillis(); vm.refresh(); delay(15000) }

@@ -135,7 +135,7 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
         require(s.graceMinutes in 0..1440 && s.premiumBps in 0..100000) { "راجع مهلة التثبيت ونسبة بنكك" }
         require(s.usdCents >= 0 && s.bankRate >= 0 && s.expenses >= 0) { "المبالغ لا تكون سالبة" }
         require((s.cycleStart == 0L && s.cycleEnd == 0L) || (s.cycleStart > 0 && s.cycleEnd > s.cycleStart)) { "نهاية الدورة يجب أن تكون بعد بدايتها" }
-        Money.bill(s.usdCents, s.bankRate)
+        Math.addExact(Money.bankToCash(Money.bill(s.usdCents, s.bankRate), s.premiumBps), s.expenses)
         dao.settings(s)
     }
 

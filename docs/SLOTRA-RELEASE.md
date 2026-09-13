@@ -27,3 +27,7 @@ Pending: latest CI result, schema capture, rendered UI inspection, unsigned arti
 
 ## Known operating boundaries
 The app tracks registered timers, not router discovery or automatic disconnection. Google Drive file save uses Android's file picker/provider and requires the user to choose a destination. Auto Backup timing depends on Android/Google settings. Profit for days outside a configured billing cycle is explicitly unknown; income is retained. No statement of guaranteed background uptime or zero bugs is justified.
+
+Public release certificate SHA-256: `ec2716e37b05a51578422eef8ea7f913d06e1f622ad2072b75bd6402d91847f9`. This is public identity information, not a private key.
+
+Use `python scripts/sign_release.py bundle.zip private-kit-directory Slotra-3.0.apk`. The script aligns, signs, verifies the saved certificate, and compares every application ZIP entry with the unsigned build.
