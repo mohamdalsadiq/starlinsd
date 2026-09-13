@@ -25,7 +25,7 @@ import com.example.domain.TextRules
     var deleting by remember { mutableStateOf<Shortcut?>(null) }
     var search by rememberSaveable { mutableStateOf("") }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { Title("اكتب أقل، أنجز أكثر", "اختصارات نصية أو اختصارات تسجّل الاشتراك تلقائيًا") }
+        item { Title("الاختصارات", "قوالب نصية وتسجيل اشتراكات بكلمة ومسافة") }
         item { Panel {
             Text("اكتب الاختصار ثم مسافة فقط، مثل س3. إن كان مرتبطًا بباقة يُسجّل مشتركًا برقم تلقائي. إضافة الاسم اختيارية: س3/محمد أو س3/محمد_أحمد.")
             Text("اختر التطبيقات المسموحة وفعّل الخدمة من الإعدادات. الاختصار يسجّل بداية الوقت عند استبدال النص، وليس عند اتصال الجهاز أو إرسال الرسالة.")

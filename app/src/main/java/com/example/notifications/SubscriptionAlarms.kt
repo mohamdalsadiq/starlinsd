@@ -81,7 +81,7 @@ object SubscriptionAlarms {
         return NotificationCompat.Builder(context, CHANNEL)
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
             .setContentTitle(if (ending) "انتهى وقت ${s.client}" else "اقترب انتهاء ${s.client}")
-            .setContentText(if (ending) "راجع اتصال المشترك يدويًا؛ التطبيق لا يفصل الإنترنت." else "تبقّت 10 دقائق أو أقل على ${s.plan}.")
+            .setContentText("#${s.reference.ifBlank { s.id.take(8) }} · " + if (ending) "راجع اتصال المشترك يدويًا؛ التطبيق لا يفصل الإنترنت." else "تبقّت 10 دقائق أو أقل على ${s.plan}.")
             .setContentIntent(open).setAutoCancel(true).setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH).build()
     }
