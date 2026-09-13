@@ -46,7 +46,10 @@ internal fun remaining(ms: Long): String {
     val minutes = (ms.coerceAtLeast(0) + 59999) / 60000
     return "${minutes / 60} س ${minutes % 60} د"
 }
-internal fun amount(minor: Long) = "${Money.show(minor)} ج.س"
+internal fun amount(minor: Long): String {
+    val number = java.text.NumberFormat.getNumberInstance(Locale.US).apply { maximumFractionDigits = 2 }
+    return "${number.format(java.math.BigDecimal.valueOf(minor, 2))} ج.س"
+}
 @Composable internal fun Title(title: String, subtitle: String = "") {
     Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
     if (subtitle.isNotBlank()) Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -100,7 +103,7 @@ internal fun amount(minor: Long) = "${Money.show(minor)} ج.س"
             Box(Modifier.weight(1f)) {
                 when (tab) {
                     0 -> Dashboard(sessions, config ?: BusinessSettings(), now) { newSession = true }
-                    1 -> SessionsScreen(sessions, now, requestedSession, busy, { newSession = true }, vm::change)
+                    1 -> SessionsScreen(sessions, now, requestedSession, busy, { newSession = true }, vm::change, vm::rename)
                     2 -> PlansScreen(plans, config?.premiumBps ?: 2500, busy, vm::savePlan)
                     3 -> ShortcutsScreen(shortcuts, plans, busy, vm::saveShortcut, vm::deleteShortcut)
                     4 -> SettingsScreen(vm, config, now)
@@ -113,56 +116,14 @@ internal fun amount(minor: Long) = "${Money.show(minor)} ج.س"
     }
 }
 
-@Composable internal fun Dashboard(sessions: List<Session>, config: BusinessSettings, now: Long, add: () -> Unit) {
-    val today = Calendar.getInstance().apply { timeInMillis = now; set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0) }.timeInMillis
-    val earned = sessions.filter { it.recognized > 0 && !it.home }
-    val daily = earned.filter { it.recognized >= today && it.recognized <= now }
-    val cycle = earned.filter { it.recognized >= config.cycleStart && it.recognized < config.cycleEnd }
-    val revenue = cycle.sumOf { it.cashEquivalent }
-    val billBank = Money.bill(config.usdCents, config.bankRate)
-    val billCash = Money.bankToCash(billBank, config.premiumBps)
-    val days = ((config.cycleEnd - now).coerceAtLeast(0) + 86399999) / 86400000
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        item { Title("يومك تحت السيطرة", "سجّل الوقت، تابع المشتركين واعرف دخلك") }
-        item { Button(onClick = add, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)) { Icon(Icons.Default.Add, null); Text("تسجيل اشتراك") } }
-        item { Panel {
-            Text("إيراد اليوم · بالقيمة المكافئة للكاش", style = MaterialTheme.typography.labelLarge)
-            Text(amount(daily.sumOf { it.cashEquivalent }), style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-            Text("كاش: ${amount(daily.filter { it.payment == "CASH" }.sumOf { it.amount })}")
-            Text("بنكك: ${amount(daily.filter { it.payment == "BANK" }.sumOf { it.amount })}")
-            Text("يُثبّت كامل سعر الباقة بعد ${config.graceMinutes} دقيقة استخدام؛ يُثبّت عند النهاية إذا كانت الباقة أقصر.")
-        } }
-        item { Panel {
-            Text("المتابعة الآن", style = MaterialTheme.typography.titleMedium)
-            Text("${sessions.count { it.state == "ACTIVE" }} نشط  ·  ${sessions.count { it.state == "PAUSED" }} متوقف مؤقتًا")
-            Text("${sessions.count { it.state == "ACTIVE" && !it.home && it.recognized == 0L }} قيد التثبيت  ·  ${sessions.count { it.state == "ACTIVE" && it.home }} من أهل البيت ✅")
-            Text("التسجيل يدوي ولا يثبت اتصال الجهاز بالشبكة. الفصل والإيقاف المؤقت للإنترنت تنفّذهما أنت من الراوتر.")
-        } }
-        item { Panel {
-            Text("دورة Starlink", style = MaterialTheme.typography.titleLarge)
-            if (config.cycleEnd == 0L || config.usdCents == 0L || config.bankRate == 0L) {
-                Text("أدخل تواريخ الدورة وقيمة الاشتراك بالدولار وسعر الدولار ببنكك في الإعدادات لعرض صافي الدورة.")
-            } else {
-                Text("${stamp(config.cycleStart).substringBefore('·')} — ${stamp(config.cycleEnd - 1).substringBefore('·')}")
-                Text(if (now < config.cycleStart) "الدورة لم تبدأ بعد" else if (days == 0L) "انتهت الدورة" else "متبقّي $days يوم")
-                Text("الإيراد المثبّت: ${amount(revenue)}")
-                Text("Starlink: ${Money.show(config.usdCents)} دولار = ${amount(billBank)} بنكك")
-                Text("تكلفته بالكاش: ${amount(billCash)}  ·  المصروفات: ${amount(config.expenses)}")
-                Text("صافي الدورة: ${amount(revenue - billCash - config.expenses)}", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                if (days > 0) Text("لتغطية التكلفة: ${amount(((billCash + config.expenses - revenue).coerceAtLeast(0) + days - 1) / days)} يوميًا")
-                Text("الصافي تقديري بعد تكلفة الدورة كاملة والمصروفات المدخلة. نسبة بنكك تحويل للقيمة وليست ربحًا إضافيًا.", style = MaterialTheme.typography.bodySmall)
-            }
-        } }
-    }
-}
-
 @Composable private fun SessionForm(plans: List<Plan>, dismiss: () -> Unit, save: (String, Long, String) -> Unit) {
     var client by rememberSaveable { mutableStateOf("") }
     var planId by rememberSaveable { mutableStateOf(plans.firstOrNull()?.id) }
     var payment by rememberSaveable { mutableStateOf("CASH") }
     val plan = plans.find { it.id == planId }
-    Form("تسجيل اشتراك", dismiss, { plan?.let { save(client.trim(), it.id, payment) } }, client.isNotBlank() && client.length <= 80 && plan != null) {
-        Field("اسم المشترك", client, { client = it })
+    Form("تسجيل اشتراك", dismiss, { plan?.let { save(client.trim(), it.id, payment) } }, client.length <= 80 && plan != null) {
+        Field("اسم المشترك · اختياري", client, { client = it })
+        Text("إن تركته فارغًا سيُنشأ اسم برقم مميز، ويمكنك تسميته لاحقًا.")
         if (plans.isEmpty()) Text("أضف باقة أو فعّل باقة من تبويب الباقات أولًا.")
         plans.forEach { p -> Choice("${if (p.home) "✅ " else ""}${p.name} · ${p.minutes} دقيقة", p.id == planId) { planId = p.id } }
         if (plan?.home != true) Payment(payment) { payment = it }
@@ -171,7 +132,8 @@ internal fun amount(minor: Long) = "${Money.show(minor)} ج.س"
     }
 }
 
-@Composable private fun SessionsScreen(sessions: List<Session>, now: Long, requested: String?, busy: Boolean, add: () -> Unit, change: (String, String) -> Unit) {
+@Composable private fun SessionsScreen(sessions: List<Session>, now: Long, requested: String?, busy: Boolean, add: () -> Unit, change: (String, String) -> Unit, rename: (String, String) -> Unit) {
+    var renaming by remember { mutableStateOf<Session?>(null) }
     var search by rememberSaveable { mutableStateOf("") }
     var filter by rememberSaveable { mutableStateOf("ALL") }
     var cancel by remember { mutableStateOf<Session?>(null) }
@@ -185,7 +147,12 @@ internal fun amount(minor: Long) = "${Money.show(minor)} ج.س"
         item { Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) { labels.forEach { (id, title) -> Choice(title, filter == id) { filter = id } } } }
         if (rows.isEmpty()) item { Panel { Text("لا توجد اشتراكات هنا بعد. سجّل مشتركًا أو غيّر البحث.") } }
         items(rows, key = { it.id }) { s -> Panel {
-            Text("${if (s.home) "✅ " else ""}${s.client}", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Icon(if (s.home) Icons.Default.Home else Icons.Default.Person, null, tint = MaterialTheme.colorScheme.primary)
+                Text(s.client, Modifier.weight(1f).padding(horizontal = 8.dp), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                IconButton(enabled = !busy, onClick = { renaming = s }) { Icon(Icons.Default.Edit, "تسمية المشترك") }
+            }
+            Text("رقم الاشتراك #${s.reference.ifBlank { s.id.take(8) }}", style = MaterialTheme.typography.labelLarge)
             Text("${s.plan} · ${labels.firstOrNull { it.first == s.state }?.second.orEmpty()}")
             Text("البداية: ${stamp(s.started)}")
             if (s.state in listOf("ACTIVE", "PAUSED")) Text("المتبقّي ${remaining(Rules.remaining(s.clock(), now))}", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.primary)
@@ -203,6 +170,7 @@ internal fun amount(minor: Long) = "${Money.show(minor)} ج.س"
             if (s.state == "ENDED") Text("انتهى الوقت؛ راجع فصل المشترك من الراوتر.", color = MaterialTheme.colorScheme.error)
         } }
     }
+    renaming?.let { s -> RenameSessionForm(s, { renaming = null }) { rename(s.id, it); renaming = null } }
     cancel?.let { s -> AlertDialog(onDismissRequest = { cancel = null }, title = { Text("إنهاء اشتراك ${s.client}؟") }, text = {
         Text(if (s.recognized > 0 || !s.home && Rules.qualifies(s.clock(), now, s.grace, s.home)) "سيظل الإيراد المثبّت محفوظًا. افصل الإنترنت يدويًا إذا لزم." else "لن يُحتسب إيراد إن لم يصل الاستخدام لمهلة التثبيت عند التأكيد. افصل الإنترنت يدويًا إذا لزم.")
     }, confirmButton = { Button(onClick = { change(s.id, "CANCEL"); cancel = null }) { Text("إنهاء الاشتراك") } }, dismissButton = { TextButton(onClick = { cancel = null }) { Text("رجوع") } }) }
@@ -215,8 +183,12 @@ internal fun amount(minor: Long) = "${Money.show(minor)} ج.س"
         item { Button(enabled = !busy, onClick = { editing = Plan(name = "", minutes = 60, cash = 0, bank = 0) }) { Text("إضافة باقة") } }
         items(plans, key = { it.id }) { p -> Panel {
             Text("${if (p.home) "✅ " else ""}${p.name}", style = MaterialTheme.typography.titleLarge)
-            Text("${p.minutes} دقيقة · ${if (p.enabled) "متاحة" else "متوقفة"}")
-            Text(if (p.home) "لأهل البيت · دون إيراد" else "كاش ${amount(p.cash)}  /  بنكك ${amount(p.bank)}")
+            DetailLine(Icons.Default.Timer, "المدة والحالة", "${p.minutes} دقيقة · ${if (p.enabled) "متاحة" else "متوقفة"}")
+            if (p.home) DetailLine(Icons.Default.Home, "أهل البيت", "اشتراك مجاني · دون إيراد")
+            else Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                Column(Modifier.weight(1f)) { MoneyLine("السعر كاش", p.cash) }
+                Column(Modifier.weight(1f)) { MoneyLine("السعر بنكك", p.bank) }
+            }
             Row { TextButton(enabled = !busy, onClick = { editing = p }) { Text("تعديل") }; TextButton(enabled = !busy, onClick = { save(p.copy(enabled = !p.enabled)) }) { Text(if (p.enabled) "إيقاف الباقة" else "تفعيل الباقة") } }
         } }
     }
@@ -261,7 +233,7 @@ internal fun amount(minor: Long) = "${Money.show(minor)} ج.س"
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item { Title("الإعدادات", "تحكّم في الحساب والتنبيهات واستمرارية الاختصارات") }
         item { Panel {
-            Text("جاهزية التطبيق", style = MaterialTheme.typography.titleLarge)
+            SectionHeading(Icons.Default.VerifiedUser, "جاهزية التطبيق")
             Text("الاختصارات: ${if (bound) "الخدمة متصلة" else if (enabled) "مفعّلة؛ النظام لم يربط الخدمة حاليًا" else "تحتاج تفعيل إمكانية الوصول"}")
             Text("تطبيقات مسموحة: ${selectedApps.size}")
             Text("الإشعارات: ${if (SubscriptionAlarms.notificationsAllowed(context)) "مسموحة" else "غير مسموحة"}")
@@ -276,7 +248,7 @@ internal fun amount(minor: Long) = "${Money.show(minor)} ج.س"
             Text("إذن إمكانية الوصول يستبدل النص في التطبيقات التي تختارها. لا نرسل النصوص إلى خادم، ولا نقرأ حقول كلمات المرور.", style = MaterialTheme.typography.bodySmall)
         } }
         item { Panel {
-            Text("استمرارية الاختصارات", style = MaterialTheme.typography.titleLarge)
+            SectionHeading(Icons.Default.BatteryChargingFull, "استمرارية الاختصارات")
             Text("في Honor: افتح تشغيل التطبيقات، عطّل الإدارة التلقائية لهذا التطبيق واسمح بالتشغيل في الخلفية. راجع أيضًا تحسين البطارية. تختلف أسماء الخيارات حسب الهاتف.")
             TextButton(onClick = { open(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }) { Text("إعدادات تحسين البطارية") }
             TextButton(onClick = { open(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))) }) { Text("معلومات التطبيق") }
@@ -284,13 +256,13 @@ internal fun amount(minor: Long) = "${Money.show(minor)} ج.س"
             context.getSharedPreferences("service_health", 0).getString("error", null)?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         } }
         item { Panel {
-            Text("الحساب ودورة الاشتراك", style = MaterialTheme.typography.titleLarge)
+            SectionHeading(Icons.Default.Calculate, "الحساب ودورة الاشتراك")
             Text("مهلة التثبيت: ${config?.graceMinutes ?: 30} دقيقة · زيادة بنكك: ${Money.show((config?.premiumBps ?: 2500).toLong())}٪")
             TextButton(enabled = !busy && config != null, onClick = { edit = true }) { Text("تعديل إعدادات الحساب") }
             Text("تغيير الأسعار أو النسبة لا يعيد تسعير السجلات السابقة. سجّل المصروفات بالقيمة المكافئة للكاش.")
         } }
         item { Panel {
-            Text("بياناتك محفوظة محليًا", style = MaterialTheme.typography.titleLarge)
+            SectionHeading(Icons.Default.Save, "البيانات والتصدير")
             Text("${devices.size} من سجلات الأجهزة القديمة محفوظة. التصدير يشمل المشتركين والباقات والإعدادات والاختصارات والأجهزة.")
             TextButton(enabled = !busy, onClick = { export.launch("starlink-records-${SimpleDateFormat("yyyy-MM-dd", Locale.ROOT).format(Date())}.json") }) { Text("تصدير السجل JSON") }
             Text("التصدير للقراءة والأرشفة؛ استيراد النسخ لم يُضف بعد.", style = MaterialTheme.typography.bodySmall)
@@ -343,5 +315,13 @@ internal fun amount(minor: Long) = "${Money.show(minor)} ج.س"
         Field("آخر يوم شاملًا · yyyy-MM-dd", end, { end = it })
         Text("اترك التاريخين فارغين إن لم تبدأ دورة. مهلة التثبيت والنسبة يطبّقان على الاشتراكات الجديدة؛ بيانات الدورة تستخدم للتقرير الحالي.")
         if (!valid) Text("راجع المبالغ والتواريخ. المهلة 0–1440 دقيقة والنسبة 0–1000٪.", color = MaterialTheme.colorScheme.error)
+    }
+}
+
+@Composable private fun RenameSessionForm(session: Session, dismiss: () -> Unit, save: (String) -> Unit) {
+    var name by rememberSaveable(session.id) { mutableStateOf(session.client) }
+    Form("تسمية المشترك", dismiss, { save(name.trim()) }, name.isNotBlank() && name.trim().length <= 80) {
+        Text("رقم الاشتراك #${session.reference.ifBlank { session.id.take(8) }} يبقى ثابتًا. الاسم الجديد سيظهر في تنبيه الانتهاء.")
+        Field("الاسم أو وصف الجهاز", name, { name = it })
     }
 }

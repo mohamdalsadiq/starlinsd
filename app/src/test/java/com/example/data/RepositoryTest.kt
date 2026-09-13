@@ -73,4 +73,21 @@ class RepositoryTest {
         catch (_: IllegalArgumentException) { }
         assertEquals(original, db.shortcutDao().list().first { it.id == original.id })
     }
+    @Test fun bareShortcutCreatesUniqueAnonymousSubscriberAndCanBeRenamed() = runBlocking {
+        val p = repo.dao.plans().first { it.minutes == 180 && !it.home }
+        val match = com.example.domain.TextRules.match("mm ", 3, 3, setOf("mm"))!!
+        val first = repo.prepare(match.client, p.id, "CASH", "mm")
+        repo.insert(first)
+        val second = repo.prepare("", p.id, "CASH", "mm")
+        repo.insert(second)
+        assertEquals("مشترك 001", first.client); assertEquals("002", second.reference)
+        assertEquals("مشترك 001 001", com.example.domain.TextRules.render("%client% %code%", now, first.client, code = first.reference))
+        repo.rename(first.id, "هاتف محمد")
+        val renamed = repo.dao.session(first.id)!!
+        assertEquals("هاتف محمد", renamed.client); assertEquals("001", renamed.reference)
+        assertEquals(first.amount, renamed.amount); assertEquals(first.started, renamed.started)
+        repo.saveSettings(BusinessSettings())
+        assertEquals("003", repo.prepare("", p.id, "CASH", "mm").reference)
+    }
+
 }

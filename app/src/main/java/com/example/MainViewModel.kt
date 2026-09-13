@@ -51,6 +51,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun change(id: String, action: String) = work {
         repo.changeState(id, action); SubscriptionAlarms.refresh(getApplication())
     }
+    fun rename(id: String, name: String) = work { repo.rename(id, name); message.value = "تم تحديث اسم المشترك" }
     fun savePlan(plan: Plan) = work { repo.savePlan(plan); message.value = "تم حفظ الباقة" }
     fun saveShortcut(shortcut: Shortcut) = work { repo.saveShortcut(shortcut); message.value = "تم حفظ الاختصار" }
     fun deleteShortcut(shortcut: Shortcut) = work { db.shortcutDao().delete(shortcut) }

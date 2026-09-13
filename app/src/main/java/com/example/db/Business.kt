@@ -14,14 +14,20 @@ data class Session(
     val amount: Long, val cashEquivalent: Long, val payment: String, val premiumBps: Int,
     val home: Boolean, val grace: Long, val recognized: Long = 0,
     val warned: Boolean = false, val notified: Boolean = false, val source: String = "manual",
+    @ColumnInfo(defaultValue = "''") val reference: String = "",
 ) { fun clock() = Clock(duration, served, resumed, state == "ACTIVE") }
 
 @Entity(tableName = "settings")
 data class BusinessSettings(@PrimaryKey val id: Int = 1, val graceMinutes: Int = 30, val premiumBps: Int = 2500,
     val usdCents: Long = 0, val bankRate: Long = 0, val cycleStart: Long = 0, val cycleEnd: Long = 0, val expenses: Long = 0)
 
+@Entity(tableName = "sequences")
+data class Sequence(@PrimaryKey val name: String = "subscriber", val next: Long = 1)
+
 @Dao
 interface BusinessDao {
+    @Query("SELECT `next` FROM sequences WHERE name = 'subscriber'") suspend fun nextReference(): Long?
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun sequence(sequence: Sequence)
     @Query("SELECT * FROM plans ORDER BY minutes, id") fun observePlans(): Flow<List<Plan>>
     @Query("SELECT * FROM plans ORDER BY id") suspend fun plans(): List<Plan>
     @Query("SELECT * FROM plans WHERE id = :id") suspend fun plan(id: Long): Plan?

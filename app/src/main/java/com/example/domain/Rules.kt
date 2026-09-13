@@ -54,11 +54,11 @@ object TextRules {
         return Expansion(keyword, client, from, wordEnd)
     }
     fun validKeyword(value: String): Boolean = value.isNotBlank() && value.length <= 40 && value.none { it.isWhitespace() || it == '/' }
-    fun render(template: String, now: Long, client: String = "", end: Long = now, price: String = "", duration: String = ""): String {
+    fun render(template: String, now: Long, client: String = "", end: Long = now, price: String = "", duration: String = "", code: String = ""): String {
         val locale = Locale.forLanguageTag("ar")
         fun format(pattern: String, at: Long) = SimpleDateFormat(pattern, locale).format(Date(at))
         var text = template.replace("%date%", format("yyyy/MM/dd", now)).replace("%day%", format("EEEE", now))
-            .replace("%client%", client).replace("%end%", format("hh:mm a", end)).replace("%price%", price).replace("%duration%", duration)
+            .replace("%client%", client).replace("%end%", format("hh:mm a", end)).replace("%price%", price).replace("%duration%", duration).replace("%code%", code)
         text = Regex("%time(?:\\+(\\d+(?:\\.\\d{1,2})?)h)?%").replace(text) { m ->
             val hours = m.groupValues[1].toDoubleOrNull() ?: 0.0
             if (hours > 8760) m.value else format("hh:mm a", now + (hours * 3600000).toLong())

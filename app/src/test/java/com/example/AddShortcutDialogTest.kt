@@ -4,6 +4,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import com.example.ui.AddShortcutDialog
 import org.junit.Assert.assertEquals
@@ -60,4 +61,14 @@ class AddShortcutDialogTest {
         composeTestRule.onNodeWithText("حفظ").performClick()
         composeTestRule.runOnIdle { assertNull(saved) }
     }
+    @Test
+    fun readyTokenIsInsertedWithoutTypingTemplateSyntax() {
+        var saved: Pair<String, String>? = null
+        composeTestRule.setContent { MaterialTheme { AddShortcutDialog({}, { k, p -> saved = k to p }) } }
+        composeTestRule.onNodeWithText("الكلمة المفتاحية (مثل mn)").performTextInput("mm")
+        composeTestRule.onNodeWithText("الاسم").performScrollTo().performClick()
+        composeTestRule.onNodeWithText("حفظ").performClick()
+        composeTestRule.runOnIdle { assertEquals("mm" to "%client%", saved) }
+    }
+
 }

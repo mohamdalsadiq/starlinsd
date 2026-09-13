@@ -34,12 +34,15 @@ class SubscriptionRepository(context: Context, private val db: AppDatabase = App
         require(payment in listOf("CASH", "BANK")) { "اختر طريقة الدفع" }
         val settings = dao.settings() ?: BusinessSettings()
         val now = time()
+        val number = dao.nextReference() ?: 1L
+        dao.sequence(com.example.db.Sequence(next = Math.addExact(number, 1)))
+        val reference = String.format(java.util.Locale.ROOT, "%03d", number)
         val amount = if (plan.home) 0 else if (payment == "BANK") plan.bank else plan.cash
-        Session(id = UUID.randomUUID().toString(), client = client.trim().take(80).ifBlank { "مشترك جديد" },
+        Session(id = UUID.randomUUID().toString(), client = client.trim().take(80).ifBlank { "مشترك $reference" },
             plan = plan.name, started = now, resumed = now, duration = plan.minutes * Rules.MINUTE,
             amount = amount, cashEquivalent = if (payment == "BANK") Money.bankToCash(amount, settings.premiumBps) else amount,
             payment = payment, premiumBps = settings.premiumBps, home = plan.home,
-            grace = settings.graceMinutes * Rules.MINUTE, source = source)
+            grace = settings.graceMinutes * Rules.MINUTE, source = source, reference = reference)
     }
 
     suspend fun insert(session: Session) = dao.insertSession(session)
@@ -67,6 +70,11 @@ class SubscriptionRepository(context: Context, private val db: AppDatabase = App
             else -> s
         }
         dao.updateSession(next)
+    }
+
+    suspend fun rename(id: String, name: String) = db.withTransaction {
+        require(name.isNotBlank() && name.trim().length <= 80) { "اكتب اسمًا من 1 إلى 80 حرفًا" }
+        dao.session(id)?.let { dao.updateSession(it.copy(client = name.trim())) }
     }
 
     suspend fun markNotified(id: String, ending: Boolean) = db.withTransaction {
@@ -101,7 +109,7 @@ class SubscriptionRepository(context: Context, private val db: AppDatabase = App
 
     suspend fun exportJson(): String = withContext(Dispatchers.IO) {
         db.withTransaction {
-            val root = org.json.JSONObject().put("version", 2).put("exportedAt", System.currentTimeMillis())
+            val root = org.json.JSONObject().put("version", 3).put("exportedAt", System.currentTimeMillis())
             fun rows(query: String): org.json.JSONArray {
                 val result = org.json.JSONArray()
                 db.openHelper.readableDatabase.query(query).use { c -> while (c.moveToNext()) {
@@ -115,7 +123,7 @@ class SubscriptionRepository(context: Context, private val db: AppDatabase = App
                 } }
                 return result
             }
-            listOf("plans", "sessions", "settings", "shortcuts", "devices").forEach { table -> root.put(table, rows("SELECT * FROM $table")) }
+            listOf("plans", "sessions", "settings", "shortcuts", "devices", "sequences").forEach { table -> root.put(table, rows("SELECT * FROM $table")) }
             root.toString(2)
         }
     }

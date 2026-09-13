@@ -62,21 +62,16 @@ class TextExpanderService : AccessibilityService() {
         val start = node.textSelectionStart
         val match = TextRules.match(text, start, node.textSelectionEnd, shortcuts.map { it.keyword }.toSet()) ?: return
         val shortcut = shortcuts.first { it.keyword == match.keyword }
-        // A paid subscription must have a name; plain text shortcuts need no name.
-        if (shortcut.planId != null && match.client.isBlank()) {
-            Toast.makeText(this, "اكتب ${shortcut.keyword}/اسم_المشترك ثم مسافة", Toast.LENGTH_SHORT).show()
-            return
-        }
         processing = true
         scope.launch {
             try {
                 val repo = SubscriptionRepository(this@TextExpanderService)
                 val session = shortcut.planId?.let { repo.prepare(match.client, it, shortcut.payment, shortcut.keyword) }
                 val now = session?.started ?: System.currentTimeMillis()
-                val replacement = TextRules.render(shortcut.phrase, now, match.client,
+                val replacement = TextRules.render(shortcut.phrase, now, session?.client ?: match.client,
                     end = session?.let { it.started + it.duration } ?: now,
                     price = session?.let { Money.show(it.amount) }.orEmpty(),
-                    duration = session?.let { (it.duration / 60000).toString() }.orEmpty())
+                    duration = session?.let { (it.duration / 60000).toString() }.orEmpty(), code = session?.reference.orEmpty())
                 if (!node.refresh() || !safe(node) || node.text?.toString() != text ||
                     node.textSelectionStart != start || node.textSelectionEnd != start || pkg !in ExpanderHealth.allowed(this@TextExpanderService)) return@launch
                 val expanded = text.replaceRange(match.from, match.to, replacement)
