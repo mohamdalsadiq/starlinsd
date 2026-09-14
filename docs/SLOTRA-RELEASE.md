@@ -1,4 +1,4 @@
-# Slotra 3.0 — continuation and release procedure
+# Slotra 3.1 — continuation and release procedure
 
 Feature branch: `feat/subscription-shortcuts`, PR #1. Do not reset user work or merge main as part of a continuation.
 
@@ -11,7 +11,7 @@ Feature branch: `feat/subscription-shortcuts`, PR #1. Do not reset user work or 
 - Room schema 4 migration preserves earlier data. Generated schema must be captured from CI and committed.
 
 ## Stable release signing — mandatory for every future version
-Release package: `com.aistudio.starlinkmanager.zbxpq`. Version code 4, version name 3.0.
+Release package: `com.aistudio.starlinkmanager.zbxpq`. Version code 5, version name 3.1.
 Debug `.preview` builds are test artifacts with ephemeral keys; NEVER present them as update-compatible production releases.
 A private signing kit named `Slotra-private-signing-kit.zip` is stored in the owner's private account. Retrieve that exact existing kit for every release. Do not create a new key if the kit is unavailable: stop the release and recover it. Never copy the key/password into Git, logs, issue text, or a public artifact.
 The kit contains PKCS12 key `slotra-release.p12`, alias `upload`, password file, and public certificate. Release instructions use environment/file password arguments; never echo the password.
@@ -30,7 +30,7 @@ The app tracks registered timers, not router discovery or automatic disconnectio
 
 Public release certificate SHA-256: `ec2716e37b05a51578422eef8ea7f913d06e1f622ad2072b75bd6402d91847f9`. This is public identity information, not a private key.
 
-Use `python scripts/sign_release.py bundle.zip private-kit-directory Slotra-3.0.apk`. The script aligns, signs, verifies the saved certificate, and compares every application ZIP entry with the unsigned build.
+Use `python scripts/sign_release.py bundle.zip private-kit-directory Slotra-3.1.apk`. The script aligns, signs, verifies the saved certificate, and compares every application ZIP entry with the unsigned build.
 
 ## 2026-09-14 — Slotra 3.1 active work
 User steering from screenshots supersedes household timer behavior. Implemented locally: household shortcuts render text only, consume no subscriber slot, create no Session, generate no expiry notifications; legacy household records are retained but cancelled/hidden. Both build labels now say Slotra.
@@ -38,3 +38,5 @@ Added append-only revenue corrections (edit/void/restore from selected day) with
 Added saved billing cycles, fixed daily bill target = ceil(saved cash cost / whole cycle days), distinct daily surplus and available surplus after debt allocation. Full-cycle profit remains separately labelled. Added debt periods, due-date priority allocation, explicit actual payment recording with idempotency and no second deduction. Correcting income after payment exposes a funding gap, preserving actual payments.
 Room v5 + backup v5 include cycles, corrections, debts and payments; restore accepts older exports. Release versionCode 5/versionName 3.1, reuse existing private signing kit. `scripts/sign_release.py` now passes the single PKCS12 password once (apksigner consumes password files sequentially).
 Pending: CI compilation/tests for new code, inspect new UI, finalize schema 5, sign and save the 3.1 APK, update PR and completion notes. The 3.0 APK must not be delivered as the response to the new request.
+
+First 3.1 implementation passed CI run 34818365971 (32 tests, lintDebug, debug/release build). Later safeguards (paid debt priority, separate budget card, zero-income day details) are pending their final gate. Room schema 5 was captured from the successful migration/build.

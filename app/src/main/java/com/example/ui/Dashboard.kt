@@ -172,7 +172,7 @@ private fun dateLabel(at: Long, pattern: String = "EEEE، d MMMM yyyy") = Simple
                 TextButton(onClick = { selectedDay = day.day; calendar = true }, modifier = Modifier.fillMaxWidth().testTag("recent-day-$index"), contentPadding = PaddingValues(vertical = 8.dp)) {
                     Column(Modifier.weight(1f), horizontalAlignment = Alignment.Start) {
                         Text(if (day.day == today) "اليوم" else dateLabel(day.day, "EEEE، d MMMM"), color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.titleSmall)
-                        Text("${day.sales} اشتراك · ${budget.days[day.day]?.available?.let { "المتاح ${amount(it)}" } ?: "لا يوجد فائض محسوب"}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("${day.sales} اشتراك · ${budget.day(day.day).available?.let { "المتاح ${amount(it)}" } ?: "لا يوجد فائض محسوب"}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Text(amount(day.revenue), fontWeight = FontWeight.Bold)
                 }

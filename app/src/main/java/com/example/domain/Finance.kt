@@ -14,7 +14,15 @@ data class DebtBalance(val debt: Debt, val allocated: Long, val paid: Long) {
     val reserved get() = (allocated - paid).coerceAtLeast(0)
     val fundingGap get() = (paid - allocated).coerceAtLeast(0)
 }
-data class BudgetReport(val days: Map<Long, BudgetDay>, val debts: List<DebtBalance>)
+data class BudgetReport(val days: Map<Long, BudgetDay>, val debts: List<DebtBalance>, val cycles: List<BillingCycle>) {
+    fun day(at: Long): BudgetDay {
+        val date = Revenue.day(at)
+        return days[date] ?: cycles.firstOrNull { date >= Revenue.day(it.start) && date < it.end }?.let {
+            val target = Finance.dailyTarget(it)
+            BudgetDay(date, 0, target, 0, target, 0, 0, 0)
+        } ?: BudgetDay(date, 0, null, 0, 0, null, 0, null)
+    }
+}
 
 object Finance {
     fun ledger(sessions: List<Session>, sales: List<ManualSale>, corrections: List<RevenueCorrection>): List<LedgerEntry> {
@@ -63,6 +71,6 @@ object Finance {
             results[day] = BudgetDay(day, revenue, target, minOf(revenue, target ?: 0), ((target ?: 0) - revenue).coerceAtLeast(0), surplus,
                 (surplus ?: 0) - free, if (surplus == null) null else free)
         }
-        return BudgetReport(results, order.map { debt -> DebtBalance(debt, allocations.getValue(debt.id), paid.getValue(debt.id)) })
+        return BudgetReport(results, order.map { debt -> DebtBalance(debt, allocations.getValue(debt.id), paid.getValue(debt.id)) }, cycles)
     }
 }

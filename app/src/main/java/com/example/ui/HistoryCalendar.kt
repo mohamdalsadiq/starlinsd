@@ -87,7 +87,7 @@ import java.util.*
                         Column(Modifier.weight(1f)) { MoneyLine("كاش", daily.cash) }
                         Column(Modifier.weight(1f)) { MoneyLine("بنكك", daily.bank) }
                     }
-                    budget.days[selected]?.let { BudgetSummary(it) }
+                    BudgetSummary(budget.day(selected))
                     Text("يمكن تعديل أو حذف قيود هذا اليوم، حتى بعد انتهاء اليوم.", style = MaterialTheme.typography.bodySmall)
                     Text("${daily.sales} اشتراكًا · ${daySessions.size} من المؤقتات · ${dayManual.sumOf { it.count.toLong() }} جهازًا بإدخال يدوي", style = MaterialTheme.typography.bodySmall)
                 } }
