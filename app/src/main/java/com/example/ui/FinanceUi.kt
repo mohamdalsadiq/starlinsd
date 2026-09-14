@@ -31,7 +31,8 @@ import java.util.*
     Panel {
         Text(entry.label, style = MaterialTheme.typography.titleMedium)
         Text("${stamp(entry.at)} · ${entry.count} جهاز · ${if (entry.bank) "بنكك" else "كاش"}", style = MaterialTheme.typography.bodySmall)
-        MoneyLine(if (entry.voided) "محذوف من الحساب · الأصل محفوظ" else "المبلغ المسجّل", entry.amount)
+        MoneyLine(if (entry.voided) "محذوف من الحساب · الأصل محفوظ" else "القيمة المحتسبة في الإيراد", entry.value)
+        if (entry.bank) Text("أصل القيد البنكي القديم: ${amount(entry.amount)} · حُوّل عند التسجيل.", style = MaterialTheme.typography.bodySmall)
         if (entry.corrected) Text("تم تصحيح هذا القيد؛ لا يتغيّر وقت الاشتراك أو سعر الباقة الأصلي.", style = MaterialTheme.typography.bodySmall)
         Row {
             TextButton(onClick = { edit(entry) }) { Icon(Icons.Default.Edit, null); Text(if (entry.voided) "تعديل واستعادة" else "تعديل الإيراد") }

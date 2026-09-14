@@ -31,6 +31,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -69,12 +70,6 @@ internal fun amount(minor: Long): String {
 @Composable internal fun Choice(label: String, selected: Boolean, onClick: () -> Unit) {
     FilterChip(selected, onClick, label = { Text(label) })
 }
-@Composable internal fun Payment(value: String, change: (String) -> Unit) {
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Choice("كاش", value == "CASH") { change("CASH") }
-        Choice("بنكك", value == "BANK") { change("BANK") }
-    }
-}
 @Composable internal fun Form(title: String, dismiss: () -> Unit, save: () -> Unit, valid: Boolean = true, content: @Composable ColumnScope.() -> Unit) {
     AlertDialog(onDismissRequest = dismiss, title = { Text(title) }, text = {
         Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp), content = content)
@@ -101,7 +96,7 @@ internal fun amount(minor: Long): String {
     val icons = listOf(Icons.Default.Dashboard, Icons.Default.People, Icons.Default.AccountBalanceWallet, Icons.Default.Keyboard, Icons.Default.MoreHoriz)
     Scaffold(snackbarHost = { SnackbarHost(host) }, bottomBar = {
         NavigationBar { labels.forEachIndexed { index, label -> NavigationBarItem(selected = tab == index,
-            onClick = { tab = index; detail = "" }, icon = { Icon(icons[index], null) }, label = { Text(label, maxLines = 1) }) } }
+            onClick = { tab = index; detail = "" }, modifier = Modifier.testTag("nav-$index"), icon = { Icon(icons[index], null) }, label = { Text(label, maxLines = 1) }) } }
     }) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
             if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -197,6 +192,7 @@ internal fun amount(minor: Long): String {
 @Composable private fun SessionForm(plans: List<Plan>, dismiss: () -> Unit, save: (String, Long, String) -> Unit) {
     var client by rememberSaveable { mutableStateOf("") }
     var planId by rememberSaveable { mutableStateOf(plans.firstOrNull()?.id) }
+    LaunchedEffect(plans) { if (plans.none { it.id == planId }) planId = plans.firstOrNull()?.id }
     val plan = plans.find { it.id == planId }
     Form("تسجيل اشتراك", dismiss, { plan?.let { save(client.trim(), it.id, "CASH") } }, client.length <= 80 && plan != null) {
         Field("اسم المشترك · اختياري", client, { client = it })
@@ -243,7 +239,7 @@ internal fun amount(minor: Long): String {
                 s.home -> "مجاني · لا يدخل في الإيراد"
                 s.recognized > 0 -> "مثبّت: ${amount(financial?.value ?: s.cashEquivalent)}"
                 s.state == "CANCELLED" -> "ألغي قبل التثبيت · دون إيراد"
-                else -> "قيد التثبيت: ${amount(s.amount)} · بعد ${s.grace / 60000} دقيقة استخدام"
+                else -> "قيد التثبيت: ${amount(s.cashEquivalent)} · بعد ${s.grace / 60000} دقيقة استخدام"
             })
             if (s.state in listOf("ACTIVE", "PAUSED")) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(enabled = !busy, onClick = { change(s.id, if (s.state == "ACTIVE") "PAUSE" else "RESUME") }) { Text(if (s.state == "ACTIVE") "إيقاف الوقت" else "استئناف") }
@@ -286,10 +282,10 @@ internal fun amount(minor: Long): String {
         save(plan.copy(name = name.trim(), minutes = if (home) 1 else m!!, cash = if (home) 0 else c!!, bank = if (home) 0 else if (plan.id != 0L) plan.bank else Money.cashToBank(c!!, premium), home = home))
     }, name.isNotBlank() && name.length <= 60 && (home || m != null && m in 1..525600) && (home || c != null)) {
         Field("اسم الباقة", name, { name = it })
-        if (!home) Field("المدة بالدقائق", minutes, { minutes = it })
+        if (!home) Field("المدة بالدقائق", minutes, { minutes = it }, numeric = true)
         Row(Modifier.fillMaxWidth().toggleable(home, role = Role.Checkbox, onValueChange = { home = it }), verticalAlignment = Alignment.CenterVertically) { Checkbox(home, null); Text("أهل البيت · اختصار فقط") }
         if (!home) {
-            Field("السعر بالجنيه السوداني", cash, { cash = it })
+            Field("السعر بالجنيه السوداني", cash, { cash = it }, numeric = true)
         }
     }
 }
@@ -353,7 +349,7 @@ internal fun amount(minor: Long): String {
         } }
         item { Panel {
             SectionHeading(Icons.Default.Calculate, "الحساب ودورة الاشتراك")
-            Text("مهلة التثبيت: ${config?.graceMinutes ?: 30} دقيقة · زيادة بنكك: ${Money.show((config?.premiumBps ?: 2500).toLong())}٪")
+            Text("مهلة التثبيت: ${config?.graceMinutes ?: 30} دقيقة")
             TextButton(enabled = !busy && config != null, onClick = { edit = true }) { Text("تعديل إعدادات الحساب") }
             Text("تغيير الأسعار أو النسبة لا يعيد تسعير السجلات السابقة. سجّل المصروفات بالقيمة المكافئة للكاش.")
         } }

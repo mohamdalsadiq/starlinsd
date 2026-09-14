@@ -10,6 +10,9 @@ import com.example.domain.*
 import com.example.ui.BulkSalesForm
 import com.example.ui.PlanForm
 import org.junit.Assert.*
+import androidx.test.core.app.ApplicationProvider
+import androidx.lifecycle.ViewModelStore
+import com.example.ui.ManagerApp
 import com.example.ui.Dashboard
 import com.example.ui.DebtPaymentIndicator
 import com.example.domain.DebtBalance
@@ -85,5 +88,45 @@ class ManagerUiTest {
         compose.onNodeWithText("السعر بالجنيه السوداني").performTextReplacement("600")
         compose.onNodeWithText("حفظ").performClick()
         compose.runOnIdle { assertEquals(60000L, saved!!.cash); assertEquals(62500L, saved!!.bank) }
+    }
+
+    @Test fun navigationSeparatesDebtsAndPreservesSubscriberSearch() {
+        val store = ViewModelStore()
+        val vm = MainViewModel(ApplicationProvider.getApplicationContext())
+        store.put("manager", vm)
+        try {
+            compose.setContent { ManagerTheme { ManagerApp(vm, null) } }
+            compose.onNodeWithTag("nav-1").performClick()
+            compose.onNodeWithText("ابحث بالاسم أو الرقم أو الباقة").performTextInput("١٢")
+            compose.onNodeWithTag("nav-2").performClick()
+            compose.waitUntil(10000) { compose.onAllNodesWithText("خطة السداد مستقلة عن ربح الدورة").fetchSemanticsNodes().isNotEmpty() }
+            compose.onNodeWithText("خطة السداد مستقلة عن ربح الدورة").assertIsDisplayed()
+            compose.onNodeWithTag("nav-1").performClick()
+            compose.onNodeWithText("١٢").assertIsDisplayed()
+            compose.onNodeWithTag("nav-4").performClick()
+            compose.onNodeWithText("الباقات والأسعار").performClick()
+            compose.onNodeWithText("باقاتك وأسعارك").assertIsDisplayed()
+            compose.onNodeWithContentDescription("رجوع").performClick()
+            compose.onNodeWithText("أدوات مشروعك وإعدادات التطبيق").assertIsDisplayed()
+            compose.onRoot().captureRoboImage("build/reports/ui/navigation.png")
+        } finally { compose.runOnIdle { store.clear() } }
+    }
+
+    @Test fun largeArabicTextKeepsRealProfitVisibleAndCoverageConsistent() {
+        val now = System.currentTimeMillis()
+        val day = Revenue.day(now)
+        val config = BusinessSettings(usdCents = 100, bankRate = 58925000, cycleStart = day - 9 * 86400000L, cycleEnd = day + 22 * 86400000L)
+        val sale = ManualSale("bulk", now, 161, 100000, 16100000, 16100000, "CASH", 2500)
+        val snapshot = FinancialReportCache().get(FinancialData(emptyList(), listOf(sale), emptyList(), config, emptyList(), emptyList(), emptyList()), now)
+        compose.setContent { ManagerTheme {
+            androidx.compose.runtime.CompositionLocalProvider(androidx.compose.ui.platform.LocalDensity provides androidx.compose.ui.unit.Density(1f, 1.3f)) {
+                Surface(Modifier.fillMaxSize()) { Dashboard(snapshot) {} }
+            }
+        } }
+        compose.onNodeWithTag("today-revenue").assertTextEquals("161,000 ج.س").assertIsDisplayed()
+        compose.onNodeWithTag("cycle-profit").assertTextEquals("0 ج.س").assertIsDisplayed()
+        compose.onNodeWithTag("dashboard-list").performScrollToNode(hasTestTag("cycle-remaining"))
+        compose.onNodeWithTag("cycle-remaining").assertTextEquals("310,400 ج.س").assertIsDisplayed()
+        compose.onRoot().captureRoboImage("build/reports/ui/large-arabic-text.png")
     }
 }

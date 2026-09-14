@@ -25,7 +25,7 @@ import java.util.UUID
         counts.indices.forEach { i ->
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Column(Modifier.weight(1f)) { Field("العدد ${i + 1}", counts[i], { value -> counts = counts.toMutableList().also { it[i] = value } }, numeric = true) }
-                Column(Modifier.weight(1f)) { Field("سعر الجهاز · ج.س", prices[i], { value -> prices = prices.toMutableList().also { it[i] = value } }) }
+                Column(Modifier.weight(1f)) { Field("سعر الجهاز · ج.س", prices[i], { value -> prices = prices.toMutableList().also { it[i] = value } }, numeric = true) }
             }
             if ((parsed[i].first ?: 0) > 0 && parsed[i].second != null) Text("${counts[i]} × ${amount(parsed[i].second!!)} = ${amount(parsed[i].first!!.toLong() * parsed[i].second!!)}")
         }
