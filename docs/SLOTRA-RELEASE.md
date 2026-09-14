@@ -31,3 +31,10 @@ The app tracks registered timers, not router discovery or automatic disconnectio
 Public release certificate SHA-256: `ec2716e37b05a51578422eef8ea7f913d06e1f622ad2072b75bd6402d91847f9`. This is public identity information, not a private key.
 
 Use `python scripts/sign_release.py bundle.zip private-kit-directory Slotra-3.0.apk`. The script aligns, signs, verifies the saved certificate, and compares every application ZIP entry with the unsigned build.
+
+## 2026-09-14 — Slotra 3.1 active work
+User steering from screenshots supersedes household timer behavior. Implemented locally: household shortcuts render text only, consume no subscriber slot, create no Session, generate no expiry notifications; legacy household records are retained but cancelled/hidden. Both build labels now say Slotra.
+Added append-only revenue corrections (edit/void/restore from selected day) with original records and price snapshots preserved. Corrections apply to the original booking date and recalculate dashboard/history.
+Added saved billing cycles, fixed daily bill target = ceil(saved cash cost / whole cycle days), distinct daily surplus and available surplus after debt allocation. Full-cycle profit remains separately labelled. Added debt periods, due-date priority allocation, explicit actual payment recording with idempotency and no second deduction. Correcting income after payment exposes a funding gap, preserving actual payments.
+Room v5 + backup v5 include cycles, corrections, debts and payments; restore accepts older exports. Release versionCode 5/versionName 3.1, reuse existing private signing kit. `scripts/sign_release.py` now passes the single PKCS12 password once (apksigner consumes password files sequentially).
+Pending: CI compilation/tests for new code, inspect new UI, finalize schema 5, sign and save the 3.1 APK, update PR and completion notes. The 3.0 APK must not be delivered as the response to the new request.

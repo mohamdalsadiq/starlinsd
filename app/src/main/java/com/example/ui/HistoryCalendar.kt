@@ -24,7 +24,9 @@ import com.example.domain.*
 import java.text.SimpleDateFormat
 import java.util.*
 
-@Composable internal fun HistoryCalendar(report: RevenueReport, sessions: List<Session>, manual: List<ManualSale>, now: Long, initialDay: Long, cycleStart: Long, cycleEnd: Long, dismiss: () -> Unit) {
+@Composable internal fun HistoryCalendar(report: RevenueReport, sessions: List<Session>, manual: List<ManualSale>, now: Long, initialDay: Long, cycleStart: Long, cycleEnd: Long, ledger: List<LedgerEntry>, budget: BudgetReport, correct: (String, Long, Int, Boolean, String) -> Unit, dismiss: () -> Unit) {
+    var editing by remember { mutableStateOf<LedgerEntry?>(null) }
+    var removing by remember { mutableStateOf<LedgerEntry?>(null) }
     val today = Revenue.day(now)
     val currentMonth = remember(today) { Calendar.getInstance().apply { timeInMillis = today; set(Calendar.DAY_OF_MONTH, 1) }.timeInMillis }
     var offset by rememberSaveable { mutableIntStateOf(if (initialDay < currentMonth) -1 else 0) }
@@ -38,6 +40,9 @@ import java.util.*
     val daySessions = remember(sessions, selected) { sessions.filter { !it.home && it.recognized in selected until dayEnd } }
     val dayManual = remember(manual, selected) { manual.filter { it.at in selected until dayEnd } }
     fun label(time: Long, pattern: String) = SimpleDateFormat(pattern, Locale.forLanguageTag("ar")).format(Date(time))
+    editing?.let { entry -> RevenueEditForm(entry, { editing = null }) { amount, count, reason -> correct(entry.id, amount, count, false, reason); editing = null } }
+    removing?.let { entry -> AlertDialog(onDismissRequest = { removing = null }, title = { Text("حذف هذا الإيراد؟") }, text = { Text("سيُستبعد ${amount(entry.amount)} من يومه الأصلي ويُعاد حساب الفائض والديون. يمكنك استعادته لاحقًا من السجل؛ الاشتراك نفسه لا يُلغى.") },
+        confirmButton = { Button(onClick = { correct(entry.id, entry.amount, entry.count, true, "حذف قيد أضيف بالخطأ"); removing = null }) { Text("تأكيد الحذف") } }, dismissButton = { TextButton(onClick = { removing = null }) { Text("إلغاء") } }) }
     Dialog(onDismissRequest = dismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.widthIn(max = 560.dp).fillMaxWidth().fillMaxHeight(.94f).padding(8.dp), shape = MaterialTheme.shapes.extraLarge) {
             LazyColumn(Modifier.testTag("history-calendar"), contentPadding = PaddingValues(8.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -82,12 +87,11 @@ import java.util.*
                         Column(Modifier.weight(1f)) { MoneyLine("كاش", daily.cash) }
                         Column(Modifier.weight(1f)) { MoneyLine("بنكك", daily.bank) }
                     }
-                    if (daily.profit != null) MoneyLine("الربح بعد تغطية الدورة", daily.profit)
-                    else Text("الربح غير محدد لهذا اليوم؛ اضبط دورة تشمل هذا التاريخ.", style = MaterialTheme.typography.bodySmall)
+                    budget.days[selected]?.let { BudgetSummary(it) }
+                    Text("يمكن تعديل أو حذف قيود هذا اليوم، حتى بعد انتهاء اليوم.", style = MaterialTheme.typography.bodySmall)
                     Text("${daily.sales} اشتراكًا · ${daySessions.size} من المؤقتات · ${dayManual.sumOf { it.count.toLong() }} جهازًا بإدخال يدوي", style = MaterialTheme.typography.bodySmall)
                 } }
-                items(dayManual, key = { "sale-${it.id}" }) { sale -> ListItem(headlineContent = { Text("${sale.count} جهاز × ${amount(sale.unitPrice)}") }, supportingContent = { Text("إدخال يدوي · ${stamp(sale.at)} · ${if (sale.payment == "BANK") "بنكك" else "كاش"}") }, trailingContent = { Text(amount(sale.amount), fontWeight = FontWeight.Bold) }) }
-                items(daySessions, key = { "session-${it.id}" }) { s -> ListItem(headlineContent = { Text("[${s.reference.ifBlank { s.id.take(8) }}] ${s.client}") }, supportingContent = { Text("${s.plan} · ${stamp(s.recognized)}") }, trailingContent = { Text(amount(s.amount)) }) }
+                items(ledger.filter { it.at in selected until dayEnd }, key = { it.id }) { entry -> LedgerCard(entry, { editing = it }, { removing = it }) }
             }
         }
     }

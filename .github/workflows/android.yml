@@ -52,7 +52,7 @@ jobs:
                 print('TEST_FAILURE', (failure.text or '')[:4000])
         for p in pathlib.Path('app/build/reports/ui').glob('*.png'):
             print('UI_PREVIEW_BASE64', p.name, base64.b64encode(p.read_bytes()).decode())
-        for p in pathlib.Path('app/schemas').rglob('4.json'):
+        for p in pathlib.Path('app/schemas').rglob('5.json'):
             print('ROOM_SCHEMA_BASE64', str(p), base64.b64encode(p.read_bytes()).decode())
         PYCODE
 

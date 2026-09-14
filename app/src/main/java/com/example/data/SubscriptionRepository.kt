@@ -16,6 +16,8 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
 
     suspend fun initialize() = db.withTransaction {
         if (dao.settings() == null) dao.settings(BusinessSettings())
+        val existing = dao.settings()!!
+        if (existing.cycleId.isBlank()) saveSettings(existing)
         if (dao.plans().isEmpty()) {
             val one = dao.insertPlan(Plan(name = "ساعة", minutes = 60, cash = 50000, bank = 62500))
             val three = dao.insertPlan(Plan(name = "3 ساعات", minutes = 180, cash = 100000, bank = 125000))
@@ -23,13 +25,14 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
             val keywords = db.shortcutDao().list().map { it.keyword }.toSet()
             listOf("س1" to one, "س3" to three, "بيت" to home).forEach { (key, plan) ->
                 if (key !in keywords) db.shortcutDao().insert(Shortcut(keyword = key,
-                    phrase = "%client% — الاشتراك %duration% دقيقة، ينتهي %end%، السعر %price% جنيه.", planId = plan))
+                    phrase = if (plan == home) "✅ أهل البيت" else "%client% — الاشتراك %duration% دقيقة، ينتهي %end%، السعر %price% جنيه.", planId = plan))
             }
         }
     }
 
     suspend fun prepare(client: String, planId: Long, payment: String, source: String): Session = db.withTransaction {
         val plan = requireNotNull(dao.plan(planId)) { "الباقة غير موجودة" }
+        require(!plan.home) { "اختصارات أهل البيت نص فقط؛ لا تحتاج تسجيل اشتراك" }
         require(plan.enabled) { "هذه الباقة متوقفة" }
         require(payment in listOf("CASH", "BANK")) { "اختر طريقة الدفع" }
         val settings = dao.settings() ?: BusinessSettings()
@@ -75,7 +78,10 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
         }
     }
 
+    suspend fun expansionPlan(id: Long): Plan = requireNotNull(dao.plan(id)).also { require(it.enabled) { "هذه الباقة متوقفة" } }
+
     private fun advance(s: Session, now: Long): Session {
+        if (s.home) return s.copy(state = "CANCELLED", reference = "", amount = 0, cashEquivalent = 0, recognized = 0, warned = true, notified = true)
         if (s.state != "ACTIVE") return s
         val recognized = if (s.recognized == 0L && Rules.qualifies(s.clock(), now, s.grace, s.home))
             Rules.recognitionAt(s.clock(), s.grace) else s.recognized
@@ -136,7 +142,39 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
         require(s.usdCents >= 0 && s.bankRate >= 0 && s.expenses >= 0) { "المبالغ لا تكون سالبة" }
         require((s.cycleStart == 0L && s.cycleEnd == 0L) || (s.cycleStart > 0 && s.cycleEnd > s.cycleStart)) { "نهاية الدورة يجب أن تكون بعد بدايتها" }
         Math.addExact(Money.bankToCash(Money.bill(s.usdCents, s.bankRate), s.premiumBps), s.expenses)
-        dao.settings(s)
+        val configured = s.cycleStart > 0 && s.cycleEnd > s.cycleStart && s.usdCents > 0 && s.bankRate > 0
+        if (configured) {
+            val cycles = dao.cycles()
+            val old = cycles.find { it.id == s.cycleId }
+            val same = old != null && s.cycleStart < old.end && s.cycleEnd > old.start
+            val id = if (same) old!!.id else UUID.randomUUID().toString()
+            require(cycles.none { it.id != id && s.cycleStart < it.end && s.cycleEnd > it.start }) { "توجد دورة محفوظة تتداخل مع هذه التواريخ" }
+            val cost = Math.addExact(Money.bankToCash(Money.bill(s.usdCents, s.bankRate), s.premiumBps), s.expenses)
+            dao.cycle(BillingCycle(id, s.cycleStart, s.cycleEnd, cost))
+            dao.settings(s.copy(cycleId = id))
+        } else dao.settings(s)
+    }
+
+    suspend fun correctRevenue(source: String, amount: Long, count: Int, voided: Boolean, reason: String) = db.withTransaction {
+        require(amount in 0..9999999999900000 && count in 1..100000 && reason.trim().length in 1..200) { "راجع مبلغ التصحيح وعدد الأجهزة وسببه" }
+        val ledger = com.example.domain.Finance.ledger(dao.sessions(), dao.manualSales(), emptyList())
+        val original = requireNotNull(ledger.find { it.id == source }) { "قيد الإيراد غير موجود أو لم يُثبّت بعد" }
+        val value = if (original.bank) Money.bankToCash(amount, original.premiumBps) else amount
+        dao.correct(RevenueCorrection(source = source, amount = amount, cashEquivalent = value, count = if (source.startsWith("session:")) 1 else count,
+            voided = voided, at = time(), reason = reason.trim()))
+    }
+    suspend fun saveDebt(debt: Debt) = db.withTransaction {
+        require(debt.name.trim().length in 1..80 && debt.total in 1..99999999999 && debt.start > 0 && debt.due >= debt.start) { "راجع اسم الدين وقيمته وفترته" }
+        require(debt.total >= dao.debtPayments().filter { it.debtId == debt.id }.sumOf { it.amount }) { "قيمة الدين لا تقل عن المسدّد فعليًا" }
+        dao.debt(debt.copy(name = debt.name.trim()))
+    }
+    suspend fun payDebt(id: String, debtId: String, amount: Long) = db.withTransaction {
+        if (dao.debtPayments().any { it.id == id }) return@withTransaction
+        val ledger = com.example.domain.Finance.ledger(reconcile(), dao.manualSales(), dao.corrections())
+        val report = com.example.domain.Finance.report(ledger, dao.cycles(), dao.debts(), dao.debtPayments(), time())
+        val debt = requireNotNull(report.debts.find { it.debt.id == debtId }) { "الدين غير موجود" }
+        require(amount > 0 && amount <= debt.reserved && amount <= debt.remaining) { "السداد لا يتجاوز المبلغ المخصص المتاح أو المتبقي من الدين" }
+        dao.payDebt(DebtPayment(id, debtId, time(), amount))
     }
 
     suspend fun restoreJson(json: String) = withContext(Dispatchers.IO) {
@@ -156,12 +194,13 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
                 sql.insert(table, android.database.sqlite.SQLiteDatabase.CONFLICT_ABORT, values)
             } }
         }
+        initialize(); reconcile()
         com.example.service.ExpanderHealth.preferences(context).edit().putStringSet("apps", snapshot.apps).commit()
     }
 
     suspend fun exportJson(): String = withContext(Dispatchers.IO) {
         db.withTransaction {
-            val root = org.json.JSONObject().put("version", 4).put("format", "slotra-backup").put("exportedAt", System.currentTimeMillis())
+            val root = org.json.JSONObject().put("version", 5).put("format", "slotra-backup").put("exportedAt", System.currentTimeMillis())
             fun rows(query: String): org.json.JSONArray {
                 val result = org.json.JSONArray()
                 db.openHelper.readableDatabase.query(query).use { c -> while (c.moveToNext()) {
@@ -175,7 +214,7 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
                 } }
                 return result
             }
-            listOf("plans", "sessions", "settings", "shortcuts", "devices", "sequences", "manual_sales").forEach { table -> root.put(table, rows("SELECT * FROM $table")) }
+            listOf("plans", "sessions", "settings", "shortcuts", "devices", "sequences", "manual_sales", "revenue_corrections", "billing_cycles", "debts", "debt_payments").forEach { table -> root.put(table, rows("SELECT * FROM $table")) }
             root.put("allowedApps", org.json.JSONArray(com.example.service.ExpanderHealth.allowed(context).toList()))
             root.toString(2)
         }

@@ -45,7 +45,7 @@ def sign(bundle, kit, output):
         run(str(align), "-P", "16", "-f", "4", str(root / "slotra-unsigned.apk"), str(aligned), env=env)
         temporary = root / "signed.apk"
         run("java", "-jar", str(root / "apksigner.jar"), "sign", "--ks", str(key), "--ks-key-alias", "upload",
-            "--ks-pass", f"file:{password}", "--key-pass", f"file:{password}", "--out", str(temporary), str(aligned))
+            "--ks-pass", f"file:{password}", "--out", str(temporary), str(aligned))
         verification = run("java", "-jar", str(root / "apksigner.jar"), "verify", "--verbose", "--print-certs", str(temporary))
         found = re.search(r"Signer #1 certificate SHA-256 digest: ([a-f0-9]+)", verification)
         if not found or found.group(1) != expected:

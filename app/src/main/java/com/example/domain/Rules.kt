@@ -42,6 +42,11 @@ object Rules {
 
 data class Expansion(val keyword: String, val client: String, val from: Int, val to: Int)
 object TextRules {
+    fun householdTemplate(template: String): String {
+        if (template == "%client% — الاشتراك %duration% دقيقة، ينتهي %end%، السعر %price% جنيه.") return "✅ أهل البيت"
+        return template.replace(Regex("%time(?:[+][0-9.]+h)?%|%end%|%duration%|%price%|%code%"), "").trim().ifBlank { "✅ أهل البيت" }
+    }
+
     fun withReference(text: String, reference: String): String {
         val suffix = "[$reference]"
         return text.trimEnd().let { if (it.endsWith(suffix)) it else it + suffix }

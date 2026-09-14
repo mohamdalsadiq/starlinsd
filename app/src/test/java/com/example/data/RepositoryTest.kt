@@ -59,14 +59,21 @@ class RepositoryTest {
         assertEquals(2500, row.premiumBps); assertEquals(now, row.recognized)
     }
     @Test fun overdueAndHomeSessionsReconcileAfterProcessAbsence() = runBlocking {
-        val paid = start(); val home = start(home = true)
+        val paid = start()
+        val homePlan = repo.dao.plans().first { it.home }
+        assertTrue(runCatching { repo.prepare("", homePlan.id, "CASH", "بيت") }.isFailure)
+        val legacy = paid.copy(id = "legacy-home", home = true, amount = 0, cashEquivalent = 0, reference = "2")
+        repo.dao.insertSession(legacy)
         now += 24 * 60 * Rules.MINUTE
         val rows = repo.reconcile()
-        assertTrue(rows.all { it.state == "ENDED" })
+        assertEquals("ENDED", rows.first { it.id == paid.id }.state)
         assertEquals(paid.started + 30 * Rules.MINUTE, rows.first { it.id == paid.id }.recognized)
-        assertEquals(0L, rows.first { it.id == home.id }.recognized)
-        assertEquals(0L, rows.first { it.id == home.id }.amount)
+        val home = rows.first { it.id == legacy.id }
+        assertEquals("CANCELLED", home.state); assertEquals("", home.reference)
+        assertTrue(home.notified); assertTrue(home.warned); assertEquals(0L, home.recognized)
+        assertEquals(0L, home.amount)
     }
+
     @Test fun duplicateKeywordsAreRejectedWithoutLosingOriginal() = runBlocking {
         val original = db.shortcutDao().list().first()
         try { repo.saveShortcut(Shortcut(keyword = original.keyword, phrase = "replace")); fail("duplicate accepted") }
@@ -149,6 +156,38 @@ class RepositoryTest {
         assertEquals(1, repo.dao.sessions().size)
         bad.getJSONArray("manual_sales").getJSONObject(0).put("amount", 500000).put("sql", "DROP TABLE sessions")
         assertTrue(runCatching { repo.restoreJson(bad.toString()) }.isFailure)
+    }
+
+    @Test fun correctionsChangeOriginalDayAndDebtPaymentsAreNotCountedTwice() = runBlocking {
+        val day = com.example.domain.Revenue.day(now)
+        repo.saveSettings(BusinessSettings(usdCents = 100, bankRate = 75000000, cycleStart = day, cycleEnd = day + 30 * 86400000L))
+        repo.addSales(java.util.UUID.randomUUID().toString(), listOf(1 to 3050000L), "CASH")
+        val sale = repo.dao.manualSales().single()
+        val debt = Debt("debt-test", "دين", 600000, day, day + 10 * 86400000L)
+        repo.saveDebt(debt)
+        suspend fun report() = com.example.domain.Finance.report(com.example.domain.Finance.ledger(repo.dao.sessions(), repo.dao.manualSales(), repo.dao.corrections()), repo.dao.cycles(), repo.dao.debts(), repo.dao.debtPayments(), now)
+        assertEquals(2000000L, report().days.getValue(day).billTarget)
+        assertEquals(1050000L, report().days.getValue(day).surplus)
+        assertEquals(450000L, report().days.getValue(day).available)
+        repo.payDebt("payment-test", debt.id, 100000)
+        repo.payDebt("payment-test", debt.id, 100000)
+        assertEquals(450000L, report().days.getValue(day).available)
+        assertEquals(100000L, report().debts.single().paid)
+        repo.correctRevenue("manual:${sale.id}", 100000, 1, false, "تصحيح المبلغ")
+        assertEquals(100000L, report().debts.single().fundingGap)
+        assertEquals(sale, repo.dao.manualSales().single())
+        repo.correctRevenue("manual:${sale.id}", 100000, 1, true, "حذف خاطئ")
+        assertEquals(0L, report().days.getValue(day).revenue)
+        val backup = repo.exportJson(); repo.restoreJson(backup)
+        assertEquals(2, repo.dao.corrections().size); assertEquals(1, repo.dao.debtPayments().size)
+    }
+    @Test fun changingMonthKeepsOldCycleAndFixedTarget() = runBlocking {
+        val day = com.example.domain.Revenue.day(now)
+        repo.saveSettings(BusinessSettings(usdCents = 100, bankRate = 75000000, cycleStart = day, cycleEnd = day + 30 * 86400000L))
+        val first = repo.dao.settings()!!
+        repo.saveSettings(first.copy(cycleStart = first.cycleEnd, cycleEnd = first.cycleEnd + 30 * 86400000L))
+        assertEquals(2, repo.dao.cycles().size)
+        assertTrue(repo.dao.settings()!!.cycleId != first.cycleId)
     }
 
 }

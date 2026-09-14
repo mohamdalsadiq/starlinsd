@@ -67,10 +67,12 @@ class TextExpanderService : AccessibilityService() {
             val repo = SubscriptionRepository(this@TextExpanderService)
             var reservationId: String? = null
             try {
-                val session = shortcut.planId?.let { repo.prepare(match.client, it, shortcut.payment, shortcut.keyword) }
+                val plan = shortcut.planId?.let { repo.expansionPlan(it) }
+                val household = plan?.home == true
+                val session = plan?.takeUnless { it.home }?.let { repo.prepare(match.client, it.id, shortcut.payment, shortcut.keyword) }
                 reservationId = session?.id
                 val now = session?.started ?: System.currentTimeMillis()
-                val rendered = TextRules.render(shortcut.phrase, now, session?.client ?: match.client,
+                val rendered = TextRules.render(if (household) TextRules.householdTemplate(shortcut.phrase) else shortcut.phrase, now, session?.client ?: match.client,
                     end = session?.let { it.started + it.duration } ?: now,
                     price = session?.let { Money.show(it.amount) }.orEmpty(),
                     duration = session?.let { (it.duration / 60000).toString() }.orEmpty(), code = session?.reference.orEmpty())

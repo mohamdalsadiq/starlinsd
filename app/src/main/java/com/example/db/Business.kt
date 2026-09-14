@@ -20,7 +20,8 @@ data class Session(
 @Entity(tableName = "settings")
 data class BusinessSettings(@PrimaryKey val id: Int = 1, val graceMinutes: Int = 30, val premiumBps: Int = 2500,
     val usdCents: Long = 0, val bankRate: Long = 0, val cycleStart: Long = 0, val cycleEnd: Long = 0, val expenses: Long = 0,
-    @ColumnInfo(defaultValue = "50") val maxSubscribers: Int = 50)
+    @ColumnInfo(defaultValue = "50") val maxSubscribers: Int = 50,
+    @ColumnInfo(defaultValue = "''") val cycleId: String = "")
 
 @Entity(tableName = "sequences")
 data class Sequence(@PrimaryKey val name: String = "subscriber", val next: Long = 1)
@@ -32,8 +33,31 @@ data class ManualSale(@PrimaryKey val id: String, val at: Long, val count: Int, 
 @Entity(tableName = "slot_reservations")
 data class SlotReservation(@PrimaryKey val number: Int, val sessionId: String, val expires: Long)
 
+@Entity(tableName = "revenue_corrections")
+data class RevenueCorrection(@PrimaryKey(autoGenerate = true) val id: Long = 0, val source: String,
+    val amount: Long, val cashEquivalent: Long, val count: Int, val voided: Boolean, val at: Long, val reason: String)
+@Entity(tableName = "billing_cycles")
+data class BillingCycle(@PrimaryKey val id: String, val start: Long, val end: Long, val cost: Long)
+@Entity(tableName = "debts")
+data class Debt(@PrimaryKey val id: String, val name: String, val total: Long, val start: Long, val due: Long)
+@Entity(tableName = "debt_payments")
+data class DebtPayment(@PrimaryKey val id: String, val debtId: String, val at: Long, val amount: Long)
+
 @Dao
 interface BusinessDao {
+    @Query("SELECT * FROM revenue_corrections ORDER BY id") fun observeCorrections(): Flow<List<RevenueCorrection>>
+    @Query("SELECT * FROM revenue_corrections ORDER BY id") suspend fun corrections(): List<RevenueCorrection>
+    @Insert suspend fun correct(correction: RevenueCorrection)
+    @Query("SELECT * FROM billing_cycles ORDER BY start") fun observeCycles(): Flow<List<BillingCycle>>
+    @Query("SELECT * FROM billing_cycles ORDER BY start") suspend fun cycles(): List<BillingCycle>
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun cycle(cycle: BillingCycle)
+    @Query("SELECT * FROM debts ORDER BY due, id") fun observeDebts(): Flow<List<Debt>>
+    @Query("SELECT * FROM debts ORDER BY due, id") suspend fun debts(): List<Debt>
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun debt(debt: Debt)
+    @Query("SELECT * FROM debt_payments ORDER BY at, id") fun observeDebtPayments(): Flow<List<DebtPayment>>
+    @Query("SELECT * FROM debt_payments ORDER BY at, id") suspend fun debtPayments(): List<DebtPayment>
+    @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun payDebt(payment: DebtPayment)
+
     @Query("SELECT EXISTS(SELECT 1 FROM manual_sales WHERE id LIKE :prefix)") suspend fun hasSaleBatch(prefix: String): Boolean
     @Query("SELECT * FROM manual_sales ORDER BY at DESC") fun observeManualSales(): Flow<List<ManualSale>>
     @Query("SELECT * FROM manual_sales ORDER BY at DESC") suspend fun manualSales(): List<ManualSale>

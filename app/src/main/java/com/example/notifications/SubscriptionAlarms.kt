@@ -45,7 +45,8 @@ object SubscriptionAlarms {
         val sessions = repo.reconcile(now)
         val nm = app.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= 26) nm.createNotificationChannel(NotificationChannel(CHANNEL, "مواعيد المشتركين", NotificationManager.IMPORTANCE_HIGH))
-        if (notificationsAllowed(app)) sessions.forEach { s ->
+        sessions.filter { it.home }.forEach { nm.cancel(it.id, 1); nm.cancel(it.id, 2) }
+        if (notificationsAllowed(app)) sessions.filterNot { it.home }.forEach { s ->
             val ending = s.state == "ENDED" && !s.notified
             val warning = s.state == "ACTIVE" && !s.warned && Rules.remaining(s.clock(), now) <= 10 * Rules.MINUTE
             if (ending || warning) {
@@ -56,7 +57,7 @@ object SubscriptionAlarms {
             }
             if (s.state != "ACTIVE") nm.cancel(s.id, 1)
         }
-        val next = sessions.filter { it.state == "ACTIVE" }.flatMap { s ->
+        val next = sessions.filter { !it.home && it.state == "ACTIVE" }.flatMap { s ->
             val end = s.resumed + s.duration - s.served
             buildList {
                 add(end)

@@ -35,7 +35,7 @@ class ManagerUiTest {
         compose.onNodeWithTag("today-revenue").assertTextEquals("1,000 ج.س").assertIsDisplayed()
         compose.onNodeWithTag("today-bank").assertTextEquals("1,250 ج.س").assertIsDisplayed()
         compose.onNodeWithTag("today-cash").assertTextEquals("0 ج.س").assertIsDisplayed()
-        compose.onNodeWithTag("today-profit").assertTextEquals("500 ج.س")
+        compose.onNodeWithTag("today-profit").assertTextEquals("983.33 ج.س")
         compose.onRoot().captureRoboImage("build/reports/ui/dashboard.png")
         compose.onNodeWithTag("dashboard-list").performScrollToNode(hasTestTag("cycle-profit"))
         compose.onNodeWithTag("cycle-profit").assertTextEquals("500 ج.س").assertIsDisplayed()

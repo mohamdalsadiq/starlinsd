@@ -17,6 +17,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val db = AppDatabase.getDatabase(application)
     private val repo = SubscriptionRepository(application)
     private val sharing = SharingStarted.WhileSubscribed(5000)
+    val corrections = repo.dao.observeCorrections().stateIn(viewModelScope, sharing, emptyList())
+    val cycles = repo.dao.observeCycles().stateIn(viewModelScope, sharing, emptyList())
+    val debts = repo.dao.observeDebts().stateIn(viewModelScope, sharing, emptyList())
+    val debtPayments = repo.dao.observeDebtPayments().stateIn(viewModelScope, sharing, emptyList())
+    fun correctRevenue(source: String, amount: Long, count: Int, voided: Boolean, reason: String) = work {
+        repo.correctRevenue(source, amount, count, voided, reason); message.value = "تم تصحيح الإيراد وإعادة حساب السجل"
+    }
+    fun saveDebt(debt: Debt) = work { repo.saveDebt(debt); message.value = "تم حفظ خطة الدين" }
+    fun payDebt(id: String, debtId: String, amount: Long) = work { repo.payDebt(id, debtId, amount); message.value = "تم تسجيل السداد الفعلي" }
     val manualSales = repo.dao.observeManualSales().stateIn(viewModelScope, sharing, emptyList())
     val pendingRestore = MutableStateFlow<BackupData?>(null)
     private var restoreText: String? = null

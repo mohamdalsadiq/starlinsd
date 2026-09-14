@@ -81,6 +81,11 @@ internal fun amount(minor: Long): String {
     val plans by vm.plans.collectAsStateWithLifecycle()
     val sessions by vm.sessions.collectAsStateWithLifecycle()
     val manualSales by vm.manualSales.collectAsStateWithLifecycle()
+    val corrections by vm.corrections.collectAsStateWithLifecycle()
+    val cycles by vm.cycles.collectAsStateWithLifecycle()
+    val debts by vm.debts.collectAsStateWithLifecycle()
+    val debtPayments by vm.debtPayments.collectAsStateWithLifecycle()
+    var debtDialog by rememberSaveable { mutableStateOf(false) }
     var bulk by rememberSaveable { mutableStateOf(false) }
     val shortcuts by vm.shortcuts.collectAsStateWithLifecycle()
     val config by vm.settings.collectAsStateWithLifecycle()
@@ -89,7 +94,7 @@ internal fun amount(minor: Long): String {
     val host = remember { SnackbarHostState() }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     // Income must appear as soon as a sale arrives, even between timer ticks.
-    LaunchedEffect(sessions, manualSales) { now = System.currentTimeMillis() }
+    LaunchedEffect(sessions, manualSales, corrections, debts, debtPayments) { now = System.currentTimeMillis() }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(lifecycle) { lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
         while (true) { now = System.currentTimeMillis(); vm.refresh(); delay(15000) }
@@ -106,8 +111,8 @@ internal fun amount(minor: Long): String {
             if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
             Box(Modifier.weight(1f)) {
                 when (tab) {
-                    0 -> Dashboard(sessions, config ?: BusinessSettings(), now, manualSales, { bulk = true }) { newSession = true }
-                    1 -> SessionsScreen(sessions, now, requestedSession, busy, { newSession = true }, vm::change, vm::rename)
+                    0 -> Dashboard(sessions, config ?: BusinessSettings(), now, manualSales, { bulk = true }, corrections, cycles, debts, debtPayments, vm::correctRevenue, { debtDialog = true }) { newSession = true }
+                    1 -> SessionsScreen(sessions.filterNot { it.home }, now, requestedSession, busy, { newSession = true }, vm::change, vm::rename)
                     2 -> PlansScreen(plans, config?.premiumBps ?: 2500, busy, vm::savePlan)
                     3 -> ShortcutsScreen(shortcuts, plans, busy, vm::saveShortcut, vm::deleteShortcut)
                     4 -> SettingsScreen(vm, config, now)
@@ -115,8 +120,9 @@ internal fun amount(minor: Long): String {
             }
         }
     }
+    if (debtDialog) DebtsDialog(debts, debtPayments, Finance.report(Finance.ledger(sessions, manualSales, corrections), cycles, debts, debtPayments, now), now, busy, vm::saveDebt, vm::payDebt) { debtDialog = false }
     if (bulk) BulkSalesForm(config?.premiumBps ?: 2500, { bulk = false }) { id, lines, payment -> vm.addSales(id, lines, payment); bulk = false }
-    if (newSession) SessionForm(plans.filter { it.enabled }, { newSession = false }) { client, plan, payment ->
+    if (newSession) SessionForm(plans.filter { it.enabled && !it.home }, { newSession = false }) { client, plan, payment ->
         vm.create(client, plan, payment); newSession = false; tab = 1
     }
 }
@@ -142,7 +148,7 @@ internal fun amount(minor: Long): String {
     var search by rememberSaveable { mutableStateOf("") }
     var filter by rememberSaveable { mutableStateOf("ALL") }
     var cancel by remember { mutableStateOf<Session?>(null) }
-    val labels = listOf("ALL" to "الكل", "ACTIVE" to "نشط", "PAUSED" to "متوقف", "ENDED" to "منتهٍ", "CANCELLED" to "ملغي", "HOME" to "أهل البيت")
+    val labels = listOf("ALL" to "الكل", "ACTIVE" to "نشط", "PAUSED" to "متوقف", "ENDED" to "منتهٍ", "CANCELLED" to "ملغي")
     val rows = sessions.filter { (filter == "ALL" || it.state == filter || filter == "HOME" && it.home) && (it.client.contains(search, true) || it.plan.contains(search, true) || it.reference.contains(search.trim())) }
         .sortedByDescending { it.id == requested }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -188,8 +194,8 @@ internal fun amount(minor: Long): String {
         item { Button(enabled = !busy, onClick = { editing = Plan(name = "", minutes = 60, cash = 0, bank = 0) }) { Text("إضافة باقة") } }
         items(plans, key = { it.id }) { p -> Panel {
             Text("${if (p.home) "✅ " else ""}${p.name}", style = MaterialTheme.typography.titleLarge)
-            DetailLine(Icons.Default.Timer, "المدة والحالة", "${p.minutes} دقيقة · ${if (p.enabled) "متاحة" else "متوقفة"}")
-            if (p.home) DetailLine(Icons.Default.Home, "أهل البيت", "اشتراك مجاني · دون إيراد")
+            DetailLine(Icons.Default.Timer, "المدة والحالة", "${if (p.home) "نص فقط · بلا مؤقت" else "${p.minutes} دقيقة"} · ${if (p.enabled) "متاحة" else "متوقفة"}")
+            if (p.home) DetailLine(Icons.Default.Home, "أهل البيت", "اختصار نصي فقط · دون رقم أو تنبيه أو إيراد")
             else Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 Column(Modifier.weight(1f)) { MoneyLine("السعر كاش", p.cash) }
                 Column(Modifier.weight(1f)) { MoneyLine("السعر بنكك", p.bank) }
@@ -209,11 +215,11 @@ internal fun amount(minor: Long): String {
     val m = Money.normalize(minutes).toIntOrNull()
     val c = Money.parse(cash); val b = Money.parse(bank)
     Form(if (plan.id == 0L) "باقة جديدة" else "تعديل الباقة", dismiss, {
-        save(plan.copy(name = name.trim(), minutes = m!!, cash = if (home) 0 else c!!, bank = if (home) 0 else b!!, home = home))
-    }, name.isNotBlank() && name.length <= 60 && m != null && m in 1..525600 && (home || c != null && b != null)) {
+        save(plan.copy(name = name.trim(), minutes = if (home) 1 else m!!, cash = if (home) 0 else c!!, bank = if (home) 0 else b!!, home = home))
+    }, name.isNotBlank() && name.length <= 60 && (home || m != null && m in 1..525600) && (home || c != null && b != null)) {
         Field("اسم الباقة", name, { name = it })
-        Field("المدة بالدقائق", minutes, { minutes = it })
-        Row(Modifier.fillMaxWidth().toggleable(home, role = Role.Checkbox, onValueChange = { home = it }), verticalAlignment = Alignment.CenterVertically) { Checkbox(home, null); Text("✅ أهل البيت · دون إيراد") }
+        if (!home) Field("المدة بالدقائق", minutes, { minutes = it })
+        Row(Modifier.fillMaxWidth().toggleable(home, role = Role.Checkbox, onValueChange = { home = it }), verticalAlignment = Alignment.CenterVertically) { Checkbox(home, null); Text("أهل البيت · اختصار فقط") }
         if (!home) {
             Field("السعر كاش بالجنيه", cash, { cash = it })
             Field("السعر بنكك بالجنيه", bank, { bank = it })
