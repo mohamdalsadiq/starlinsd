@@ -57,22 +57,29 @@ object SubscriptionAlarms {
             }
             if (s.state != "ACTIVE") nm.cancel(s.id, 1)
         }
-        val next = sessions.filter { !it.home && it.state == "ACTIVE" }.flatMap { s ->
+        val deadline = sessions.filter { !it.home && it.state == "ACTIVE" }.flatMap { s ->
             val end = s.resumed + s.duration - s.served
             buildList {
                 add(end)
-                if (!s.warned) add(end - 10 * Rules.MINUTE)
+                add(end - 10 * Rules.MINUTE)
                 if (!s.home && s.recognized == 0L) add(Rules.recognitionAt(s.clock(), s.grace))
             }
         }.filter { it > now }.minOrNull()
+        // Midnight refresh keeps day totals correct even when no timer is active.
+        val midnight = if (StatusPanel.enabled(app) && StatusPanel.allowed(app)) StatusPanel.nextMidnight(now) else null
+        val next = listOfNotNull(deadline, midnight).minOrNull()
         val manager = app.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         manager.cancel(pending(app))
         if (next != null) {
             try {
-                if (exactAllowed(app)) manager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, next, pending(app))
+                if (next == deadline && exactAllowed(app)) manager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, next, pending(app))
                 else manager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, next, pending(app))
             } catch (_: SecurityException) { manager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, next, pending(app)) }
         }
+        // Panel failure must not prevent the deadline alarm from being scheduled.
+        try { StatusPanel.refresh(app, now) }
+        catch (e: CancellationException) { throw e }
+        catch (_: Exception) { app.getSharedPreferences("service_health", 0).edit().putString("error", "تعذّر تحديث لوحة المتابعة؛ افتح التطبيق للمحاولة.").apply() }
     }
 
     private fun notification(context: Context, s: Session, ending: Boolean): Notification {

@@ -39,11 +39,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val message = MutableStateFlow<String?>(null)
     val busy = MutableStateFlow(false)
     private val commands = Mutex()
-    init { work { repo.initialize(); SubscriptionAlarms.refresh(getApplication()) } }
+    init { work { repo.initialize() } }
     private fun work(block: suspend () -> Unit) {
         viewModelScope.launch { commands.withLock {
             busy.value = true
-            try { withContext(Dispatchers.IO) { block() } }
+            try { withContext(Dispatchers.IO) { block(); SubscriptionAlarms.refresh(getApplication()) } }
             catch (e: CancellationException) { throw e }
             catch (e: Exception) { message.value = e.message ?: "تعذّر الحفظ؛ حاول مرة أخرى" }
             finally { busy.value = false }
@@ -60,14 +60,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
     fun create(client: String, plan: Long, payment: String) = work {
         repo.insert(repo.prepare(client, plan, payment, "manual"))
-        SubscriptionAlarms.refresh(getApplication())
         message.value = "تم تسجيل الاشتراك"
     }
     fun addSales(id: String, lines: List<Pair<Int, Long>>, payment: String) = work {
         repo.addSales(id, lines, payment); message.value = "تمت إضافة الدخل إلى حساب اليوم"
     }
     fun change(id: String, action: String) = work {
-        repo.changeState(id, action); SubscriptionAlarms.refresh(getApplication())
+        repo.changeState(id, action)
     }
     fun rename(id: String, name: String) = work { repo.rename(id, name); message.value = "تم تحديث اسم المشترك" }
     fun savePlan(plan: Plan) = work { repo.savePlan(plan); message.value = "تم حفظ الباقة" }
@@ -101,8 +100,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             catch (e: Exception) { recovery.failWrite(stream); throw e }
             repo.restoreJson(text)
             androidx.core.app.NotificationManagerCompat.from(getApplication()).cancelAll()
-            SubscriptionAlarms.refresh(getApplication())
-            message.value = "اكتملت الاستعادة؛ راجع صلاحيات التنبيهات وإمكانية الوصول على هذا الهاتف"
+                message.value = "اكتملت الاستعادة؛ راجع صلاحيات التنبيهات وإمكانية الوصول على هذا الهاتف"
         }
     }
     fun export(uri: Uri) = work {

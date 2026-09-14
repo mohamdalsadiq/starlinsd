@@ -8,6 +8,9 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import com.example.db.*
 import com.example.domain.Revenue
 import com.example.ui.Dashboard
+import com.example.ui.DebtPaymentIndicator
+import com.example.domain.DebtBalance
+import androidx.compose.foundation.layout.Column
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -35,6 +38,8 @@ class ManagerUiTest {
         compose.onNodeWithTag("today-revenue").assertTextEquals("1,000 ج.س").assertIsDisplayed()
         compose.onNodeWithTag("today-bank").assertTextEquals("1,250 ج.س").assertIsDisplayed()
         compose.onNodeWithTag("today-cash").assertTextEquals("0 ج.س").assertIsDisplayed()
+        compose.onNodeWithTag("cycle-profit").assertTextEquals("500 ج.س").assertIsDisplayed()
+        compose.onNodeWithTag("cycle-profit-explanation").assertTextEquals("هذا ربحك الفعلي بعد كامل فاتورة الدورة. الفائض اليومي في الأسفل رقم توزيع مؤقت فقط وليس ربحًا.")
         compose.onRoot().captureRoboImage("build/reports/ui/dashboard.png")
         compose.onNodeWithTag("dashboard-list").performScrollToNode(hasTestTag("today-profit"))
         compose.onNodeWithTag("today-profit").assertTextEquals("983.33 ج.س")
@@ -49,4 +54,17 @@ class ManagerUiTest {
         compose.onNodeWithTag("selected-day-revenue").assertTextEquals("1,000 ج.س")
         compose.onNodeWithTag("history-calendar").captureRoboImage("build/reports/ui/calendar.png")
     }
+    @Test fun debtIndicatorsDistinguishPaidReadyAndUnfunded() {
+        val debt = Debt("base", "دين", 100000, 1, 2)
+        compose.setContent { ManagerTheme { Column {
+            DebtPaymentIndicator(DebtBalance(debt.copy(id = "paid", name = "مسدد"), 100000, 100000))
+            DebtPaymentIndicator(DebtBalance(debt.copy(id = "ready", name = "جاهز"), 50000, 10000))
+            DebtPaymentIndicator(DebtBalance(debt.copy(id = "waiting", name = "انتظار"), 0, 0))
+        } } }
+        compose.onNodeWithText("مسدد بالكامل · لا يلزم سداد").assertIsDisplayed()
+        compose.onNodeWithText("سداد جاهز اليوم: 400 ج.س").assertIsDisplayed()
+        compose.onNodeWithText("لم يتوفر مخصص للسداد اليوم").assertIsDisplayed()
+        compose.onRoot().captureRoboImage("build/reports/ui/debt-indicators.png")
+    }
+
 }

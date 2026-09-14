@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import com.example.notifications.StatusPanel
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.selection.toggleable
@@ -235,6 +236,7 @@ internal fun amount(minor: Long): String {
     val context = LocalContext.current
     val bound by ExpanderHealth.connected.collectAsStateWithLifecycle()
     val selectedApps = remember(now) { ExpanderHealth.allowed(context) }
+    var panelEnabled by remember { mutableStateOf(StatusPanel.enabled(context)) }
     var appsDialog by remember { mutableStateOf(false) }
     var edit by remember { mutableStateOf(false) }
     val busy by vm.busy.collectAsStateWithLifecycle()
@@ -263,6 +265,21 @@ internal fun amount(minor: Long): String {
             }) { Text("تفعيل الإشعارات") }
             if (Build.VERSION.SDK_INT >= 31) TextButton(onClick = { open(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:${context.packageName}"))) }) { Text("إذن المنبّهات الدقيقة") }
             Text("إذن إمكانية الوصول يستبدل النص في التطبيقات التي تختارها. لا نرسل النصوص إلى خادم، ولا نقرأ حقول كلمات المرور.", style = MaterialTheme.typography.bodySmall)
+        } }
+        item { Panel {
+            SectionHeading(Icons.Default.NotificationsActive, "لوحة المتابعة في الستارة")
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("إظهار اللوحة الصامتة", Modifier.weight(1f))
+                Switch(checked = panelEnabled, onCheckedChange = { panelEnabled = it; StatusPanel.setEnabled(context, it); vm.refresh() })
+            }
+            Text("النشطون، القريبون من الانتهاء خلال 10 دقائق، المنتهون بالسجل، إيراد اليوم والمتبقي للفاتورة وربح الدورة. أهل البيت خارج العدّ.")
+            Text("تتحدث عند تغيّر السجلات والمواعيد وبداية اليوم، مع زر تحديث يدوي. وسّع الإشعار لرؤية المبالغ؛ التفاصيل مخفية على شاشة القفل.", style = MaterialTheme.typography.bodySmall)
+            if (panelEnabled && !StatusPanel.allowed(context)) Text("إشعارات اللوحة غير مسموحة؛ فعّلها من إعدادات الهاتف.", color = MaterialTheme.colorScheme.error)
+            Row {
+                TextButton(enabled = panelEnabled, onClick = vm::refresh) { Text("إظهار / تحديث اللوحة") }
+                TextButton(onClick = { open(if (Build.VERSION.SDK_INT >= 26) Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName).putExtra(Settings.EXTRA_CHANNEL_ID, StatusPanel.CHANNEL) else Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))) }) { Text("إعدادات اللوحة") }
+            }
+            Text("اللوحة مستقلة عن تنبيهات انتهاء الوقت. قد يسمح Android بسحبها؛ أعد إظهارها من هنا. الإيقاف الإجباري وقيود البطارية قد يؤخران التحديث.", style = MaterialTheme.typography.bodySmall)
         } }
         item { Panel {
             SectionHeading(Icons.Default.BatteryChargingFull, "استمرارية الاختصارات")

@@ -2,5 +2,6 @@
 <full-backup-content>
     <include domain="database" path="." />
     <include domain="sharedpref" path="expander.xml" />
+    <include domain="sharedpref" path="status_panel.xml" />
     <include domain="file" path="before-restore.json" />
 </full-backup-content>
