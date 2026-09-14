@@ -86,7 +86,7 @@ import com.example.domain.TextRules
         Text("نوع الاختصار", style = MaterialTheme.typography.titleSmall)
         Choice("نص فقط", planId == null) { planId = null }
         plans.filter { it.enabled || it.id == planId }.forEach { p -> Choice("${if (p.home) "✅ " else ""}${p.name}", planId == p.id) { planId = p.id } }
-        if (planId != null) Payment(payment) { payment = it }
+        if (planId != null && plans.find { it.id == planId }?.home != true) Payment(payment) { payment = it }
         Text("معاينة النص", style = MaterialTheme.typography.labelLarge)
         val plan = plans.find { it.id == planId }
         val preview = TextRules.render(if (plan?.home == true) TextRules.householdTemplate(phrase.text) else phrase.text, System.currentTimeMillis(), "محمد", System.currentTimeMillis() + (plan?.minutes ?: 0) * 60000L,

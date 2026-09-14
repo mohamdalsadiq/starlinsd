@@ -112,7 +112,7 @@ internal fun amount(minor: Long): String {
             Box(Modifier.weight(1f)) {
                 when (tab) {
                     0 -> Dashboard(sessions, config ?: BusinessSettings(), now, manualSales, { bulk = true }, corrections, cycles, debts, debtPayments, vm::correctRevenue, { debtDialog = true }) { newSession = true }
-                    1 -> SessionsScreen(sessions.filterNot { it.home }, now, requestedSession, busy, { newSession = true }, vm::change, vm::rename)
+                    1 -> SessionsScreen(sessions.filterNot { it.home }, now, requestedSession, busy, { newSession = true }, vm::change, vm::rename, corrections)
                     2 -> PlansScreen(plans, config?.premiumBps ?: 2500, busy, vm::savePlan)
                     3 -> ShortcutsScreen(shortcuts, plans, busy, vm::saveShortcut, vm::deleteShortcut)
                     4 -> SettingsScreen(vm, config, now)
@@ -143,7 +143,8 @@ internal fun amount(minor: Long): String {
     }
 }
 
-@Composable private fun SessionsScreen(sessions: List<Session>, now: Long, requested: String?, busy: Boolean, add: () -> Unit, change: (String, String) -> Unit, rename: (String, String) -> Unit) {
+@Composable private fun SessionsScreen(sessions: List<Session>, now: Long, requested: String?, busy: Boolean, add: () -> Unit, change: (String, String) -> Unit, rename: (String, String) -> Unit, corrections: List<RevenueCorrection>) {
+    val ledger = remember(sessions, corrections) { Finance.ledger(sessions, emptyList(), corrections).associateBy { it.id } }
     var renaming by remember { mutableStateOf<Session?>(null) }
     var search by rememberSaveable { mutableStateOf("") }
     var filter by rememberSaveable { mutableStateOf("ALL") }
@@ -168,9 +169,11 @@ internal fun amount(minor: Long): String {
             Text("البداية: ${stamp(s.started)}")
             if (s.state in listOf("ACTIVE", "PAUSED")) Text("المتبقّي ${remaining(Rules.remaining(s.clock(), now))}", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.primary)
             if (s.state == "ACTIVE") Text("النهاية: ${stamp(s.resumed + s.duration - s.served)}")
+            val financial = ledger["session:${s.id}"]
             Text(when {
+                financial?.voided == true -> "إيراد مستبعد من الحساب · المؤقت مستمر حتى نهايته"
                 s.home -> "مجاني · لا يدخل في الإيراد"
-                s.recognized > 0 -> "مثبّت: ${amount(s.amount)} ${if (s.payment == "BANK") "بنكك" else "كاش"}"
+                s.recognized > 0 -> "مثبّت: ${amount(financial?.amount ?: s.amount)} ${if (s.payment == "BANK") "بنكك" else "كاش"}"
                 s.state == "CANCELLED" -> "ألغي قبل التثبيت · دون إيراد"
                 else -> "قيد التثبيت: ${amount(s.amount)} · بعد ${s.grace / 60000} دقيقة استخدام"
             })

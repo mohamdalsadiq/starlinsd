@@ -100,6 +100,8 @@ data class BackupData(val rows: Map<String, List<JSONObject>>, val apps: Set<Str
             }
             val cycles = rows.getValue("billing_cycles").sortedBy { it.getLong("start") }
             require(cycles.zipWithNext().none { (a, b) -> a.getLong("end") > b.getLong("start") }) { "دورات متداخلة في النسخة" }
+            val currentCycle = rows.getValue("settings").single().getString("cycleId")
+            require(currentCycle.isBlank() || cycles.any { it.getString("id") == currentCycle }) { "الدورة الحالية غير موجودة في النسخة" }
             val appsArray = root.optJSONArray("allowedApps") ?: org.json.JSONArray()
             require(appsArray.length() <= 1000)
             val apps = List(appsArray.length()) { appsArray.getString(it).also { app -> require(app.length <= 200 && Regex("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z0-9_]+)+").matches(app)) } }.toSet()

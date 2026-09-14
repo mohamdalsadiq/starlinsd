@@ -20,7 +20,7 @@ object Finance {
     fun ledger(sessions: List<Session>, sales: List<ManualSale>, corrections: List<RevenueCorrection>): List<LedgerEntry> {
         val changes = corrections.sortedBy { it.id }.associateBy { it.source }
         val raw = sessions.filter { !it.home && it.recognized > 0 }.map {
-            LedgerEntry("session:${it.id}", it.recognized, "[${it.reference}] ${it.client}", it.amount, it.cashEquivalent, it.payment == "BANK", it.premiumBps, 1)
+            LedgerEntry("session:${it.id}", it.recognized, "[${it.reference.ifBlank { it.id.take(8) }}] ${it.client}", it.amount, it.cashEquivalent, it.payment == "BANK", it.premiumBps, 1)
         } + sales.map { LedgerEntry("manual:${it.id}", it.at, "إدخال يدوي", it.amount, it.cashEquivalent, it.payment == "BANK", it.premiumBps, it.count) }
         return raw.map { row -> changes[row.id]?.let { row.copy(amount = it.amount, value = it.cashEquivalent, count = it.count, voided = it.voided, corrected = true) } ?: row }.sortedByDescending { it.at }
     }
@@ -38,6 +38,7 @@ object Finance {
         val income = ledger.filter { !it.voided && it.at <= now }.groupBy { Revenue.day(it.at) }.mapValues { (_, rows) -> rows.sumOf { it.value } }
         val allocations = debts.associate { it.id to 0L }.toMutableMap()
         val order = debts.sortedWith(compareBy<Debt> { it.due }.thenBy { it.id })
+        val paid = debts.associate { debt -> debt.id to payments.filter { it.debtId == debt.id && it.at <= now }.sumOf { it.amount } }
         val results = linkedMapOf<Long, BudgetDay>()
         (income.keys + today).sorted().forEach { day ->
             val revenue = income[day] ?: 0L
@@ -45,6 +46,14 @@ object Finance {
             val target = cycle?.let(::dailyTarget)
             val surplus = target?.let { (revenue - it).coerceAtLeast(0) }
             var free = surplus ?: 0L
+            // Actual payments consume the available surplus first, even after a
+            // correction or priority edit; never reserve the same money twice.
+            order.forEach { debt ->
+                val required = (paid.getValue(debt.id) - allocations.getValue(debt.id)).coerceAtLeast(0)
+                val funded = minOf(free, required)
+                allocations[debt.id] = allocations.getValue(debt.id) + funded
+                free -= funded
+            }
             order.filter { Revenue.day(it.start) <= day }.forEach { debt ->
                 val left = (debt.total - allocations.getValue(debt.id)).coerceAtLeast(0)
                 val reserved = minOf(free, left)
@@ -54,6 +63,6 @@ object Finance {
             results[day] = BudgetDay(day, revenue, target, minOf(revenue, target ?: 0), ((target ?: 0) - revenue).coerceAtLeast(0), surplus,
                 (surplus ?: 0) - free, if (surplus == null) null else free)
         }
-        return BudgetReport(results, order.map { debt -> DebtBalance(debt, allocations.getValue(debt.id), payments.filter { it.debtId == debt.id && it.at <= now }.sumOf { it.amount }) })
+        return BudgetReport(results, order.map { debt -> DebtBalance(debt, allocations.getValue(debt.id), paid.getValue(debt.id)) })
     }
 }

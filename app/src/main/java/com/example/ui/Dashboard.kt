@@ -62,6 +62,8 @@ private fun dateLabel(at: Long, pattern: String = "EEEE، d MMMM yyyy") = Simple
     val savedCycles = remember(cycles, config, configured) { if (cycles.isEmpty() && configured) listOf(BillingCycle("current", config.cycleStart, config.cycleEnd, billCash + config.expenses)) else cycles }
     val budget = remember(ledger, savedCycles, debts, debtPayments, now) { Finance.report(ledger, savedCycles, debts, debtPayments, now) }
     val todayBudget = budget.days.getValue(today)
+    val billReserved = minOf(billCash + config.expenses, budget.days.values.filter { it.day >= Revenue.day(config.cycleStart) && it.day < config.cycleEnd }.sumOf { it.billReserved })
+    val billRemaining = (billCash + config.expenses - billReserved).coerceAtLeast(0)
     val report = remember(income, config, now) { Revenue.report(income, config.cycleStart, config.cycleEnd, if (configured) billCash + config.expenses else null, now) }
     val daily = report.days.firstOrNull { it.day == today } ?: DailyIncome(today, 0, 0, 0, if (configured && now in config.cycleStart until config.cycleEnd) 0 else null, 0)
     val daysLeft = ((config.cycleEnd - maxOf(now, config.cycleStart)).coerceAtLeast(0) + 86399999) / 86400000
@@ -90,9 +92,12 @@ private fun dateLabel(at: Long, pattern: String = "EEEE، d MMMM yyyy") = Simple
             }
             Text("بنكك يُحوّل بالقيمة المحفوظة لكل اشتراك عند جمع الإيراد.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             HorizontalDivider()
-            BudgetSummary(todayBudget)
             TextButton(onClick = { selectedDay = today; calendar = true }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.EditNote, null); Text("مراجعة وتعديل دخل اليوم") }
             Text("يثبّت سعر الباقة كاملًا بعد ${config.graceMinutes} دقيقة استخدام. أهل البيت خارج الحساب.", style = MaterialTheme.typography.bodySmall)
+        } }
+        item { Panel {
+            SectionHeading(Icons.Default.Calculate, "توزيع دخل اليوم", "مخصص ثابت للفاتورة ثم الديون ثم الفائض المتاح")
+            BudgetSummary(todayBudget)
         } }
         item { Panel {
             SectionHeading(Icons.Default.AccountBalance, "الديون والفائض", "التخصيص يسبق السداد الفعلي")
@@ -142,14 +147,21 @@ private fun dateLabel(at: Long, pattern: String = "EEEE، d MMMM yyyy") = Simple
             SectionHeading(Icons.Default.TrendingUp, "تغطية التكلفة والربح", "حساب تراكمي للدورة المحددة")
             MoneyLine("إجمالي تكلفة الدورة مع المصروفات", report.cost!!)
             MoneyLine("إيراد الدورة بقيمة الكاش", report.cycleRevenue)
-            val progress = if (report.cost == 0L) 1f else (report.covered.toDouble() / report.cost!!).toFloat()
+            MoneyLine("المحجوز من الإيراد للفاتورة", billReserved)
+            val progress = if (report.cost == 0L) 1f else (billReserved.toDouble() / report.cost!!).toFloat()
             LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
-            Text("تمت تغطية ${(progress * 100).toInt()}٪ من التكلفة", style = MaterialTheme.typography.labelLarge)
+            Text("خُصص ${(progress * 100).toInt()}٪ من قيمة الفاتورة", style = MaterialTheme.typography.labelLarge)
             HorizontalDivider()
-            if (report.remainingCost!! > 0) {
-                MoneyLine("المتبقي لتغطية التكلفة", report.remainingCost, strong = true)
+            if (billRemaining > 0) {
+                MoneyLine("المتبقي لتخصيص كامل الفاتورة", billRemaining, strong = true)
                 MoneyLine("المخصص اليومي الثابت", Finance.dailyTarget(BillingCycle("current", config.cycleStart, config.cycleEnd, report.cost!!)))
-            } else DetailLine(Icons.Default.CheckCircle, "التكلفة مغطاة بالكامل", "هذه مقارنة بكامل الفاتورة؛ الفائض اليومي معروض منفصلًا")
+            } else DetailLine(Icons.Default.CheckCircle, "اكتمل تخصيص الفاتورة", "هذه مقارنة بكامل الفاتورة؛ الفائض اليومي معروض منفصلًا")
+            if (now >= config.cycleStart) {
+                val tomorrow = Calendar.getInstance().apply { timeInMillis = today; add(Calendar.DAY_OF_MONTH, 1) }.timeInMillis
+                val target = Finance.dailyTarget(BillingCycle("current", config.cycleStart, config.cycleEnd, report.cost!!))
+                val expected = minOf(report.cost!!, target * Finance.days(config.cycleStart, minOf(config.cycleEnd, tomorrow)))
+                if (expected > billReserved) MoneyLine("نقص التخصيص المتراكم حتى اليوم", expected - billReserved)
+            }
             MoneyLine("صافي الدورة بعد كامل الفاتورة · قبل الديون", report.cycleProfit!!, "cycle-profit", strong = true)
             Text("الربح تقديري حسب التكلفة والمصروفات المدخلة. تغييرهما يعيد حساب التقرير، ولا يغيّر أسعار الاشتراكات المحفوظة.", style = MaterialTheme.typography.bodySmall)
         } }
