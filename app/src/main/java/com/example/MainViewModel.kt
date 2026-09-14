@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.data.SubscriptionRepository
 import com.example.data.BackupData
 import com.example.db.*
+import com.example.domain.*
 import com.example.notifications.SubscriptionAlarms
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -35,6 +36,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val sessions = repo.dao.observeSessions().stateIn(viewModelScope, sharing, emptyList())
     val shortcuts = db.shortcutDao().getAll().stateIn(viewModelScope, sharing, emptyList())
     val settings = repo.dao.observeSettings().stateIn(viewModelScope, sharing, null)
+    val clock = MutableStateFlow(System.currentTimeMillis())
+    private val reportCache = FinancialReportCache()
+    private val accountingBase = combine(
+        repo.dao.observeSessions(), repo.dao.observeManualSales(), repo.dao.observeCorrections(),
+        repo.dao.observeSettings(), repo.dao.observeCycles()
+    ) { sessions, sales, corrections, settings, cycles ->
+        FinancialData(sessions, sales, corrections, settings ?: BusinessSettings(), cycles, emptyList(), emptyList())
+    }
+    val financial = combine(accountingBase, repo.dao.observeDebts(), repo.dao.observeDebtPayments(), clock) { base, debts, payments, _ ->
+        // Fresh writes must be included immediately, not at the next fifteen-second tick.
+        reportCache.get(base.copy(debts = debts, payments = payments), System.currentTimeMillis())
+    }.flowOn(Dispatchers.Default).distinctUntilChanged()
+        .stateIn(viewModelScope, sharing, null)
+
     val devices = db.deviceDao().getAll().stateIn(viewModelScope, sharing, emptyList())
     val message = MutableStateFlow<String?>(null)
     val busy = MutableStateFlow(false)
@@ -46,10 +61,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             try { withContext(Dispatchers.IO) { block(); SubscriptionAlarms.refresh(getApplication()) } }
             catch (e: CancellationException) { throw e }
             catch (e: Exception) { message.value = e.message ?: "تعذّر الحفظ؛ حاول مرة أخرى" }
-            finally { busy.value = false }
+            finally { clock.value = System.currentTimeMillis(); busy.value = false }
         } }
     }
     fun refresh() {
+        clock.value = System.currentTimeMillis()
         viewModelScope.launch {
             if (!commands.tryLock()) return@launch
             try { withContext(Dispatchers.IO) { SubscriptionAlarms.refresh(getApplication()) } }

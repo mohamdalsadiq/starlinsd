@@ -52,49 +52,62 @@ import java.util.*
     }
 }
 
-@Composable internal fun DebtsDialog(debts: List<Debt>, payments: List<DebtPayment>, report: BudgetReport, now: Long, busy: Boolean,
-    save: (Debt) -> Unit, pay: (String, String, Long) -> Unit, dismiss: () -> Unit) {
+@Composable internal fun DebtsScreen(debts: List<Debt>, payments: List<DebtPayment>, report: BudgetReport, now: Long, busy: Boolean,
+    save: (Debt) -> Unit, pay: (String, String, Long) -> Unit) {
     var editing by remember { mutableStateOf<Debt?>(null) }
     var paying by remember { mutableStateOf<DebtBalance?>(null) }
-    Dialog(dismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Surface(Modifier.widthIn(max = 560.dp).fillMaxWidth().fillMaxHeight(.94f).padding(8.dp), shape = MaterialTheme.shapes.extraLarge) {
-            LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                item { Row { Text("الديون وخطة السداد", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge); IconButton(onClick = dismiss) { Icon(Icons.Default.Close, "إغلاق") } } }
-                item { Text("يُخصص الفائض للديون الأقرب موعدًا أولًا، دون خصمه مرة ثانية عند تسجيل السداد. اضغط سداد فقط بعد دفع المبلغ فعليًا.", style = MaterialTheme.typography.bodySmall) }
-                item { Button(enabled = !busy, onClick = { editing = Debt(UUID.randomUUID().toString(), "", 0, Revenue.day(now), Revenue.day(now) + 30 * 86400000L) }) { Icon(Icons.Default.Add, null); Text("إضافة دين") } }
-                if (debts.isEmpty()) item { Text("لا توجد ديون مسجلة. فائضك يبقى متاحًا لك.") }
-                items(report.debts, key = { it.debt.id }) { balance -> Panel {
-                    val debt = balance.debt
-                    SectionHeading(Icons.Default.AccountBalance, debt.name)
-                    Text("من ${stamp(debt.start).substringBefore('·')} إلى ${stamp(debt.due).substringBefore('·')}")
-                    if (Revenue.day(now) > Revenue.day(debt.due) && balance.remaining > 0) Text("تجاوز موعد السداد", color = MaterialTheme.colorScheme.error)
-                    MoneyLine("قيمة الدين · كاش", debt.total)
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Column(Modifier.weight(1f)) { MoneyLine("المسدّد فعليًا", balance.paid) }
-                        Column(Modifier.weight(1f)) { MoneyLine("المتبقي", balance.remaining) }
-                    }
-                    MoneyLine("مخصص جاهز للسداد", balance.reserved, strong = true)
+    val byDebt = remember(payments) { payments.groupBy { it.debtId } }
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { Title("الديون", "خطة السداد مستقلة عن ربح الدورة") }
+        item { Panel {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(Modifier.weight(1f)) { MoneyLine("متبقي الديون", report.debts.sumOf { it.remaining }) }
+                Column(Modifier.weight(1f)) { MoneyLine("جاهز للسداد", report.debts.sumOf { minOf(it.reserved, it.remaining) }) }
+            }
+            Text("المخصص يأتي من الفائض اليومي. تسجيل السداد يؤكد الدفع الفعلي ولا يخصم المبلغ مرتين.", style = MaterialTheme.typography.bodySmall)
+            Button(enabled = !busy, onClick = { editing = Debt(UUID.randomUUID().toString(), "", 0, Revenue.day(now), Calendar.getInstance().apply { timeInMillis = Revenue.day(now); add(Calendar.DAY_OF_MONTH, 30) }.timeInMillis) }) { Icon(Icons.Default.Add, null); Text("إضافة دين") }
+        } }
+        if (debts.isEmpty()) item { Panel { Text("لا توجد ديون مسجلة"); Text("عند إضافة دين ستجد هنا المتبقي والمخصص الجاهز للسداد.", style = MaterialTheme.typography.bodySmall) } }
+        items(report.debts, key = { it.debt.id }) { balance ->
+            var expanded by rememberSaveable(balance.debt.id) { mutableStateOf(false) }
+            var allPayments by rememberSaveable(balance.debt.id) { mutableStateOf(false) }
+            val debt = balance.debt
+            Panel {
+                DebtPaymentIndicator(balance)
+                Text("الموعد: ${stamp(debt.due).substringBefore('·')}", style = MaterialTheme.typography.bodySmall)
+                if (Revenue.day(now) > Revenue.day(debt.due) && balance.remaining > 0) Text("تجاوز موعد السداد", color = MaterialTheme.colorScheme.error)
+                if (balance.fundingGap > 0) Text("عجز تغطية ${amount(balance.fundingGap)} بعد تعديل الدخل. السداد السابق محفوظ.", color = MaterialTheme.colorScheme.error)
+                Row {
+                    Button(enabled = !busy && balance.reserved > 0 && balance.remaining > 0, onClick = { paying = balance }) { Text("تسجيل سداد") }
+                    TextButton(onClick = { expanded = !expanded }) { Text(if (expanded) "إخفاء التفاصيل" else "الخطة والسجل") }
+                }
+                if (expanded) {
+                    HorizontalDivider()
+                    MoneyLine("قيمة الدين", debt.total)
+                    MoneyLine("المسدّد فعليًا", balance.paid)
+                    Text("بداية التخصيص: ${stamp(debt.start).substringBefore('·')}")
                     val deadline = Calendar.getInstance().apply { timeInMillis = Revenue.day(debt.due); add(Calendar.DAY_OF_MONTH, 1) }.timeInMillis
-                    val days = Finance.days(maxOf(debt.start, Revenue.day(now)), maxOf(deadline, now + 1))
+                    val days = remember(debt, now) { Finance.days(maxOf(debt.start, Revenue.day(now)), maxOf(deadline, now + 1)) }
                     MoneyLine("المطلوب يوميًا حتى الموعد", (balance.remaining + days - 1) / days)
-                    if (balance.fundingGap > 0) Text("عجز تغطية ${amount(balance.fundingGap)} بعد تعديل الدخل. لا يتغير السداد الذي سجلته.", color = MaterialTheme.colorScheme.error)
-                    Row {
-                        TextButton(enabled = !busy, onClick = { editing = debt }) { Text("تعديل الخطة") }
-                        Button(enabled = !busy && balance.reserved > 0 && balance.remaining > 0, onClick = { paying = balance }) { Text("تسجيل سداد") }
+                    TextButton(enabled = !busy, onClick = { editing = debt }) { Icon(Icons.Default.Edit, null); Text("تعديل الخطة") }
+                    val records = byDebt[debt.id].orEmpty()
+                    (if (allPayments) records.asReversed() else records.takeLast(5).asReversed()).forEach {
+                        Text("سداد ${amount(it.amount)} · ${stamp(it.at)}", style = MaterialTheme.typography.bodySmall)
                     }
-                    payments.filter { it.debtId == debt.id }.forEach { Text("سداد ${amount(it.amount)} · ${stamp(it.at)}", style = MaterialTheme.typography.bodySmall) }
-                } }
+                    if (records.size > 5) TextButton(onClick = { allPayments = !allPayments }) { Text(if (allPayments) "آخر 5 دفعات" else "كل الدفعات (${records.size})") }
+                }
             }
         }
     }
     editing?.let { debt -> DebtForm(debt, { editing = null }) { save(it); editing = null } }
-    paying?.let { balance ->
+    paying?.let { selected ->
+        val balance = report.debts.find { it.debt.id == selected.debt.id } ?: selected
         val id = rememberSaveable(balance.debt.id) { UUID.randomUUID().toString() }
         var text by rememberSaveable(balance.debt.id) { mutableStateOf(Money.show(minOf(balance.reserved, balance.remaining))) }
         val value = Money.parse(text)
         Form("تأكيد سداد فعلي", { paying = null }, { pay(id, balance.debt.id, value!!); paying = null }, !busy && value != null && value > 0 && value <= balance.reserved && value <= balance.remaining) {
             Text("${balance.debt.name} · سجّل فقط مبلغًا دفعته فعليًا. لن يُخصم مرتين من الفائض.")
-            Field("المبلغ المدفوع بقيمة الكاش", text, { text = it })
+            Field("المبلغ المدفوع · ج.س", text, { text = it }, numeric = true)
         }
     }
 }

@@ -39,6 +39,8 @@ import java.util.*
     val dayEnd = remember(selected) { Calendar.getInstance().apply { timeInMillis = selected; add(Calendar.DAY_OF_MONTH, 1) }.timeInMillis }
     val daySessions = remember(sessions, selected) { sessions.filter { !it.home && it.recognized in selected until dayEnd } }
     val dayManual = remember(manual, selected) { manual.filter { it.at in selected until dayEnd } }
+    val entries = remember(ledger, selected, dayEnd) { ledger.filter { it.at in selected until dayEnd } }
+    var details by rememberSaveable { mutableStateOf(false) }
     fun label(time: Long, pattern: String) = SimpleDateFormat(pattern, Locale.forLanguageTag("ar")).format(Date(time))
     editing?.let { entry -> RevenueEditForm(entry, { editing = null }) { amount, count, reason -> correct(entry.id, amount, count, false, reason); editing = null } }
     removing?.let { entry -> AlertDialog(onDismissRequest = { removing = null }, title = { Text("حذف هذا الإيراد؟") }, text = { Text("سيُستبعد ${amount(entry.amount)} من يومه الأصلي ويُعاد حساب الفائض والديون. يمكنك استعادته لاحقًا من السجل؛ الاشتراك نفسه لا يُلغى.") },
@@ -83,15 +85,12 @@ import java.util.*
                 item { Panel {
                     Text(label(selected, "EEEE، d MMMM yyyy"), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     MoneyLine("إيراد اليوم · قيمة كاش", daily.revenue, "selected-day-revenue", true)
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Column(Modifier.weight(1f)) { MoneyLine("كاش", daily.cash) }
-                        Column(Modifier.weight(1f)) { MoneyLine("بنكك", daily.bank) }
-                    }
-                    BudgetSummary(budget.day(selected))
+                    TextButton(onClick = { details = !details }) { Text(if (details) "إخفاء توزيع اليوم" else "تفاصيل توزيع اليوم") }
+                    if (details) BudgetSummary(budget.day(selected))
                     Text("يمكن تعديل أو حذف قيود هذا اليوم، حتى بعد انتهاء اليوم.", style = MaterialTheme.typography.bodySmall)
                     Text("${daily.sales} اشتراكًا · ${daySessions.size} من المؤقتات · ${dayManual.sumOf { it.count.toLong() }} جهازًا بإدخال يدوي", style = MaterialTheme.typography.bodySmall)
                 } }
-                items(ledger.filter { it.at in selected until dayEnd }, key = { it.id }) { entry -> LedgerCard(entry, { editing = it }, { removing = it }) }
+                items(entries, key = { it.id }) { entry -> LedgerCard(entry, { editing = it }, { removing = it }) }
             }
         }
     }

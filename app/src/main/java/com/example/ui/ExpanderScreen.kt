@@ -24,20 +24,23 @@ import com.example.domain.TextRules
     var editing by remember { mutableStateOf<Shortcut?>(null) }
     var deleting by remember { mutableStateOf<Shortcut?>(null) }
     var search by rememberSaveable { mutableStateOf("") }
+    var help by rememberSaveable { mutableStateOf(false) }
+    val rows = remember(shortcuts, search) { shortcuts.filter { it.keyword.contains(search, true) || it.phrase.contains(search, true) } }
+    val plansById = remember(plans) { plans.associateBy { it.id } }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Title("الاختصارات", "قوالب نصية وتسجيل اشتراكات بكلمة ومسافة") }
-        item { Panel {
+        item { TextButton(onClick = { help = !help }) { Icon(Icons.Default.HelpOutline, null); Text(if (help) "إخفاء المساعدة" else "طريقة استخدام الاختصارات") } }
+        if (help) item { Panel {
             Text("اكتب الاختصار ثم مسافة فقط، مثل س3. إن كان مرتبطًا بباقة يُسجّل مشتركًا برقم تلقائي. إضافة الاسم اختيارية: س3/محمد أو س3/محمد_أحمد.")
             Text("اختر التطبيقات المسموحة وفعّل الخدمة من الإعدادات. الاختصار يسجّل بداية الوقت عند استبدال النص، وليس عند اتصال الجهاز أو إرسال الرسالة.")
         } }
         item { Button(enabled = !busy, onClick = { editing = Shortcut(keyword = "", phrase = "") }) { Text("إضافة اختصار") } }
         item { Field("بحث في الاختصارات", search, { search = it }) }
-        val rows = shortcuts.filter { it.keyword.contains(search, true) || it.phrase.contains(search, true) }
         if (rows.isEmpty()) item { Text("لا توجد اختصارات مطابقة. أضف اختصارًا جديدًا.") }
         items(rows, key = { it.id }) { s -> Panel {
             Text(s.keyword, style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.primary)
-            Text(s.phrase)
-            Text(if (s.planId == null) "نص فقط · لا يسجّل إيرادًا" else "باقة: ${plans.find { it.id == s.planId }?.name ?: "غير متاحة"} · ${if (s.payment == "BANK") "بنكك" else "كاش"}")
+            Text(s.phrase, maxLines = 3, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+            Text(if (s.planId == null) "نص فقط · لا يسجّل إيرادًا" else "باقة: ${plansById[s.planId]?.name ?: "غير متاحة"} · ${if (s.payment == "BANK") "تسعير بنكي قديم" else "سعر موحد"}")
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Switch(s.enabled, { save(s.copy(enabled = it)) }, enabled = !busy, modifier = Modifier.semantics { contentDescription = "تفعيل الاختصار ${s.keyword}" })
                 Text(if (s.enabled) "مفعّل" else "متوقف")
@@ -86,7 +89,10 @@ import com.example.domain.TextRules
         Text("نوع الاختصار", style = MaterialTheme.typography.titleSmall)
         Choice("نص فقط", planId == null) { planId = null }
         plans.filter { it.enabled || it.id == planId }.forEach { p -> Choice("${if (p.home) "✅ " else ""}${p.name}", planId == p.id) { planId = p.id } }
-        if (planId != null && plans.find { it.id == planId }?.home != true) Payment(payment) { payment = it }
+        if (payment == "BANK" && planId != null && plans.find { it.id == planId }?.home != true) {
+            Text("هذا الاختصار محفوظ بتسعير بنكي قديم. يمكنك تحويل استخداماته القادمة للسعر الموحد دون تغيير إيراداته السابقة.", style = MaterialTheme.typography.bodySmall)
+            TextButton(onClick = { payment = "CASH" }) { Text("استخدام السعر الموحد") }
+        }
         Text("معاينة النص", style = MaterialTheme.typography.labelLarge)
         val plan = plans.find { it.id == planId }
         val preview = TextRules.render(if (plan?.home == true) TextRules.householdTemplate(phrase.text) else phrase.text, System.currentTimeMillis(), "محمد", System.currentTimeMillis() + (plan?.minutes ?: 0) * 60000L,
