@@ -100,7 +100,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             catch (e: Exception) { recovery.failWrite(stream); throw e }
             repo.restoreJson(text)
             androidx.core.app.NotificationManagerCompat.from(getApplication()).cancelAll()
-                message.value = "اكتملت الاستعادة؛ راجع صلاحيات التنبيهات وإمكانية الوصول على هذا الهاتف"
+            message.value = "اكتملت الاستعادة؛ راجع صلاحيات التنبيهات وإمكانية الوصول على هذا الهاتف"
         }
     }
     fun export(uri: Uri) = work {

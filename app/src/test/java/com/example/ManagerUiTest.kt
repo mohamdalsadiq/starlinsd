@@ -56,11 +56,11 @@ class ManagerUiTest {
     }
     @Test fun debtIndicatorsDistinguishPaidReadyAndUnfunded() {
         val debt = Debt("base", "دين", 100000, 1, 2)
-        compose.setContent { ManagerTheme { Column {
+        compose.setContent { ManagerTheme { Surface(Modifier.fillMaxSize()) { Column {
             DebtPaymentIndicator(DebtBalance(debt.copy(id = "paid", name = "مسدد"), 100000, 100000))
             DebtPaymentIndicator(DebtBalance(debt.copy(id = "ready", name = "جاهز"), 50000, 10000))
             DebtPaymentIndicator(DebtBalance(debt.copy(id = "waiting", name = "انتظار"), 0, 0))
-        } } }
+        } } } }
         compose.onNodeWithText("مسدد بالكامل · لا يلزم سداد").assertIsDisplayed()
         compose.onNodeWithText("سداد جاهز اليوم: 400 ج.س").assertIsDisplayed()
         compose.onNodeWithText("لم يتوفر مخصص للسداد اليوم").assertIsDisplayed()

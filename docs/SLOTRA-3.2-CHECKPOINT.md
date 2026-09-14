@@ -14,7 +14,7 @@ User confirmed it installed and restored successfully. Future APKs MUST update t
 
 ## Verification / release pending
 Read exact new commit's CI result and inspect native screenshots. Existing CI runs unit tests, lintDebug, assembleDebug and unsigned assembleRelease.
-Expected tests: previous 33 + one UI debt-indicator test + three notification-panel tests = 37.
+Expected tests: previous 33 + one UI debt-indicator test + four notification-panel tests = 38.
 Do not report a passing result before checking it.
 
 The Work execution environment failed its initialize handshake on 2026-09-14. GitHub MCP remains available; edits were recovered from the previous turn and applied directly to the feature branch. Earlier local uncommitted notification edits may still exist when workspace reconnects: compare them to the new remote head before updating the checkout; do not overwrite newer remote UI changes.
@@ -26,3 +26,5 @@ Never expose private retrieval identifiers, key material or passwords in Git, CI
 After execution returns, retrieve the latest successful unsigned CI bundle, verify transfer SHA256, use scripts/sign_release.py with the existing key, then compare old/new APK package, certificate and increasing versionCode. Room/database schema stays v5. Save Slotra-3.2.apk for download. Until then NO signed 3.2 APK exists; do not send the old 3.1 or CI debug APK as the update.
 
 See SLOTRA-RELEASE.md for read-only artifact transfer and signing procedure. CI must keep contents:read.
+
+Initial 3.2 run 34844304836 passed 37 tests and both APK assembly tasks, but lintDebug caught an API 26 guard issue in StatusPanel.allowed. Added an explicit SDK check and an API 24 regression test. Initial native dashboard screenshot confirms cycle profit on the first screen. Await the follow-up run before signing.

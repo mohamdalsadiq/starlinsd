@@ -54,4 +54,13 @@ class StatusPanelTest {
         assertTrue(StatusPanel.nextMidnight(now) > now)
         assertEquals(StatusPanel.nextMidnight(now), Revenue.day(StatusPanel.nextMidnight(now)))
     }
+    @Test @Config(sdk = [24])
+    fun panelSupportsAndroidSevenWithoutNotificationChannels() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        assertTrue(StatusPanel.allowed(context))
+        val notification = StatusPanel.build(context, snapshot(), now)
+        assertTrue(notification.flags and Notification.FLAG_ONGOING_EVENT != 0)
+        assertEquals(2, notification.actions.size)
+    }
+
 }

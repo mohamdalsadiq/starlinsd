@@ -55,7 +55,7 @@ object StatusPanel {
     fun allowed(context: Context): Boolean {
         val runtime = Build.VERSION.SDK_INT < 33 || ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
         val channel = if (Build.VERSION.SDK_INT >= 26) (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).getNotificationChannel(CHANNEL) else null
-        return runtime && NotificationManagerCompat.from(context).areNotificationsEnabled() && (channel == null || channel.importance != NotificationManager.IMPORTANCE_NONE)
+        return runtime && NotificationManagerCompat.from(context).areNotificationsEnabled() && (Build.VERSION.SDK_INT < 26 || channel == null || channel.importance != NotificationManager.IMPORTANCE_NONE)
     }
     fun nextMidnight(now: Long): Long = Calendar.getInstance().apply { timeInMillis = Revenue.day(now); add(Calendar.DAY_OF_MONTH, 1) }.timeInMillis
 
