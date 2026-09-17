@@ -1,0 +1,67 @@
+package com.example.domain
+
+import com.example.db.*
+import java.util.Calendar
+
+data class LedgerEntry(val id: String, val at: Long, val label: String, val amount: Long, val value: Long,
+    val bank: Boolean, val premiumBps: Int, val count: Int, val voided: Boolean = false, val corrected: Boolean = false) {
+    fun income() = Income(at, value, amount, bank, count)
+}
+data class BudgetDay(val day: Long, val revenue: Long, val billTarget: Long?, val billReserved: Long,
+    val shortfall: Long, val surplus: Long?, val debtReserved: Long, val available: Long?)
+data class DebtBalance(val debt: Debt, val allocated: Long, val paid: Long) {
+    val remaining get() = (debt.total - paid).coerceAtLeast(0)
+    val reserved get() = (allocated - paid).coerceAtLeast(0)
+    val fundingGap get() = (paid - allocated).coerceAtLeast(0)
+}
+data class BudgetReport(val days: Map<Long, BudgetDay>, val debts: List<DebtBalance>, val cycles: List<BillingCycle>) {
+    fun day(at: Long): BudgetDay {
+        val date = Revenue.day(at)
+        return days[date] ?: cycles.firstOrNull { date >= Revenue.day(it.start) && date < it.end }?.let {
+            val target = Finance.dailyTarget(it)
+            BudgetDay(date, 0, target, 0, target, 0, 0, 0)
+        } ?: BudgetDay(date, 0, null, 0, 0, null, 0, null)
+    }
+}
+
+object Finance {
+    fun ledger(sessions: List<Session>, sales: List<ManualSale>, corrections: List<RevenueCorrection>): List<LedgerEntry> {
+        val changes = corrections.sortedBy { it.id }.associateBy { it.source }
+        val raw = sessions.filter { !it.home && it.recognized > 0 }.map {
+            LedgerEntry("session:${it.id}", it.recognized, "[${it.reference.ifBlank { it.id.take(8) }}] ${it.client}", it.amount, it.cashEquivalent, it.payment == "BANK", it.premiumBps, 1)
+        } + sales.map { LedgerEntry("manual:${it.id}", it.at, "إدخال يدوي", it.amount, it.cashEquivalent, it.payment == "BANK", it.premiumBps, it.count) }
+        return raw.map { row -> changes[row.id]?.let { row.copy(amount = it.amount, value = it.cashEquivalent, count = it.count, voided = it.voided, corrected = true) } ?: row }.sortedByDescending { it.at }
+    }
+    fun days(start: Long, end: Long): Int {
+        val a = Calendar.getInstance().apply { timeInMillis = Revenue.day(start) }
+        var count = 0
+        while (a.timeInMillis < end && count < 36600) { count++; a.add(Calendar.DAY_OF_MONTH, 1) }
+        return count.coerceAtLeast(1)
+    }
+    fun dailyTarget(cycle: BillingCycle): Long = (cycle.cost + days(cycle.start, cycle.end) - 1) / days(cycle.start, cycle.end)
+
+    /** The bill target depends on the saved cycle, never on today's changing receipts. */
+    fun report(ledger: List<LedgerEntry>, cycles: List<BillingCycle>, debts: List<Debt>, payments: List<DebtPayment>, now: Long): BudgetReport {
+        val today = Revenue.day(now)
+        val income = ledger.filter { !it.voided && it.at <= now }.groupBy { Revenue.day(it.at) }.mapValues { (_, rows) -> rows.sumOf { it.value } }
+        val allocations = debts.associate { it.id to 0L }.toMutableMap()
+        val order = debts.sortedWith(compareBy<Debt> { it.due }.thenBy { it.id })
+        val paid = debts.associate { debt -> debt.id to payments.filter { it.debtId == debt.id && it.at <= now }.sumOf { it.amount } }
+        val results = linkedMapOf<Long, BudgetDay>()
+        (income.keys + today).sorted().forEach { day ->
+            val revenue = income[day] ?: 0L
+            val cycle = cycles.firstOrNull { day >= Revenue.day(it.start) && day < it.end }
+            val target = cycle?.let(::dailyTarget)
+            val surplus = target?.let { (revenue - it).coerceAtLeast(0) }
+            var free = surplus ?: 0L
+            // Debts are completely isolated reminders. Surplus is never auto-drained for unpaid debt.
+            // Debt allocations only reflect actual manual payments.
+            order.forEach { debt ->
+                allocations[debt.id] = paid.getValue(debt.id)
+            }
+            results[day] = BudgetDay(day, revenue, target, minOf(revenue, target ?: 0), ((target ?: 0) - revenue).coerceAtLeast(0), surplus,
+                0L, surplus)
+        }
+        return BudgetReport(results, order.map { debt -> DebtBalance(debt, allocations.getValue(debt.id), paid.getValue(debt.id)) }, cycles)
+    }
+}

@@ -1,77 +1,46 @@
 package com.example
 
 import android.content.Intent
-import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Keyboard
-import androidx.compose.material.icons.filled.Wifi
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
-import com.example.service.StarlinkMonitorService
-import com.example.ui.ExpanderScreen
-import com.example.ui.NetworkScreen
+import com.example.ui.ManagerApp
 
 class MainActivity : ComponentActivity() {
-    private val viewModel: MainViewModel by viewModels()
-
+    private val model: MainViewModel by viewModels()
+    private var requestedSession by mutableStateOf<String?>(null)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        
-        val serviceIntent = Intent(this, StarlinkMonitorService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(serviceIntent)
-        } else {
-            startService(serviceIntent)
-        }
-        
+        requestedSession = intent.getStringExtra("SESSION_ID")
         setContent {
-            MaterialTheme {
-                CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
-                    AppUI(viewModel)
-                }
-            }
+            ManagerTheme { ManagerApp(model, requestedSession) }
         }
     }
+    override fun onResume() { super.onResume(); model.refresh() }
+    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); requestedSession = intent.getStringExtra("SESSION_ID") }
 }
 
+
 @Composable
-fun AppUI(viewModel: MainViewModel) {
-    var selectedTab by remember { mutableIntStateOf(0) }
-    
-    Scaffold(
-        bottomBar = {
-            NavigationBar {
-                NavigationBarItem(
-                    selected = selectedTab == 0,
-                    onClick = { selectedTab = 0 },
-                    icon = { Icon(Icons.Default.Wifi, contentDescription = "الشبكة") },
-                    label = { Text("الشبكة") }
-                )
-                NavigationBarItem(
-                    selected = selectedTab == 1,
-                    onClick = { selectedTab = 1 },
-                    icon = { Icon(Icons.Default.Keyboard, contentDescription = "الاختصارات") },
-                    label = { Text("الاختصارات") }
-                )
-            }
-        }
-    ) { padding ->
-        Box(modifier = Modifier.padding(padding).fillMaxSize()) {
-            if (selectedTab == 0) {
-                NetworkScreen(viewModel)
-            } else {
-                ExpanderScreen(viewModel)
-            }
-        }
+fun ManagerTheme(content: @Composable () -> Unit) {
+    val colors = if (isSystemInDarkTheme()) darkColorScheme(primary = Color(0xFF76D9C3), onPrimary = Color(0xFF00382D),
+        background = Color(0xFF101915), surface = Color(0xFF101915), onBackground = Color(0xFFE0EAE3), onSurface = Color(0xFFE0EAE3),
+        surfaceContainer = Color(0xFF17241F), secondaryContainer = Color(0xFF34443E), onSecondaryContainer = Color(0xFFB0F1DF),
+        surfaceContainerHighest = Color(0xFF26322E), surfaceVariant = Color(0xFF34443E), onSurfaceVariant = Color(0xFFBFCBC5),
+        primaryContainer = Color(0xFF005140), onPrimaryContainer = Color(0xFFB0F1DF), secondary = Color(0xFFE9B66D))
+        else lightColorScheme(primary = Color(0xFF006B58), onPrimary = Color.White,
+            primaryContainer = Color(0xFFD8F1E9), onPrimaryContainer = Color(0xFF00382D), secondary = Color(0xFF8A561B),
+            surfaceContainer = Color(0xFFEEF2EA), secondaryContainer = Color(0xFFD8F1E9), onSecondaryContainer = Color(0xFF00382D),
+            outline = Color(0xFF72837A), outlineVariant = Color(0xFFD0DAD2), background = Color(0xFFF7F8F3), surface = Color(0xFFF7F8F3),
+            surfaceContainerHighest = Color(0xFFE9EEE7), surfaceVariant = Color(0xFFE1E8E0), onSurfaceVariant = Color(0xFF4F6259))
+    MaterialTheme(colorScheme = colors) {
+        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl, content = content)
     }
 }
