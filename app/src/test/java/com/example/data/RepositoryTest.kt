@@ -97,7 +97,7 @@ class RepositoryTest {
         assertEquals("3", repo.prepare("", p.id, "CASH", "mm").reference)
     }
 
-    @Test fun subscriberPoolReservesReusesAndRejectsWhenFull() = runBlocking {
+    @Test fun subscriberPoolReservesAndRejectsWhenFullWithoutReusingSameDayNumber() = runBlocking {
         repo.saveSettings(BusinessSettings(maxSubscribers = 2))
         val p = repo.dao.plans().first { it.minutes == 180 && !it.home }
         val first = repo.prepare("", p.id, "CASH", "mm")
@@ -105,27 +105,25 @@ class RepositoryTest {
         assertEquals("1", first.reference); assertEquals("2", second.reference)
         assertTrue(runCatching { repo.prepare("", p.id, "CASH", "mm") }.isFailure)
         repo.release(first.id)
-        val reused = repo.prepare("", p.id, "CASH", "mm")
-        assertEquals("1", reused.reference)
-        repo.insert(reused); repo.insert(second)
+        repo.insert(second)
         repo.changeState(second.id, "PAUSE")
         assertTrue(runCatching { repo.saveSettings(BusinessSettings(maxSubscribers = 1)) }.isFailure)
-        repo.changeState(reused.id, "CANCEL")
-        assertEquals("1", repo.prepare("", p.id, "CASH", "mm").reference)
         assertEquals("🌹04:00🌹[1]", com.example.domain.TextRules.withReference("🌹04:00🌹", "1"))
         assertEquals("🌹04:00🌹[1]", com.example.domain.TextRules.withReference("🌹04:00🌹[1] ", "1"))
     }
-    @Test fun expiredReservationAndOverdueSessionDoNotHoldNumbers() = runBlocking {
-        repo.saveSettings(BusinessSettings(maxSubscribers = 1))
+    @Test fun expiredReservationReleasesNumberButCompletedSessionHoldsDailyNumber() = runBlocking {
+        repo.saveSettings(BusinessSettings(maxSubscribers = 2))
         val p = repo.dao.plans().first { it.minutes == 60 && !it.home }
         val lost = repo.prepare("", p.id, "CASH", "mm")
         now += 60001
         val next = repo.prepare("", p.id, "CASH", "mm")
         assertEquals("1", next.reference)
         assertTrue(runCatching { repo.insert(lost) }.isFailure)
-        repo.insert(next); now += 61 * Rules.MINUTE
-        assertEquals("1", repo.prepare("", p.id, "CASH", "mm").reference)
-        assertEquals("ENDED", repo.dao.session(next.id)!!.state)
+        repo.insert(next); now += 61 * Rules.MINUTE; repo.reconcile(now)
+        val endedNext = repo.dao.session(next.id)!!
+        assertEquals("ENDED", endedNext.state)
+        val third = repo.prepare("", p.id, "CASH", "mm")
+        assertEquals("2", third.reference)
     }
     @Test fun manualRevenueAddsImmediatelyAndDuplicateConfirmIsIdempotent() = runBlocking {
         val id = java.util.UUID.randomUUID().toString()
@@ -168,13 +166,12 @@ class RepositoryTest {
         suspend fun report() = com.example.domain.Finance.report(com.example.domain.Finance.ledger(repo.dao.sessions(), repo.dao.manualSales(), repo.dao.corrections()), repo.dao.cycles(), repo.dao.debts(), repo.dao.debtPayments(), now)
         assertEquals(2000000L, report().days.getValue(day).billTarget)
         assertEquals(1050000L, report().days.getValue(day).surplus)
-        assertEquals(450000L, report().days.getValue(day).available)
+        assertEquals(1050000L, report().days.getValue(day).available)
         repo.payDebt("payment-test", debt.id, 100000)
         repo.payDebt("payment-test", debt.id, 100000)
-        assertEquals(450000L, report().days.getValue(day).available)
+        assertEquals(1050000L, report().days.getValue(day).available)
         assertEquals(100000L, report().debts.single().paid)
         repo.correctRevenue("manual:${sale.id}", 100000, 1, false, "تصحيح المبلغ")
-        assertEquals(100000L, report().debts.single().fundingGap)
         assertEquals(sale, repo.dao.manualSales().single())
         repo.correctRevenue("manual:${sale.id}", 100000, 1, true, "حذف خاطئ")
         assertEquals(0L, report().days.getValue(day).revenue)

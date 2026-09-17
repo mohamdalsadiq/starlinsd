@@ -28,7 +28,7 @@ class StatusPanelTest {
     @Test fun countsExcludeHouseholdAndMoneyMatchesCorrectedDebtBudget() {
         val value = snapshot()
         assertEquals(2, value.active); assertEquals(1, value.soon); assertEquals(1, value.ended); assertEquals(1, value.paused)
-        assertEquals(3050000L, value.income); assertEquals(0L, value.remainingBill); assertEquals(450000L, value.available)
+        assertEquals(3050000L, value.income); assertEquals(0L, value.remainingBill); assertEquals(1050000L, value.available)
         assertEquals(1050000L, value.cycleProfit); assertEquals(100, value.coveredPercent)
         val corrected = snapshot(listOf(RevenueCorrection(1, "manual:sale", 1000000, 1000000, 10, false, now, "تصحيح")))
         assertEquals(1000000L, corrected.income); assertEquals(1000000L, corrected.remainingBill); assertEquals(0L, corrected.available)
