@@ -54,22 +54,13 @@ object Finance {
             val target = cycle?.let(::dailyTarget)
             val surplus = target?.let { (revenue - it).coerceAtLeast(0) }
             var free = surplus ?: 0L
-            // Actual payments consume the available surplus first, even after a
-            // correction or priority edit; never reserve the same money twice.
+            // Debts are completely isolated reminders. Surplus is never auto-drained for unpaid debt.
+            // Debt allocations only reflect actual manual payments.
             order.forEach { debt ->
-                val required = (paid.getValue(debt.id) - allocations.getValue(debt.id)).coerceAtLeast(0)
-                val funded = minOf(free, required)
-                allocations[debt.id] = allocations.getValue(debt.id) + funded
-                free -= funded
-            }
-            order.filter { Revenue.day(it.start) <= day }.forEach { debt ->
-                val left = (debt.total - allocations.getValue(debt.id)).coerceAtLeast(0)
-                val reserved = minOf(free, left)
-                allocations[debt.id] = allocations.getValue(debt.id) + reserved
-                free -= reserved
+                allocations[debt.id] = paid.getValue(debt.id)
             }
             results[day] = BudgetDay(day, revenue, target, minOf(revenue, target ?: 0), ((target ?: 0) - revenue).coerceAtLeast(0), surplus,
-                (surplus ?: 0) - free, if (surplus == null) null else free)
+                0L, surplus)
         }
         return BudgetReport(results, order.map { debt -> DebtBalance(debt, allocations.getValue(debt.id), paid.getValue(debt.id)) }, cycles)
     }

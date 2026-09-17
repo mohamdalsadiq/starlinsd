@@ -46,7 +46,7 @@ class ManagerUiTest {
         compose.onNodeWithText("بنكك المسجّل").assertDoesNotExist()
         compose.onNodeWithTag("today-profit").assertDoesNotExist()
         compose.onNodeWithTag("cycle-profit").assertTextEquals("500 ج.س").assertIsDisplayed()
-        compose.onNodeWithTag("cycle-profit-explanation").assertTextEquals("هذا ربحك الفعلي بعد كامل فاتورة الدورة. الفائض اليومي في الأسفل رقم توزيع مؤقت فقط وليس ربحًا.")
+        compose.onNodeWithTag("cycle-profit-explanation").assertTextEquals("صافي الدورة = إجمالي دخل الدورة − تكلفة الفاتورة كاملة − أي مصروفات مسجّلة.")
         compose.onRoot().captureRoboImage("build/reports/ui/dashboard.png")
         compose.onNodeWithTag("dashboard-list").performScrollToNode(hasTestTag("open-history"))
         compose.onRoot().captureRoboImage("build/reports/ui/recent-days.png")

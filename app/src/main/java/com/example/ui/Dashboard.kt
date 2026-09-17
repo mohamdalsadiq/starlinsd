@@ -73,17 +73,12 @@ private fun dateLabel(at: Long, pattern: String = "EEEE، d MMMM yyyy") = Simple
             androidx.compose.foundation.Image(androidx.compose.ui.res.painterResource(com.example.R.drawable.slotra_mark), null, Modifier.size(40.dp).clip(RoundedCornerShape(12.dp)))
             Column { Text("Slotra", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold); Text(dateLabel(snapshot.day), style = MaterialTheme.typography.bodySmall) }
         } }
-        item(key = "income") { Panel {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) { MoneyLine("إيراد اليوم", daily.revenue, "today-revenue", true); Text("${daily.sales} اشتراكًا مثبتًا", style = MaterialTheme.typography.bodySmall) }
-                IconButton(onClick = { selectedDay = snapshot.day; calendar = true }) { Icon(Icons.Default.EditNote, "مراجعة وتعديل دخل اليوم") }
-            }
-        } }
+        val dayNum = Calendar.getInstance().apply { timeInMillis = snapshot.day }.get(Calendar.DAY_OF_MONTH)
         item(key = "profit") { Panel {
-            Text("تغطية التكلفة والربح", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text("صافي الدورة", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             if (report.cost != null) {
                 MoneyLine("صافي الدورة بعد كامل الفاتورة · قبل الديون", report.cycleProfit!!, "cycle-profit", true)
-                Text("هذا ربحك الفعلي بعد كامل فاتورة الدورة. الفائض اليومي في الأسفل رقم توزيع مؤقت فقط وليس ربحًا.",
+                Text("صافي الدورة = إجمالي دخل الدورة − تكلفة الفاتورة كاملة − أي مصروفات مسجّلة.",
                     Modifier.testTag("cycle-profit-explanation"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 HorizontalDivider()
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -92,8 +87,25 @@ private fun dateLabel(at: Long, pattern: String = "EEEE، d MMMM yyyy") = Simple
                 }
                 LinearProgressIndicator(progress = { if (report.cost == 0L) 1f else (report.covered.toDouble() / report.cost).toFloat().coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth())
                 Text("التكلفة ${amount(report.cost)} · ${dateLabel(config.cycleStart, "d MMM")} – ${dateLabel(config.cycleEnd - 1, "d MMM")}", style = MaterialTheme.typography.bodySmall)
-            } else Text("حدد تكلفة الدورة وفترتها من المزيد ← الإعدادات لحساب ربحك.")
+            } else Text("حدد تكلفة الدورة وفترتها من الإعدادات لحساب صافي الدورة.")
             TextButton(onClick = openReports, modifier = Modifier.testTag("open-reports")) { Icon(Icons.Default.BarChart, null); Spacer(Modifier.width(8.dp)); Text("التقارير وتفاصيل التوزيع") }
+        } }
+        item(key = "income") { Panel {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("إيراد اليوم ($dayNum)", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                        Text("${daily.sales} مشتركًا اليوم · ${dateLabel(snapshot.day, "EEEE، d MMMM yyyy")}", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                HorizontalDivider()
+                MoneyLine("إجمالي الدخل (كاش)", daily.revenue, "today-revenue", true)
+                Button(onClick = { selectedDay = snapshot.day; calendar = true }, modifier = Modifier.fillMaxWidth().testTag("review-today-income")) {
+                    Icon(Icons.Default.EditNote, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("مراجعة وتعديل دخل اليوم")
+                }
+            }
         } }
         item(key = "actions") { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = add, modifier = Modifier.weight(1f)) { Icon(Icons.Default.PersonAdd, null, Modifier.size(20.dp)); Spacer(Modifier.width(6.dp)); Text("اشتراك جديد") }

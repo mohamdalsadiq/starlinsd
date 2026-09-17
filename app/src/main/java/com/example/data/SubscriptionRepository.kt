@@ -39,9 +39,11 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
         val now = time()
         val active = reconcile(now).filter { it.state in listOf("ACTIVE", "PAUSED") }
         dao.clearExpiredReservations(now)
-        val occupied = active.mapNotNull { it.reference.toIntOrNull() }.toSet() + dao.reservations().map { it.number }
-        val number = (1..settings.maxSubscribers).firstOrNull { it !in occupied }
-            ?: throw IllegalArgumentException("كل أرقام المشتركين مشغولة؛ أنهِ اشتراكًا أو زد الحد من الإعدادات")
+        val today = com.example.domain.Revenue.day(now)
+        val todaySessions = dao.sessions().filter { com.example.domain.Revenue.day(it.started) == today }
+        val usedToday = todaySessions.mapNotNull { it.reference.toIntOrNull() }.toSet() + dao.reservations().map { it.number }
+        val number = (1..settings.maxSubscribers).firstOrNull { it !in usedToday }
+            ?: throw IllegalArgumentException("تم استخدام جميع أرقام اليوم المتاحة ($settings.maxSubscribers)؛ زد الحد من الإعدادات")
         val reference = number.toString()
         val sessionId = UUID.randomUUID().toString()
         dao.reserve(SlotReservation(number, sessionId, now + 60000))
@@ -170,10 +172,10 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
     }
     suspend fun payDebt(id: String, debtId: String, amount: Long) = db.withTransaction {
         if (dao.debtPayments().any { it.id == id }) return@withTransaction
-        val ledger = com.example.domain.Finance.ledger(reconcile(), dao.manualSales(), dao.corrections())
-        val report = com.example.domain.Finance.report(ledger, dao.cycles(), dao.debts(), dao.debtPayments(), time())
-        val debt = requireNotNull(report.debts.find { it.debt.id == debtId }) { "الدين غير موجود" }
-        require(amount > 0 && amount <= debt.reserved && amount <= debt.remaining) { "السداد لا يتجاوز المبلغ المخصص المتاح أو المتبقي من الدين" }
+        val debt = requireNotNull(dao.debts().find { it.id == debtId }) { "الدين غير موجود" }
+        val paid = dao.debtPayments().filter { it.debtId == debtId }.sumOf { it.amount }
+        val remaining = (debt.total - paid).coerceAtLeast(0)
+        require(amount > 0 && amount <= remaining) { "السداد لا يتجاوز المبلغ المتبقي من الدين" }
         dao.payDebt(DebtPayment(id, debtId, time(), amount))
     }
 
