@@ -2,7 +2,7 @@ name: Android Build
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "feat/slotra-daily-plan" ]
   pull_request:
     branches: [ "main" ]
   workflow_dispatch:
