@@ -44,9 +44,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     ) { sessions, sales, corrections, settings, cycles ->
         FinancialData(sessions, sales, corrections, settings ?: BusinessSettings(), cycles, emptyList(), emptyList())
     }
-    val financial = combine(accountingBase, repo.dao.observeDebts(), repo.dao.observeDebtPayments(), clock) { base, debts, payments, _ ->
+    val financial = combine(accountingBase, repo.dao.observeDebts(), repo.dao.observeDebtPayments(), repo.dao.observeBalanceUpdates(), clock) { base, debts, payments, balances, _ ->
         // Fresh writes must be included immediately, not at the next fifteen-second tick.
-        reportCache.get(base.copy(debts = debts, payments = payments), System.currentTimeMillis())
+        reportCache.get(base.copy(debts = debts, payments = payments, balanceUpdates = balances), System.currentTimeMillis())
     }.flowOn(Dispatchers.Default).distinctUntilChanged()
         .stateIn(viewModelScope, sharing, null)
 
@@ -89,6 +89,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun saveShortcut(shortcut: Shortcut) = work { repo.saveShortcut(shortcut); message.value = "تم حفظ الاختصار" }
     fun deleteShortcut(shortcut: Shortcut) = work { db.shortcutDao().delete(shortcut) }
     fun saveSettings(settings: BusinessSettings) = work { repo.saveSettings(settings); message.value = "تم حفظ الإعدادات وإعادة حساب خطة الفاتورة" }
+    fun updateBalance(cash: Long, bank: Long, reason: String) = work {
+        repo.updateBalance(cash, bank, reason)
+        message.value = "تم تحديث الرصيد وإعادة حساب المطلوب للفاتورة"
+    }
     fun dismissRestore() { pendingRestore.value = null; restoreText = null }
     fun previewRestore(uri: Uri) = work {
         dismissRestore()

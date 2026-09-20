@@ -36,9 +36,9 @@ data class PanelSnapshot(val active: Int, val soon: Int, val ended: Int, val pau
             val cycle = snapshot.revenue
             return PanelSnapshot(active.size, active.count { Rules.remaining(it.clock(), now) <= 10 * Rules.MINUTE },
                 paid.count { it.state == "ENDED" || it.state == "ACTIVE" && Rules.remaining(it.clock(), now) == 0L },
-                paid.count { it.state == "PAUSED" }, snapshot.today.revenue, cycle.remainingCost,
+                paid.count { it.state == "PAUSED" }, snapshot.today.revenue, snapshot.remainingForBill,
                 snapshot.budget.day(now).available, cycle.cycleProfit,
-                cycle.cost?.let { if (it == 0L) 100 else ((cycle.covered.toDouble() / it) * 100).toInt().coerceIn(0, 100) },
+                cycle.cost?.let { if (it == 0L) 100 else ((snapshot.coveredForBill.toDouble() / it) * 100).toInt().coerceIn(0, 100) },
                 snapshot.budget.day(now).billTarget, snapshot.budget.day(now).let { if (it.billTarget == null) null else it.shortfall })
         }
     }
@@ -74,7 +74,7 @@ object StatusPanel {
         val db = AppDatabase.getDatabase(context)
         val data = db.withTransaction {
             val dao = db.businessDao()
-            FinancialData(dao.sessions(), dao.manualSales(), dao.corrections(), dao.settings() ?: BusinessSettings(), dao.cycles(), dao.debts(), dao.debtPayments())
+            FinancialData(dao.sessions(), dao.manualSales(), dao.corrections(), dao.settings() ?: BusinessSettings(), dao.cycles(), dao.debts(), dao.debtPayments(), dao.balanceUpdates())
         }
         // Release the Room transaction before aggregating the financial history.
         val snapshot = withContext(Dispatchers.Default) { PanelSnapshot.from(reportCache.get(data, now), now) }

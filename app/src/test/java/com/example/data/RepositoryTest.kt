@@ -212,4 +212,29 @@ class RepositoryTest {
         assertEquals(5 * Rules.MINUTE, fresh.grace)
     }
 
+    @Test fun balanceReconciliationDoesNotDoubleCountPendingRecognitionAndSurvivesBackup() = runBlocking {
+        val session = start()
+        repo.updateBalance(100000, 125000, "الرصيد الموجود")
+        assertEquals(100000L, repo.dao.balanceUpdates().single().cashReceived)
+        now += 5 * Rules.MINUTE; repo.reconcile()
+        fun balance(updates: List<BalanceUpdate>, sessions: List<Session>, sales: List<ManualSale>) =
+            com.example.domain.BalanceBook.state(updates, com.example.domain.BalanceBook.receipts(sessions, sales), now)!!.funds
+        assertEquals(100000L, balance(repo.dao.balanceUpdates(), repo.dao.sessions(), repo.dao.manualSales()).cash)
+        start()
+        assertEquals(200000L, balance(repo.dao.balanceUpdates(), repo.dao.sessions(), repo.dao.manualSales()).cash)
+        repo.updateBalance(50000, 125000, "سحب شخصي")
+        repo.updateBalance(50000, 125000, "تأكيد الرصيد")
+        assertEquals(50000L, balance(repo.dao.balanceUpdates(), repo.dao.sessions(), repo.dao.manualSales()).cash)
+        val backup = repo.exportJson(); repo.restoreJson(backup)
+        assertEquals(3, repo.dao.balanceUpdates().size)
+        assertEquals(50000L, balance(repo.dao.balanceUpdates(), repo.dao.sessions(), repo.dao.manualSales()).cash)
+        assertEquals(session.started + 5 * Rules.MINUTE, repo.dao.session(session.id)!!.recognized)
+        val old = org.json.JSONObject(backup).put("version", 5); old.remove("balance_updates")
+        assertTrue(BackupData.parse(old.toString()).rows.getValue("balance_updates").isEmpty())
+        val bad = org.json.JSONObject(backup)
+        bad.getJSONArray("balance_updates").getJSONObject(0).put("cashReceived", Long.MAX_VALUE)
+        assertTrue(runCatching { repo.restoreJson(bad.toString()) }.isFailure)
+        assertEquals(3, repo.dao.balanceUpdates().size)
+    }
+
 }

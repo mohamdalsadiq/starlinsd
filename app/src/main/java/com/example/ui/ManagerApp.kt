@@ -317,11 +317,27 @@ internal fun amount(minor: Long): String {
     val importing = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { it?.let(vm::previewRestore) }
     val pendingRestore by vm.pendingRestore.collectAsStateWithLifecycle()
     val backupStatus by vm.backupStatus.collectAsStateWithLifecycle()
+    val finance by vm.financial.collectAsStateWithLifecycle()
+    var balanceForm by rememberSaveable { mutableStateOf(false) }
     val component = ComponentName(context, TextExpanderService::class.java)
     val enabled = remember(now, bound) { Settings.Secure.getString(context.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES).orEmpty().split(':').any { ComponentName.unflattenFromString(it) == component } }
     fun open(intent: Intent) { try { context.startActivity(intent) } catch (_: Exception) { vm.message.value = "هذا الإعداد غير متاح هنا؛ افتحه من إعدادات الهاتف." } }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item { Title("الإعدادات", "تحكّم في الحساب والتنبيهات واستمرارية الاختصارات") }
+        item { Panel {
+            SectionHeading(Icons.Default.AccountBalanceWallet, "الرصيد الموجود", "مطابقة الكاش وبنكك وإعادة حساب خطة الفاتورة")
+            finance?.balance?.let { balance ->
+                MoneyLine("الكاش الموجود حسب آخر تحديث والتحصيلات", balance.funds.cash)
+                MoneyLine("رصيد بنكك", balance.funds.bank)
+                finance?.availableBalanceSurplus?.let { MoneyLine("فائض الرصيد بعد تكلفة الدورة", it) }
+                Text("آخر مطابقة: ${stamp(balance.update.at)} · ${balance.update.reason}", style = MaterialTheme.typography.bodySmall)
+            } ?: Text("أدخل الموجود عندك الآن ليكون أساس حساب المتبقي والمطلوب يوميًا.")
+            Button(enabled = !busy && finance != null, onClick = { balanceForm = true }, modifier = Modifier.testTag("update-balance")) { Text("تحديث الكاش وبنكك") }
+            Text("بعد أي سحب أو مصروف أو ردّ مبلغ، حدّث الموجود هنا. التحصيلات الجديدة تضاف مرة واحدة؛ تصحيح الإيراد أو إلغاؤه لا يسجّل حركة نقدية.", style = MaterialTheme.typography.bodySmall)
+            finance?.data?.balanceUpdates?.takeLast(3)?.asReversed()?.forEach {
+                Text("${stamp(it.at)} · ${it.reason} · كاش ${amount(it.cash)} · بنكك ${amount(it.bank)}", style = MaterialTheme.typography.bodySmall)
+            }
+        } }
         item { Panel {
             SectionHeading(Icons.Default.VerifiedUser, "جاهزية التطبيق")
             Text("الاختصارات: ${if (bound) "الخدمة متصلة" else if (enabled) "مفعّلة؛ النظام لم يربط الخدمة حاليًا" else "تحتاج تفعيل إمكانية الوصول"}")
@@ -380,6 +396,9 @@ internal fun amount(minor: Long): String {
         title = { Text("استعادة هذه النسخة؟") }, text = { Text("${preview.summary}\nحُفظت: ${stamp(preview.exportedAt)}\nستستبدل السجل الحالي بالكامل. احفظ نسخة منه أولًا إن أردت الاحتفاظ به.") },
         confirmButton = { Button(enabled = !busy, onClick = vm::confirmRestore) { Text("استبدال واستعادة") } },
         dismissButton = { TextButton(onClick = vm::dismissRestore) { Text("إلغاء") } }) }
+    if (balanceForm) finance?.let { snapshot ->
+        BalanceForm(snapshot, { balanceForm = false }) { cash, bank, reason -> vm.updateBalance(cash, bank, reason); balanceForm = false }
+    }
     if (edit && config != null) AccountingForm(config, { edit = false }) { vm.saveSettings(it); edit = false }
     if (appsDialog) AppsForm({ appsDialog = false; vm.refresh() })
 }

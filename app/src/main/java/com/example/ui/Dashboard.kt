@@ -89,14 +89,20 @@ private fun dateLabel(at: Long, pattern: String = "EEEE، d MMMM yyyy") = Simple
         }
         item(key = "daily-target") {
             val budget = snapshot.budget.day(snapshot.day)
-            DailyTargetCards(budget)
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                DailyTargetCards(budget, config.premiumBps)
+                Text(if (snapshot.balance == null) "الكاش وبنكك قيمتان بديلتان لنفس المطلوب حسب نسبة التحويل."
+                    else "الكاش وبنكك بديلان لنفس المطلوب. تقدم الهدف من التحصيلات بعد آخر تحديث للرصيد أو بداية اليوم.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
         item(key = "profit") { Panel {
             SectionHeading(Icons.Default.ReceiptLong, "تغطية الفاتورة", "حساب الدورة كاملة · قبل الديون")
             if (report.cost != null) {
-                MoneyLine("المتبقي من تكلفة الدورة كاملة", report.remainingCost!!, "cycle-remaining", true)
-                LinearProgressIndicator(progress = { if (report.cost == 0L) 1f else (report.covered.toDouble() / report.cost).toFloat().coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth())
-                Text("دخل الدورة ${amount(report.cycleRevenue)} من تكلفة ${amount(report.cost)}", style = MaterialTheme.typography.bodySmall)
+                MoneyLine("المتبقي من تكلفة الدورة كاملة", snapshot.remainingForBill!!, "cycle-remaining", true)
+                Text("بنكك المكافئ: ${amount(Money.cashToBank(snapshot.remainingForBill!!, config.premiumBps))}", Modifier.testTag("cycle-remaining-bank"), style = MaterialTheme.typography.bodySmall)
+                LinearProgressIndicator(progress = { if (report.cost == 0L) 1f else (snapshot.coveredForBill.toDouble() / report.cost).toFloat().coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth())
+                Text(if (snapshot.balance == null) "دخل الدورة ${amount(report.cycleRevenue)} من تكلفة ${amount(report.cost)}"
+                    else "الخطة من الرصيد الموجود · آخر تحديث ${stamp(snapshot.balance.update.at)}", style = MaterialTheme.typography.bodySmall)
                 HorizontalDivider()
                 MoneyLine("ربح الدورة بعد كامل التكلفة", report.cycleProfit!!, "cycle-profit")
                 Text("الربح بعد تغطية الفاتورة والمصروفات كاملة. التغطية المحسوبة لا تعني سداد الفاتورة.",
@@ -128,7 +134,7 @@ private fun dateLabel(at: Long, pattern: String = "EEEE، d MMMM yyyy") = Simple
     }
 }
 
-@Composable internal fun DailyTargetCards(day: BudgetDay) {
+@Composable internal fun DailyTargetCards(day: BudgetDay, premiumBps: Int = 2500) {
     if (day.billTarget == null) {
         Panel { Text("اضبط تواريخ الدورة وتكلفتها لإظهار المطلوب اليوم.") }
         return
@@ -137,21 +143,22 @@ private fun dateLabel(at: Long, pattern: String = "EEEE، d MMMM yyyy") = Simple
     BoxWithConstraints(Modifier.fillMaxWidth()) {
         if (maxWidth < 320.dp || largeText) {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                TargetTile("المطلوب اليوم للفاتورة", day.billTarget, "daily-bill-target", "يتجدد مع بداية كل يوم", Modifier.fillMaxWidth())
-                TargetTile("الناقص من هدف اليوم", day.shortfall, "daily-shortfall", if (day.shortfall == 0L) "تحقق هدف اليوم" else "ينقص مع اعتماد الإيراد", Modifier.fillMaxWidth())
+                TargetTile("المطلوب اليوم للفاتورة · كاش", day.billTarget, "daily-bill-target", "يتجدد مع بداية كل يوم", premiumBps, Modifier.fillMaxWidth())
+                TargetTile("الناقص من هدف اليوم · كاش", day.shortfall, "daily-shortfall", if (day.shortfall == 0L) "تحقق هدف اليوم" else "ينقص مع التحصيل", premiumBps, Modifier.fillMaxWidth())
             }
         } else Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            TargetTile("المطلوب اليوم للفاتورة", day.billTarget, "daily-bill-target", "يتجدد مع بداية كل يوم", Modifier.weight(1f))
-            TargetTile("الناقص من هدف اليوم", day.shortfall, "daily-shortfall", if (day.shortfall == 0L) "تحقق هدف اليوم" else "ينقص مع اعتماد الإيراد", Modifier.weight(1f))
+            TargetTile("المطلوب اليوم للفاتورة · كاش", day.billTarget, "daily-bill-target", "يتجدد مع بداية كل يوم", premiumBps, Modifier.weight(1f))
+            TargetTile("الناقص من هدف اليوم · كاش", day.shortfall, "daily-shortfall", if (day.shortfall == 0L) "تحقق هدف اليوم" else "ينقص مع التحصيل", premiumBps, Modifier.weight(1f))
         }
     }
 }
 
-@Composable private fun TargetTile(label: String, value: Long, tag: String, hint: String, modifier: Modifier) {
+@Composable private fun TargetTile(label: String, value: Long, tag: String, hint: String, premiumBps: Int, modifier: Modifier) {
     OutlinedCard(modifier) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(label, style = MaterialTheme.typography.labelLarge)
             Text(amount(value), Modifier.testTag(tag), style = MaterialTheme.typography.titleLarge.copy(textDirection = androidx.compose.ui.text.style.TextDirection.ContentOrLtr), fontWeight = FontWeight.Bold)
+            Text("بنكك: ${amount(Money.cashToBank(value, premiumBps))}", Modifier.testTag("$tag-bank"), style = MaterialTheme.typography.bodySmall)
             Text(hint, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }

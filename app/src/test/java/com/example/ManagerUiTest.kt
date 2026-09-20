@@ -47,6 +47,7 @@ class ManagerUiTest {
         compose.onNodeWithTag("today-profit").assertDoesNotExist()
         compose.onRoot().captureRoboImage("build/reports/ui/daily-plan.png")
         compose.onNodeWithTag("daily-bill-target").assertTextEquals("16.67 ج.س")
+        compose.onNodeWithTag("daily-bill-target-bank").assertTextEquals("بنكك: 20.84 ج.س")
         compose.onNodeWithTag("daily-shortfall").assertTextEquals("0 ج.س")
         compose.onNodeWithTag("dashboard-list").performScrollToNode(hasTestTag("cycle-profit-explanation"))
         compose.onNodeWithTag("cycle-profit").assertTextEquals("500 ج.س").assertIsDisplayed()
@@ -146,6 +147,19 @@ class ManagerUiTest {
         compose.onNodeWithTag("daily-bill-target").assertTextEquals("20,000 ج.س").assertIsDisplayed()
         compose.onNodeWithTag("daily-shortfall").assertTextEquals("5,000 ج.س").assertIsDisplayed()
         compose.onRoot().captureRoboImage("build/reports/ui/landscape-dark.png")
+    }
+
+    @Test fun balanceFormAcceptsArabicBalancesAndKeepsBankSeparate() {
+        var saved: Triple<Long, Long, String>? = null
+        val now = System.currentTimeMillis()
+        val snapshot = FinancialReportCache().get(FinancialData(emptyList(), emptyList(), emptyList(), BusinessSettings(), emptyList(), emptyList(), emptyList()), now)
+        compose.setContent { ManagerTheme { com.example.ui.BalanceForm(snapshot, {}) { cash, bank, reason -> saved = Triple(cash, bank, reason) } } }
+        compose.onNodeWithText("الكاش الموجود الآن · ج.س").performTextInput("١٠٠٠٠")
+        compose.onNodeWithText("بنكك الموجود الآن · ج.س").performTextInput("١٢٥٠٠")
+        compose.onNodeWithText("إجمالي الموجود بمكافئ الكاش: 20,000 ج.س").performScrollTo().assertIsDisplayed()
+        compose.onRoot().captureRoboImage("build/reports/ui/balance-form.png")
+        compose.onNodeWithText("حفظ").performClick()
+        compose.runOnIdle { assertEquals(1000000L, saved!!.first); assertEquals(1250000L, saved!!.second) }
     }
 
 }

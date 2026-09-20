@@ -43,8 +43,17 @@ data class Debt(@PrimaryKey val id: String, val name: String, val total: Long, v
 @Entity(tableName = "debt_payments")
 data class DebtPayment(@PrimaryKey val id: String, val debtId: String, val at: Long, val amount: Long)
 
+@Entity(tableName = "balance_updates")
+data class BalanceUpdate(@PrimaryKey(autoGenerate = true) val id: Long = 0, val at: Long,
+    val cash: Long, val bank: Long, val cashReceived: Long, val bankReceived: Long,
+    val premiumBps: Int, val reason: String)
+
 @Dao
 interface BusinessDao {
+    @Query("SELECT * FROM balance_updates ORDER BY at, id") fun observeBalanceUpdates(): Flow<List<BalanceUpdate>>
+    @Query("SELECT * FROM balance_updates ORDER BY at, id") suspend fun balanceUpdates(): List<BalanceUpdate>
+    @Insert suspend fun balanceUpdate(update: BalanceUpdate): Long
+
     @Query("SELECT * FROM revenue_corrections ORDER BY id") fun observeCorrections(): Flow<List<RevenueCorrection>>
     @Query("SELECT * FROM revenue_corrections ORDER BY id") suspend fun corrections(): List<RevenueCorrection>
     @Insert suspend fun correct(correction: RevenueCorrection)

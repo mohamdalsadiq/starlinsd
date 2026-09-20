@@ -180,6 +180,17 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
         dao.payDebt(DebtPayment(id, debtId, time(), amount))
     }
 
+    suspend fun updateBalance(cash: Long, bank: Long, reason: String) = db.withTransaction {
+        require(cash in 0..99999999999 && bank in 0..99999999999) { "راجع الرصيد؛ أدخل مبلغًا موجبًا أو صفرًا" }
+        require(reason.trim().length in 1..200) { "اكتب سبب تحديث الرصيد" }
+        val now = time()
+        val totals = com.example.domain.BalanceBook.totals(
+            com.example.domain.BalanceBook.receipts(dao.sessions(), dao.manualSales()), now)
+        // Pending paid sessions are already included, so five-minute recognition cannot add them again.
+        dao.balanceUpdate(BalanceUpdate(at = now, cash = cash, bank = bank, cashReceived = totals.cash,
+            bankReceived = totals.bank, premiumBps = (dao.settings() ?: BusinessSettings()).premiumBps, reason = reason.trim()))
+    }
+
     suspend fun restoreJson(json: String) = withContext(Dispatchers.IO) {
         val snapshot = BackupData.parse(json)
         // A failed restore rolls back every table. SQL identifiers come only from our allowlist.
@@ -203,7 +214,7 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
 
     suspend fun exportJson(): String = withContext(Dispatchers.IO) {
         db.withTransaction {
-            val root = org.json.JSONObject().put("version", 5).put("format", "slotra-backup").put("exportedAt", System.currentTimeMillis())
+            val root = org.json.JSONObject().put("version", 6).put("format", "slotra-backup").put("exportedAt", System.currentTimeMillis())
             fun rows(query: String): org.json.JSONArray {
                 val result = org.json.JSONArray()
                 db.openHelper.readableDatabase.query(query).use { c -> while (c.moveToNext()) {
@@ -217,7 +228,7 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
                 } }
                 return result
             }
-            listOf("plans", "sessions", "settings", "shortcuts", "devices", "sequences", "manual_sales", "revenue_corrections", "billing_cycles", "debts", "debt_payments").forEach { table -> root.put(table, rows("SELECT * FROM $table")) }
+            BackupData.tables.forEach { table -> root.put(table, rows("SELECT * FROM $table")) }
             root.put("allowedApps", org.json.JSONArray(com.example.service.ExpanderHealth.allowed(context).toList()))
             root.toString(2)
         }
