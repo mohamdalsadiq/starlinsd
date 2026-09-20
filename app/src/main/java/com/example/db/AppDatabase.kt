@@ -102,7 +102,7 @@ abstract class AppDatabase : RoomDatabase() {
         }
         val MIGRATION_5_6 = object : Migration(5, 6) {
             override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL("CREATE TABLE IF NOT EXISTS balance_updates (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, at INTEGER NOT NULL, cash INTEGER NOT NULL, bank INTEGER NOT NULL, cashReceived INTEGER NOT NULL, bankReceived INTEGER NOT NULL, premiumBps INTEGER NOT NULL, reason TEXT NOT NULL)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS balance_updates (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, at INTEGER NOT NULL, cash INTEGER NOT NULL, bank INTEGER NOT NULL, cashReceived INTEGER NOT NULL, bankReceived INTEGER NOT NULL, premiumBps INTEGER NOT NULL, reason TEXT NOT NULL, expectedCash INTEGER NOT NULL, expectedBank INTEGER NOT NULL)")
             }
         }
         fun getDatabase(context: Context): AppDatabase =

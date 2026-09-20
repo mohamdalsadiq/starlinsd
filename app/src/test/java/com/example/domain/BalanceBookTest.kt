@@ -71,4 +71,16 @@ class BalanceBookTest {
         assertEquals(1200000L, report.day(day).billTarget)
         assertEquals(1500000L, report.day(day + 86400000L).billTarget)
     }
+    @Test fun monthlyTotalReplacesExpectedBalanceAndIsNeverAddedToIt() {
+        val receipts = listOf(CashReceipt(now - 1000, 10000000, 0))
+        val expected = BalanceBook.expected(emptyList(), receipts, now, day)
+        assertEquals(10000000L, expected.cash)
+        val checkpoint = update(cash = 8000000, bank = 0).copy(cashReceived = 10000000, expectedCash = expected.cash)
+        val actual = BalanceBook.state(listOf(checkpoint), receipts, now)!!.funds
+        assertEquals(8000000L, actual.cash)
+        assertEquals(-2000000L, checkpoint.cash - checkpoint.expectedCash)
+        assertEquals(2000000L, BalanceBook.plan(listOf(checkpoint), receipts, cycle, now, 2500)!!.remaining)
+        assertEquals(400000L, BalanceBook.plan(listOf(checkpoint), receipts, cycle, now, 2500)!!.target)
+    }
+
 }

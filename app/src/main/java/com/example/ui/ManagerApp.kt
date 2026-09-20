@@ -331,7 +331,9 @@ internal fun amount(minor: Long): String {
                 MoneyLine("رصيد بنكك", balance.funds.bank)
                 finance?.availableBalanceSurplus?.let { MoneyLine("فائض الرصيد بعد تكلفة الدورة", it) }
                 Text("آخر مطابقة: ${stamp(balance.update.at)} · ${balance.update.reason}", style = MaterialTheme.typography.bodySmall)
-            } ?: Text("أدخل الموجود عندك الآن ليكون أساس حساب المتبقي والمطلوب يوميًا.")
+                Text(balanceDifference("الكاش عند آخر تحديث", balance.update.cash - balance.update.expectedCash), style = MaterialTheme.typography.bodySmall)
+                Text(balanceDifference("بنكك عند آخر تحديث", balance.update.bank - balance.update.expectedBank), style = MaterialTheme.typography.bodySmall)
+            } ?: Text("أدخل إجمالي الموجود من حصيلة الشهر ليحل محل الرصيد المحسوب ويعيد حساب المطلوب يوميًا.")
             Button(enabled = !busy && finance != null, onClick = { balanceForm = true }, modifier = Modifier.testTag("update-balance")) { Text("تحديث الكاش وبنكك") }
             Text("بعد أي سحب أو مصروف أو ردّ مبلغ، حدّث الموجود هنا. التحصيلات الجديدة تضاف مرة واحدة؛ تصحيح الإيراد أو إلغاؤه لا يسجّل حركة نقدية.", style = MaterialTheme.typography.bodySmall)
             finance?.data?.balanceUpdates?.takeLast(3)?.asReversed()?.forEach {

@@ -184,11 +184,14 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
         require(cash in 0..99999999999 && bank in 0..99999999999) { "راجع الرصيد؛ أدخل مبلغًا موجبًا أو صفرًا" }
         require(reason.trim().length in 1..200) { "اكتب سبب تحديث الرصيد" }
         val now = time()
-        val totals = com.example.domain.BalanceBook.totals(
-            com.example.domain.BalanceBook.receipts(dao.sessions(), dao.manualSales()), now)
+        val config = dao.settings() ?: BusinessSettings()
+        val receipts = com.example.domain.BalanceBook.receipts(dao.sessions(), dao.manualSales())
+        val totals = com.example.domain.BalanceBook.totals(receipts, now)
+        val expected = com.example.domain.BalanceBook.expected(dao.balanceUpdates(), receipts, now, config.cycleStart)
         // Pending paid sessions are already included, so five-minute recognition cannot add them again.
         dao.balanceUpdate(BalanceUpdate(at = now, cash = cash, bank = bank, cashReceived = totals.cash,
-            bankReceived = totals.bank, premiumBps = (dao.settings() ?: BusinessSettings()).premiumBps, reason = reason.trim()))
+            bankReceived = totals.bank, premiumBps = config.premiumBps, reason = reason.trim(),
+            expectedCash = expected.cash, expectedBank = expected.bank))
     }
 
     suspend fun restoreJson(json: String) = withContext(Dispatchers.IO) {

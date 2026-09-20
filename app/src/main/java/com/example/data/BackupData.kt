@@ -22,7 +22,7 @@ data class BackupData(val rows: Map<String, List<JSONObject>>, val apps: Set<Str
             "billing_cycles" to "id start end cost",
             "debts" to "id name total start due",
             "debt_payments" to "id debtId at amount",
-            "balance_updates" to "id at cash bank cashReceived bankReceived premiumBps reason")
+            "balance_updates" to "id at cash bank cashReceived bankReceived premiumBps reason expectedCash expectedBank")
         private val strings = setOf("name", "client", "plan", "state", "payment", "source", "reference", "keyword", "phrase", "ip", "cycleId", "debtId", "reason")
         fun parse(text: String): BackupData {
             require(text.toByteArray(Charsets.UTF_8).size <= MAX_BYTES) { "النسخة أكبر من 20 ميجابايت" }
@@ -56,6 +56,7 @@ data class BackupData(val rows: Map<String, List<JSONObject>>, val apps: Set<Str
                         "balance_updates" -> {
                             range("id", Long.MAX_VALUE, 1); range("at", 32503680000000, 1)
                             range("cashReceived", Long.MAX_VALUE); range("bankReceived", Long.MAX_VALUE)
+                            range("expectedCash", Long.MAX_VALUE); range("expectedBank", Long.MAX_VALUE)
                             require(row.getString("reason").isNotBlank())
                         }
                         "billing_cycles" -> { range("cost", 9999999999999999); require(row.getLong("start") > 0 && row.getLong("end") > row.getLong("start")) }

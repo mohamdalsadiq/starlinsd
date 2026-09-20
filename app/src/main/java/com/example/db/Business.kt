@@ -46,7 +46,7 @@ data class DebtPayment(@PrimaryKey val id: String, val debtId: String, val at: L
 @Entity(tableName = "balance_updates")
 data class BalanceUpdate(@PrimaryKey(autoGenerate = true) val id: Long = 0, val at: Long,
     val cash: Long, val bank: Long, val cashReceived: Long, val bankReceived: Long,
-    val premiumBps: Int, val reason: String)
+    val premiumBps: Int, val reason: String, val expectedCash: Long = 0, val expectedBank: Long = 0)
 
 @Dao
 interface BusinessDao {

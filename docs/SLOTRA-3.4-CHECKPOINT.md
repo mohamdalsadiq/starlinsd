@@ -34,3 +34,6 @@ Local Gradle download is unavailable in this environment; GitHub Actions provide
 - Bill funding uses reconciled balances when available. Accounting revenue and full-cycle profit stay intact. Settings separately labels balance surplus after the cycle cost.
 - After a withdrawal, expense, refund or debt payment, the operator updates actual balances. Existing debt records do not identify a payment wallet, so they cannot safely auto-debit cash or bank.
 - Conversion is a planning equivalent, not proof that cash has been exchanged. No claim of actual Starlink bill settlement is made.
+
+### Clarification: replace the current total, never add it to revenue
+The user explicitly clarified that the cash/bank entries are all money currently remaining from the month up to reconciliation time. The implementation replaces the funding balance with these absolute totals. It stores expected cash/bank immediately before the update and shows per-wallet increase/decrease; the difference is an adjustment, never a new sale or profit. A regression specifies expected 100,000, actual 80,000: final balance 80,000, discrepancy -20,000, never 180,000.

@@ -25,6 +25,14 @@ object BalanceBook {
         return CashBank(eligible.sumOf { it.cash }, eligible.sumOf { it.bank })
     }
 
+    fun expected(updates: List<BalanceUpdate>, receipts: List<CashReceipt>, at: Long, cycleStart: Long): CashBank {
+        state(updates, receipts, at)?.let { return it.funds }
+        val start = if (cycleStart > 0) cycleStart else Calendar.getInstance().apply {
+            timeInMillis = Revenue.day(at); set(Calendar.DAY_OF_MONTH, 1)
+        }.timeInMillis
+        return totals(receipts.filter { it.at >= start }, at)
+    }
+
     fun state(updates: List<BalanceUpdate>, receipts: List<CashReceipt>, at: Long): BalanceState? {
         val update = updates.filter { it.at <= at }.maxWithOrNull(compareBy<BalanceUpdate> { it.at }.thenBy { it.id }) ?: return null
         val total = totals(receipts, at)
