@@ -37,3 +37,13 @@ Local Gradle download is unavailable in this environment; GitHub Actions provide
 
 ### Clarification: replace the current total, never add it to revenue
 The user explicitly clarified that the cash/bank entries are all money currently remaining from the month up to reconciliation time. The implementation replaces the funding balance with these absolute totals. It stores expected cash/bank immediately before the update and shows per-wallet increase/decrease; the difference is an adjustment, never a new sale or profit. A regression specifies expected 100,000, actual 80,000: final balance 80,000, discrepancy -20,000, never 180,000.
+
+## Final verification — 2026-09-20
+- Application source: `83d323b308cc5d44eeedb3c2df6b769aa01b1c7d`; [successful CI run](https://github.com/mohamdalsadiq/starlinsd/actions/runs/35515455149).
+- 68 tests passed, zero failed or skipped. `lintDebug`, `assembleDebug`, and `assembleRelease` passed in the same run. Migration tests preserve v1 devices/shortcuts and v2/v5 subscriptions; balance backup round-trip and repeated reconciliation pass.
+- Reviewed native rendered balance form, dashboard cash/bank amounts, large Arabic text and dark landscape. No physical-device test was performed.
+- Room schema `6.json` is the generated output from this exact successful run. This documentation/schema follow-up does not modify application source.
+- Unsigned CI bundle: 13,215,639 bytes; SHA-256 `5b5b9dd8442c3052b6d9a1f5e471f8482d0b3316ce43d3fb60f31e4d8931a521`.
+- Signed `Slotra-3.4.apk`: SHA-256 `91715b19bfd86003a550dd719f107ad099882430504d757b9d0130d0984233d4`. APK v2/v3 signatures, 16 KiB alignment, and unchanged application ZIP contents verified.
+- Original 3.1 APK and new APK share package `com.aistudio.starlinkmanager.zbxpq` and certificate SHA-256 `ec2716e37b05a51578422eef8ea7f913d06e1f622ad2072b75bd6402d91847f9`; version code increases from 5 to 8. Both are non-debuggable. This verifies release identity, not an on-device installation over an unknown preview build.
+- Draft PR #7 remains unmerged against `feat/subscription-shortcuts`.
