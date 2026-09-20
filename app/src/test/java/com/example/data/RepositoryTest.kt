@@ -32,28 +32,28 @@ class RepositoryTest {
         return repo.prepare("محمد", p.id, payment, "test").also { repo.insert(it) }
     }
     @Test fun cancellationBeforeThresholdDoesNotBookRevenue() = runBlocking {
-        val s = start(); now += 29 * Rules.MINUTE
+        val s = start(); now += 5 * Rules.MINUTE - 1
         repo.changeState(s.id, "CANCEL"); now += 60 * Rules.MINUTE; repo.reconcile()
         assertEquals(0L, repo.dao.session(s.id)!!.recognized)
         assertEquals("CANCELLED", repo.dao.session(s.id)!!.state)
     }
-    @Test fun exactlyThirtyMinutesBooksFullPackageOnceEvenAfterCancellation() = runBlocking {
-        val s = start(); now += 30 * Rules.MINUTE
+    @Test fun exactlyFiveMinutesBooksFullPackageOnceEvenAfterCancellation() = runBlocking {
+        val s = start(); now += 5 * Rules.MINUTE
         repo.changeState(s.id, "CANCEL")
         repeat(3) { now += Rules.MINUTE; repo.reconcile(); repo.insert(s) }
         val row = repo.dao.session(s.id)!!
         assertEquals(100000L, row.amount)
-        assertEquals(s.started + 30 * Rules.MINUTE, row.recognized)
+        assertEquals(s.started + 5 * Rules.MINUTE, row.recognized)
         assertEquals(1, repo.dao.sessions().size)
     }
     @Test fun pauseExcludesTimeAndSettingsChangesPreserveSnapshots() = runBlocking {
-        val s = start(60, payment = "BANK"); now += 20 * Rules.MINUTE
+        val s = start(60, payment = "BANK"); now += 2 * Rules.MINUTE
         repo.changeState(s.id, "PAUSE"); now += 120 * Rules.MINUTE
         repo.reconcile(); assertEquals(0L, repo.dao.session(s.id)!!.recognized)
         repo.saveSettings(BusinessSettings(premiumBps = 0, graceMinutes = 0))
         val plan = repo.dao.plans().first { it.minutes == 60 }
         repo.savePlan(plan.copy(cash = 900000, bank = 900000))
-        repo.changeState(s.id, "RESUME"); now += 10 * Rules.MINUTE
+        repo.changeState(s.id, "RESUME"); now += 3 * Rules.MINUTE
         repo.reconcile(); val row = repo.dao.session(s.id)!!
         assertEquals(62500L, row.amount); assertEquals(50000L, row.cashEquivalent)
         assertEquals(2500, row.premiumBps); assertEquals(now, row.recognized)
@@ -67,7 +67,7 @@ class RepositoryTest {
         now += 24 * 60 * Rules.MINUTE
         val rows = repo.reconcile()
         assertEquals("ENDED", rows.first { it.id == paid.id }.state)
-        assertEquals(paid.started + 30 * Rules.MINUTE, rows.first { it.id == paid.id }.recognized)
+        assertEquals(paid.started + 5 * Rules.MINUTE, rows.first { it.id == paid.id }.recognized)
         val home = rows.first { it.id == legacy.id }
         assertEquals("CANCELLED", home.state); assertEquals("", home.reference)
         assertTrue(home.notified); assertTrue(home.warned); assertEquals(0L, home.recognized)
@@ -185,6 +185,31 @@ class RepositoryTest {
         repo.saveSettings(first.copy(cycleStart = first.cycleEnd, cycleEnd = first.cycleEnd + 30 * 86400000L))
         assertEquals(2, repo.dao.cycles().size)
         assertTrue(repo.dao.settings()!!.cycleId != first.cycleId)
+    }
+
+    @Test fun midnightRecognitionUsesThresholdDayEvenAfterRestart() = runBlocking {
+        now = com.example.domain.Revenue.day(now) + 24 * 60 * Rules.MINUTE - 2 * Rules.MINUTE
+        val s = start()
+        now += 60 * Rules.MINUTE
+        val restarted = SubscriptionRepository(ApplicationProvider.getApplicationContext(), db) { now }
+        restarted.initialize(); restarted.reconcile()
+        val row = repo.dao.session(s.id)!!
+        assertEquals(s.started + 5 * Rules.MINUTE, row.recognized)
+        assertTrue(com.example.domain.Revenue.day(row.recognized) > com.example.domain.Revenue.day(s.started))
+        repeat(3) { restarted.reconcile() }
+        assertEquals(1, repo.dao.sessions().size)
+    }
+
+    @Test fun upgradePreservesExistingTimerPriceAndRecognitionSnapshots() = runBlocking {
+        val s = start()
+        val legacy = s.copy(grace = 30 * Rules.MINUTE, served = 2 * Rules.MINUTE, state = "PAUSED")
+        repo.dao.updateSession(legacy)
+        repo.dao.settings(repo.dao.settings()!!.copy(graceMinutes = 30))
+        repo.initialize()
+        assertEquals(5, repo.dao.settings()!!.graceMinutes)
+        assertEquals(legacy, repo.dao.session(s.id))
+        val fresh = start()
+        assertEquals(5 * Rules.MINUTE, fresh.grace)
     }
 
 }

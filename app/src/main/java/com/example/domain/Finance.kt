@@ -14,13 +14,11 @@ data class DebtBalance(val debt: Debt, val allocated: Long, val paid: Long) {
     val reserved get() = (allocated - paid).coerceAtLeast(0)
     val fundingGap get() = (paid - allocated).coerceAtLeast(0)
 }
-data class BudgetReport(val days: Map<Long, BudgetDay>, val debts: List<DebtBalance>, val cycles: List<BillingCycle>) {
+data class BudgetReport(val days: Map<Long, BudgetDay>, val debts: List<DebtBalance>, val cycles: List<BillingCycle>,
+    val cycleIncome: Map<String, Map<Long, Long>> = emptyMap()) {
     fun day(at: Long): BudgetDay {
         val date = Revenue.day(at)
-        return days[date] ?: cycles.firstOrNull { date >= Revenue.day(it.start) && date < it.end }?.let {
-            val target = Finance.dailyTarget(it)
-            BudgetDay(date, 0, target, 0, target, 0, 0, 0)
-        } ?: BudgetDay(date, 0, null, 0, 0, null, 0, null)
+        return days[date] ?: Finance.budgetDay(date, 0, cycles, cycleIncome)
     }
 }
 
@@ -38,30 +36,37 @@ object Finance {
         while (a.timeInMillis < end && count < 36600) { count++; a.add(Calendar.DAY_OF_MONTH, 1) }
         return count.coerceAtLeast(1)
     }
-    fun dailyTarget(cycle: BillingCycle): Long = (cycle.cost + days(cycle.start, cycle.end) - 1) / days(cycle.start, cycle.end)
+    fun dailyTarget(cycle: BillingCycle): Long = divideUp(cycle.cost, days(cycle.start, cycle.end))
 
-    /** The bill target depends on the saved cycle, never on today's changing receipts. */
+    private fun divideUp(value: Long, divisor: Int): Long = value / divisor + if (value % divisor > 0) 1 else 0
+
+    internal fun budgetDay(day: Long, revenue: Long, cycles: List<BillingCycle>,
+        cycleIncome: Map<String, Map<Long, Long>>): BudgetDay {
+        val cycle = cycles.firstOrNull { day >= Revenue.day(it.start) && day < it.end }
+            ?: return BudgetDay(day, revenue, null, 0, 0, null, 0, null)
+        val income = cycleIncome[cycle.id].orEmpty()
+        // Only receipts before this calendar day affect its target. Today's receipts never move it.
+        val before = income.filterKeys { it < day }.values.sum()
+        val remaining = (cycle.cost - before).coerceAtLeast(0)
+        val target = divideUp(remaining, days(maxOf(day, cycle.start), cycle.end))
+        val surplus = (revenue - target).coerceAtLeast(0)
+        return BudgetDay(day, revenue, target, minOf(income[day] ?: 0, remaining),
+            (target - revenue).coerceAtLeast(0), surplus, 0, surplus)
+    }
+
+    /** Derived coverage is not a cash reservation or a recorded bill payment. */
     fun report(ledger: List<LedgerEntry>, cycles: List<BillingCycle>, debts: List<Debt>, payments: List<DebtPayment>, now: Long): BudgetReport {
         val today = Revenue.day(now)
-        val income = ledger.filter { !it.voided && it.at <= now }.groupBy { Revenue.day(it.at) }.mapValues { (_, rows) -> rows.sumOf { it.value } }
-        val allocations = debts.associate { it.id to 0L }.toMutableMap()
-        val order = debts.sortedWith(compareBy<Debt> { it.due }.thenBy { it.id })
-        val paid = debts.associate { debt -> debt.id to payments.filter { it.debtId == debt.id && it.at <= now }.sumOf { it.amount } }
-        val results = linkedMapOf<Long, BudgetDay>()
-        (income.keys + today).sorted().forEach { day ->
-            val revenue = income[day] ?: 0L
-            val cycle = cycles.firstOrNull { day >= Revenue.day(it.start) && day < it.end }
-            val target = cycle?.let(::dailyTarget)
-            val surplus = target?.let { (revenue - it).coerceAtLeast(0) }
-            var free = surplus ?: 0L
-            // Debts are completely isolated reminders. Surplus is never auto-drained for unpaid debt.
-            // Debt allocations only reflect actual manual payments.
-            order.forEach { debt ->
-                allocations[debt.id] = paid.getValue(debt.id)
-            }
-            results[day] = BudgetDay(day, revenue, target, minOf(revenue, target ?: 0), ((target ?: 0) - revenue).coerceAtLeast(0), surplus,
-                0L, surplus)
+        val valid = ledger.filter { !it.voided && it.at in 1..now }
+        val income = valid.groupBy { Revenue.day(it.at) }.mapValues { (_, rows) -> rows.sumOf { it.value } }
+        val cycleIncome = cycles.associate { cycle -> cycle.id to valid.filter { it.at >= cycle.start && it.at < cycle.end }
+            .groupBy { Revenue.day(it.at) }.mapValues { (_, rows) -> rows.sumOf { it.value } } }
+        val paid = payments.filter { it.at <= now }.groupBy { it.debtId }.mapValues { (_, rows) -> rows.sumOf { it.amount } }
+        val balances = debts.sortedWith(compareBy<Debt> { it.due }.thenBy { it.id }).map {
+            val amount = paid[it.id] ?: 0L
+            DebtBalance(it, amount, amount)
         }
-        return BudgetReport(results, order.map { debt -> DebtBalance(debt, allocations.getValue(debt.id), paid.getValue(debt.id)) }, cycles)
+        val results = (income.keys + today).sorted().associateWith { day -> budgetDay(day, income[day] ?: 0, cycles, cycleIncome) }
+        return BudgetReport(results, balances, cycles, cycleIncome)
     }
 }

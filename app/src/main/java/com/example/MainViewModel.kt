@@ -23,7 +23,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val debts = repo.dao.observeDebts().stateIn(viewModelScope, sharing, emptyList())
     val debtPayments = repo.dao.observeDebtPayments().stateIn(viewModelScope, sharing, emptyList())
     fun correctRevenue(source: String, amount: Long, count: Int, voided: Boolean, reason: String) = work {
-        repo.correctRevenue(source, amount, count, voided, reason); message.value = "تم تصحيح الإيراد وإعادة حساب السجل"
+        repo.correctRevenue(source, amount, count, voided, reason); message.value = "تم تصحيح الإيراد وإعادة حساب أهداف الأيام"
     }
     fun saveDebt(debt: Debt) = work { repo.saveDebt(debt); message.value = "تم حفظ خطة الدين" }
     fun payDebt(id: String, debtId: String, amount: Long) = work { repo.payDebt(id, debtId, amount); message.value = "تم تسجيل السداد الفعلي" }
@@ -88,7 +88,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun savePlan(plan: Plan) = work { repo.savePlan(plan); message.value = "تم حفظ الباقة" }
     fun saveShortcut(shortcut: Shortcut) = work { repo.saveShortcut(shortcut); message.value = "تم حفظ الاختصار" }
     fun deleteShortcut(shortcut: Shortcut) = work { db.shortcutDao().delete(shortcut) }
-    fun saveSettings(settings: BusinessSettings) = work { repo.saveSettings(settings); message.value = "تم حفظ الإعدادات للاشتراكات الجديدة" }
+    fun saveSettings(settings: BusinessSettings) = work { repo.saveSettings(settings); message.value = "تم حفظ الإعدادات وإعادة حساب خطة الفاتورة" }
     fun dismissRestore() { pendingRestore.value = null; restoreText = null }
     fun previewRestore(uri: Uri) = work {
         dismissRestore()

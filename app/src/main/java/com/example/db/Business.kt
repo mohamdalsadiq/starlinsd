@@ -18,7 +18,7 @@ data class Session(
 ) { fun clock() = Clock(duration, served, resumed, state == "ACTIVE") }
 
 @Entity(tableName = "settings")
-data class BusinessSettings(@PrimaryKey val id: Int = 1, val graceMinutes: Int = 30, val premiumBps: Int = 2500,
+data class BusinessSettings(@PrimaryKey val id: Int = 1, val graceMinutes: Int = com.example.domain.Rules.RECOGNITION_MINUTES, val premiumBps: Int = 2500,
     val usdCents: Long = 0, val bankRate: Long = 0, val cycleStart: Long = 0, val cycleEnd: Long = 0, val expenses: Long = 0,
     @ColumnInfo(defaultValue = "50") val maxSubscribers: Int = 50,
     @ColumnInfo(defaultValue = "''") val cycleId: String = "")

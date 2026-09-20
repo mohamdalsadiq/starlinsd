@@ -45,8 +45,12 @@ class ManagerUiTest {
         compose.onNodeWithTag("today-revenue").assertTextEquals("1,000 ج.س").assertIsDisplayed()
         compose.onNodeWithText("بنكك المسجّل").assertDoesNotExist()
         compose.onNodeWithTag("today-profit").assertDoesNotExist()
+        compose.onRoot().captureRoboImage("build/reports/ui/daily-plan.png")
+        compose.onNodeWithTag("daily-bill-target").assertTextEquals("16.67 ج.س")
+        compose.onNodeWithTag("daily-shortfall").assertTextEquals("0 ج.س")
+        compose.onNodeWithTag("dashboard-list").performScrollToNode(hasTestTag("cycle-profit-explanation"))
         compose.onNodeWithTag("cycle-profit").assertTextEquals("500 ج.س").assertIsDisplayed()
-        compose.onNodeWithTag("cycle-profit-explanation").assertTextEquals("صافي الدورة = إجمالي دخل الدورة − تكلفة الفاتورة كاملة − أي مصروفات مسجّلة.")
+        compose.onNodeWithTag("cycle-profit-explanation").assertTextEquals("الربح بعد تغطية الفاتورة والمصروفات كاملة. التغطية المحسوبة لا تعني سداد الفاتورة.")
         compose.onRoot().captureRoboImage("build/reports/ui/dashboard.png")
         compose.onNodeWithTag("dashboard-list").performScrollToNode(hasTestTag("open-history"))
         compose.onRoot().captureRoboImage("build/reports/ui/recent-days.png")
@@ -61,11 +65,11 @@ class ManagerUiTest {
         compose.setContent { ManagerTheme { Surface(Modifier.fillMaxSize()) { Column {
             DebtPaymentIndicator(DebtBalance(debt.copy(id = "paid", name = "مسدد"), 100000, 100000))
             DebtPaymentIndicator(DebtBalance(debt.copy(id = "ready", name = "جاهز"), 50000, 10000))
-            DebtPaymentIndicator(DebtBalance(debt.copy(id = "waiting", name = "انتظار"), 0, 0))
+            DebtPaymentIndicator(DebtBalance(debt.copy(id = "waiting", name = "انتظار", due = System.currentTimeMillis() + 86400000L), 0, 0))
         } } } }
         compose.onNodeWithText("مسدد بالكامل · لا يلزم سداد").assertIsDisplayed()
-        compose.onNodeWithText("سداد جاهز اليوم: 400 ج.س").assertIsDisplayed()
-        compose.onNodeWithText("لم يتوفر مخصص للسداد اليوم").assertIsDisplayed()
+        compose.onNodeWithText("مطلوب السداد · حلّ الموعد").assertIsDisplayed()
+        compose.onNodeWithText("دين قائم · لم يحل الموعد").assertIsDisplayed()
         compose.onRoot().captureRoboImage("build/reports/ui/debt-indicators.png")
     }
 
@@ -124,9 +128,24 @@ class ManagerUiTest {
             }
         } }
         compose.onNodeWithTag("today-revenue").assertTextEquals("161,000 ج.س").assertIsDisplayed()
+        compose.onNodeWithTag("dashboard-list").performScrollToNode(hasTestTag("cycle-profit"))
         compose.onNodeWithTag("cycle-profit").assertTextEquals("0 ج.س").assertIsDisplayed()
         compose.onNodeWithTag("dashboard-list").performScrollToNode(hasTestTag("cycle-remaining"))
         compose.onNodeWithTag("cycle-remaining").assertTextEquals("310,400 ج.س").assertIsDisplayed()
         compose.onRoot().captureRoboImage("build/reports/ui/large-arabic-text.png")
     }
+    @Test @Config(sdk = [36], qualifiers = "w800dp-h360dp-mdpi-night")
+    fun landscapeDarkDashboardPreservesTargetAndIncome() {
+        val now = System.currentTimeMillis()
+        val day = Revenue.day(now)
+        val config = BusinessSettings(usdCents = 100, bankRate = 12500000, cycleStart = day, cycleEnd = day + 5 * 86400000L)
+        val data = FinancialData(emptyList(), listOf(ManualSale("sample", now, 15, 100000, 1500000, 1500000, "CASH", 2500)), emptyList(), config, emptyList(), emptyList(), emptyList())
+        compose.setContent { ManagerTheme { Surface(Modifier.fillMaxSize()) { Dashboard(FinancialReportCache().get(data, now)) {} } } }
+        compose.onNodeWithTag("today-revenue").assertTextEquals("15,000 ج.س")
+        compose.onNodeWithTag("dashboard-list").performScrollToNode(hasTestTag("daily-shortfall"))
+        compose.onNodeWithTag("daily-bill-target").assertTextEquals("20,000 ج.س").assertIsDisplayed()
+        compose.onNodeWithTag("daily-shortfall").assertTextEquals("5,000 ج.س").assertIsDisplayed()
+        compose.onRoot().captureRoboImage("build/reports/ui/landscape-dark.png")
+    }
+
 }

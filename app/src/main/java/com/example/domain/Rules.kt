@@ -34,6 +34,7 @@ object Money {
 data class Clock(val duration: Long, val served: Long, val resumed: Long, val running: Boolean)
 object Rules {
     const val MINUTE = 60000L
+    const val RECOGNITION_MINUTES = 5
     fun served(c: Clock, now: Long): Long = (c.served + if (c.running) (now - c.resumed).coerceAtLeast(0) else 0).coerceIn(0, c.duration)
     fun remaining(c: Clock, now: Long): Long = c.duration - served(c, now)
     fun qualifies(c: Clock, now: Long, grace: Long, home: Boolean): Boolean = !home && served(c, now) >= grace.coerceIn(0, c.duration)

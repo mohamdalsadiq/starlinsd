@@ -51,8 +51,8 @@ import java.util.*
 
 internal fun stamp(at: Long): String = SimpleDateFormat("dd/MM · hh:mm a", Locale.forLanguageTag("ar")).format(Date(at))
 internal fun remaining(ms: Long): String {
-    val minutes = (ms.coerceAtLeast(0) + 59999) / 60000
-    return "${minutes / 60} س ${minutes % 60} د"
+    val seconds = (ms.coerceAtLeast(0) + 999) / 1000
+    return String.format(Locale.ROOT, "%02d:%02d:%02d", seconds / 3600, seconds % 3600 / 60, seconds % 60)
 }
 internal fun amount(minor: Long): String {
     val number = java.text.NumberFormat.getNumberInstance(Locale.US).apply { maximumFractionDigits = 2 }
@@ -165,7 +165,7 @@ internal fun amount(minor: Long): String {
     val soon = active.count { Rules.remaining(it.clock(), now) <= 10 * Rules.MINUTE }
     Panel {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("المتابعة الآن", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text("المتابعة الآن · توقيت يدوي", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             TextButton(onClick = open) { Text("المشتركون") }
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -217,7 +217,7 @@ internal fun amount(minor: Long): String {
         SessionSearch.filter(sessions, search, filter, requested, now)
     }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { Title("المشتركون", "كل اشتراك يحتفظ بسعره وشروطه وقت التسجيل") }
+        item { Title("المشتركون", "توقيت يدوي · أوقف الوقت عند المغادرة واستأنفه عند العودة") }
         item { Button(onClick = add, enabled = !busy) { Text("اشتراك جديد") } }
         item { Field("ابحث بالاسم أو الرقم أو الباقة", search, { search = it }) }
         item { Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) { labels.forEach { (id, title) -> Choice(title, filter == id) { filter = id } } } }
@@ -232,7 +232,16 @@ internal fun amount(minor: Long): String {
             Text("${s.plan} · ${labels.firstOrNull { it.first == s.state }?.second.orEmpty()}")
             var expanded by rememberSaveable(s.id) { mutableStateOf(false) }
             if (expanded) Text("البداية: ${stamp(s.started)}")
-            if (s.state in listOf("ACTIVE", "PAUSED")) Text("المتبقّي ${remaining(Rules.remaining(s.clock(), now))}", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.primary)
+            if (s.state in listOf("ACTIVE", "PAUSED")) {
+                // Tick only this timer, without rebuilding the financial history every second.
+                val timerNow by produceState(now, s, now) {
+                    if (s.state == "ACTIVE") while (true) { value = System.currentTimeMillis(); delay(1000) }
+                }
+                Text("الوقت المتبقي", style = MaterialTheme.typography.labelLarge)
+                Text(remaining(Rules.remaining(s.clock(), timerNow)), Modifier.testTag("timer-${s.id}"),
+                    style = MaterialTheme.typography.headlineLarge.copy(textDirection = androidx.compose.ui.text.style.TextDirection.Ltr),
+                    fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+            }
             if (expanded && s.state == "ACTIVE") Text("النهاية: ${stamp(s.resumed + s.duration - s.served)}")
             val financial = ledger["session:${s.id}"]
             Text(when {
@@ -240,10 +249,13 @@ internal fun amount(minor: Long): String {
                 s.home -> "مجاني · لا يدخل في الإيراد"
                 s.recognized > 0 -> "مثبّت: ${amount(financial?.value ?: s.cashEquivalent)}"
                 s.state == "CANCELLED" -> "ألغي قبل التثبيت · دون إيراد"
-                else -> "قيد التثبيت: ${amount(s.cashEquivalent)} · بعد ${s.grace / 60000} دقيقة استخدام"
+                else -> "مدفوع · قيد الاعتماد: ${amount(s.cashEquivalent)} · بعد ${s.grace / 60000} دقائق محتسبة"
             })
             if (s.state in listOf("ACTIVE", "PAUSED")) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(enabled = !busy, onClick = { change(s.id, if (s.state == "ACTIVE") "PAUSE" else "RESUME") }) { Text(if (s.state == "ACTIVE") "إيقاف الوقت" else "استئناف") }
+                Button(enabled = !busy, modifier = Modifier.heightIn(min = 48.dp), onClick = { change(s.id, if (s.state == "ACTIVE") "PAUSE" else "RESUME") }) {
+                    Icon(if (s.state == "ACTIVE") Icons.Default.Pause else Icons.Default.PlayArrow, null)
+                    Spacer(Modifier.width(8.dp)); Text(if (s.state == "ACTIVE") "إيقاف الوقت" else "استئناف")
+                }
                 TextButton(enabled = !busy, onClick = { cancel = s }) { Text("إنهاء مبكر") }
             }
             TextButton(onClick = { expanded = !expanded }) { Text(if (expanded) "إخفاء التفاصيل" else "تفاصيل الاشتراك") }
@@ -350,7 +362,7 @@ internal fun amount(minor: Long): String {
         } }
         item { Panel {
             SectionHeading(Icons.Default.Calculate, "الحساب ودورة الاشتراك")
-            Text("مهلة التثبيت: ${config?.graceMinutes ?: 30} دقيقة")
+            Text("مهلة التثبيت: ${Rules.RECOGNITION_MINUTES} دقيقة")
             TextButton(enabled = !busy && config != null, onClick = { edit = true }) { Text("تعديل إعدادات الحساب") }
             Text("تغيير الأسعار أو النسبة لا يعيد تسعير السجلات السابقة. سجّل المصروفات بالقيمة المكافئة للكاش.")
         } }
@@ -407,7 +419,6 @@ internal fun amount(minor: Long): String {
     val format = remember { SimpleDateFormat("yyyy-MM-dd", Locale.ROOT).apply { isLenient = false } }
     var maximum by rememberSaveable { mutableStateOf(s.maxSubscribers.toString()) }
     val maxNumber = Money.normalize(maximum).toIntOrNull()
-    var grace by rememberSaveable { mutableStateOf(s.graceMinutes.toString()) }
     var premium by rememberSaveable { mutableStateOf(Money.show(s.premiumBps.toLong())) }
     var usd by rememberSaveable { mutableStateOf(Money.show(s.usdCents)) }
     var rate by rememberSaveable { mutableStateOf(Money.show(s.bankRate)) }
@@ -417,16 +428,16 @@ internal fun amount(minor: Long): String {
     fun date(value: String): Long? = try { val v = Money.normalize(value); if (!Regex("\\d{4}-\\d{2}-\\d{2}").matches(v)) null else format.parse(v)?.time } catch (_: Exception) { null }
     val begin = date(start); val last = date(end)
     val endExclusive = last?.let { Calendar.getInstance().apply { timeInMillis = it; add(Calendar.DAY_OF_MONTH, 1) }.timeInMillis }
-    val g = Money.normalize(grace).toIntOrNull(); val p = Money.parse(premium)
+    val p = Money.parse(premium)
     val u = Money.parse(usd); val r = Money.parse(rate); val e = Money.parse(expenses)
-    val valid = maxNumber != null && maxNumber in 1..10000 && g != null && g in 0..1440 && p != null && p in 0..100000 && u != null && r != null && e != null &&
+    val valid = maxNumber != null && maxNumber in 1..10000 && p != null && p in 0..100000 && u != null && r != null && e != null &&
         (start.isBlank() && end.isBlank() || begin != null && begin > 0 && endExclusive != null && endExclusive > begin)
     Form("إعدادات الحساب", dismiss, {
-        save(s.copy(maxSubscribers = maxNumber!!, graceMinutes = g!!, premiumBps = p!!.toInt(), usdCents = u!!, bankRate = r!!, expenses = e!!, cycleStart = begin ?: 0, cycleEnd = endExclusive ?: 0))
+        save(s.copy(maxSubscribers = maxNumber!!, graceMinutes = Rules.RECOGNITION_MINUTES, premiumBps = p!!.toInt(), usdCents = u!!, bankRate = r!!, expenses = e!!, cycleStart = begin ?: 0, cycleEnd = endExclusive ?: 0))
     }, valid) {
         Field("أرقام المشتركين من 1 إلى", maximum, { maximum = it })
         Text("الافتراضي 50. يُضاف [الرقم] تلقائيًا بعد نص اختصار الاشتراك، ولا يتكرر بين الاشتراكات النشطة أو المتوقفة مؤقتًا.")
-        Field("تثبيت سعر الباقة بعد كم دقيقة؟", grace, { grace = it })
+        Text("استخدام اختصار الاشتراك يؤكد الدفع. يُعتمد الإيراد مرة واحدة بعد 5 دقائق محتسبة، ويُنسب ليوم اكتمالها.")
         Field("نسبة تحويل تكلفة الفاتورة ٪", premium, { premium = it })
         Field("اشتراك Starlink بالدولار", usd, { usd = it })
         Field("سعر دولار الفاتورة قبل التحويل", rate, { rate = it })
@@ -434,8 +445,8 @@ internal fun amount(minor: Long): String {
         Field("أول يوم · yyyy-MM-dd", start, { start = it })
         Field("آخر يوم شاملًا · yyyy-MM-dd", end, { end = it })
         Text("تكلفة الفاتورة بالجنيه = الدولار × سعر الصرف ÷ (1 + نسبة التحويل)، ثم تضاف المصروفات. إعداداتك السابقة محفوظة؛ النسبة لا تضيف سعرًا ثانيًا للاشتراكات.")
-        Text("اترك التاريخين فارغين إن لم تبدأ دورة. مهلة التثبيت والنسبة يطبّقان على الاشتراكات الجديدة؛ بيانات الدورة تستخدم للتقرير الحالي.")
-        if (!valid) Text("راجع المبالغ والتواريخ. المهلة 0–1440 دقيقة والنسبة 0–1000٪.", color = MaterialTheme.colorScheme.error)
+        Text("اترك التاريخين فارغين إن لم تبدأ دورة. الاشتراكات السابقة تحتفظ بشروطها. تعديل الدورة يعيد حساب هدف اليوم والسجل المالي.")
+        if (!valid) Text("راجع المبالغ والتواريخ. النسبة 0–1000٪.", color = MaterialTheme.colorScheme.error)
     }
 }
 
