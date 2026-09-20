@@ -45,10 +45,12 @@ object BalanceBook {
         val day = Revenue.day(at)
         if (day < Revenue.day(cycle.start) || day >= cycle.end) return null
         val current = state(updates, receipts, at) ?: return null
-        // A manual reconciliation is the one intentional intraday replan. Later receipts only reduce its shortfall.
-        val opening = if (current.update.at >= day) CashBank(current.update.cash, current.update.bank)
-            else state(updates, receipts, day - 1)?.funds ?: return null
-        val openingValue = opening.equivalent(premiumBps)
+        // Reconstruct the day's opening basis: the absolute balance already includes today's receipts.
+        // Subtract them only from this planning basis, never from actual funds or the remaining bill.
+        val openingValue = if (current.update.at >= day) {
+            val includedToday = totals(receipts.filter { it.at >= day }, current.update.at).equivalent(premiumBps)
+            CashBank(current.update.cash, current.update.bank).equivalent(premiumBps) - includedToday
+        } else state(updates, receipts, day - 1)?.funds?.equivalent(premiumBps) ?: return null
         val currentValue = current.funds.equivalent(premiumBps)
         val remainingAtOpening = (cycle.cost - openingValue).coerceAtLeast(0)
         val days = Finance.days(maxOf(day, cycle.start), cycle.end)

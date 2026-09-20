@@ -32,7 +32,7 @@ import com.example.domain.*
                 Text("بنكك المكافئ: ${amount(Money.cashToBank(remaining, snapshot.data.config.premiumBps))}")
             }
         }
-        Text("الحفظ يعيد حساب هدف اليوم من الرصيد الجديد. سجل المبيعات والربح المحاسبي محفوظان. التحويل تقديري حسب نسبة بنكك في الإعدادات.", style = MaterialTheme.typography.bodySmall)
+        Text("الحفظ يعيد حساب الهدف مع احتساب تحصيل اليوم الموجود داخل الرصيد مرة واحدة. سجل المبيعات والربح المحاسبي محفوظان. التحويل تقديري حسب نسبة بنكك في الإعدادات.", style = MaterialTheme.typography.bodySmall)
     }
 }
 

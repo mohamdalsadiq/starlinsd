@@ -92,7 +92,7 @@ private fun dateLabel(at: Long, pattern: String = "EEEE، d MMMM yyyy") = Simple
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 DailyTargetCards(budget, config.premiumBps)
                 Text(if (snapshot.balance == null) "الكاش وبنكك قيمتان بديلتان لنفس المطلوب حسب نسبة التحويل."
-                    else "الكاش وبنكك بديلان لنفس المطلوب. تقدم الهدف من التحصيلات بعد آخر تحديث للرصيد أو بداية اليوم.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    else "الكاش وبنكك بديلان لنفس المطلوب. تحصيلات اليوم قبل تحديث الرصيد وبعده محسوبة في تقدم الهدف مرة واحدة.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
         item(key = "profit") { Panel {

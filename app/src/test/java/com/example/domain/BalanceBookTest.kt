@@ -27,7 +27,8 @@ class BalanceBookTest {
         assertEquals(1375000L, tomorrow.target)
         val withdrawal = update(cash = 1000000, bank = 0, at = now + 3000).copy(id = 2, cashReceived = 500000)
         val revised = BalanceBook.plan(listOf(update(), withdrawal), receipts, cycle, now + 3000, 2500)!!
-        assertEquals(1800000L, revised.target); assertEquals(9000000L, revised.remaining)
+        assertEquals(1900000L, revised.target); assertEquals(1400000L, revised.shortfall)
+        assertEquals(9000000L, revised.remaining)
     }
 
     @Test fun pendingPaymentAndLaterRecognitionNeverIncreaseFundsTwice() {
@@ -49,7 +50,8 @@ class BalanceBookTest {
         assertEquals(15000000L, snapshot.today.revenue)
         assertEquals(5000000L, snapshot.revenue.cycleProfit)
         assertEquals(9000000L, snapshot.remainingForBill)
-        assertEquals(1800000L, snapshot.budget.day(now).billTarget)
+        assertEquals(4800000L, snapshot.budget.day(now).billTarget)
+        assertEquals(0L, snapshot.budget.day(now).shortfall)
         assertEquals(0L, snapshot.availableBalanceSurplus)
         val panel = com.example.notifications.PanelSnapshot.from(snapshot, now)
         assertEquals(snapshot.remainingForBill, panel.remainingBill)
@@ -80,7 +82,8 @@ class BalanceBookTest {
         assertEquals(8000000L, actual.cash)
         assertEquals(-2000000L, checkpoint.cash - checkpoint.expectedCash)
         assertEquals(2000000L, BalanceBook.plan(listOf(checkpoint), receipts, cycle, now, 2500)!!.remaining)
-        assertEquals(400000L, BalanceBook.plan(listOf(checkpoint), receipts, cycle, now, 2500)!!.target)
+        assertEquals(2400000L, BalanceBook.plan(listOf(checkpoint), receipts, cycle, now, 2500)!!.target)
+        assertEquals(0L, BalanceBook.plan(listOf(checkpoint), receipts, cycle, now, 2500)!!.shortfall)
     }
 
 }

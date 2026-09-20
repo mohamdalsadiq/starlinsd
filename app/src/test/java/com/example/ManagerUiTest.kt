@@ -162,4 +162,27 @@ class ManagerUiTest {
         compose.runOnIdle { assertEquals(1000000L, saved!!.first); assertEquals(1250000L, saved!!.second) }
     }
 
+    @Test fun reconciledDashboardKeepsSeventeenThousandInTodaysProgress() {
+        val day = Revenue.day(System.currentTimeMillis())
+        val now = day + 12 * 60 * Rules.MINUTE
+        val config = BusinessSettings(usdCents = 100, bankRate = 65000000, premiumBps = 3000,
+            cycleStart = day, cycleEnd = day + 16 * 86400000L)
+        val sale = ManualSale("today", now - 1000, 17, 100000, 1700000, 1700000, "CASH", 3000)
+        val balance = BalanceUpdate(1, now, 5000000, 15930000, 1700000, 0, 3000, "شامل دخل اليوم")
+        val snapshot = FinancialReportCache().get(FinancialData(emptyList(), listOf(sale), emptyList(),
+            config, emptyList(), emptyList(), emptyList(), listOf(balance)), now)
+        compose.setContent { ManagerTheme { Surface(Modifier.fillMaxSize()) { Dashboard(snapshot) {} } } }
+        compose.onNodeWithTag("today-revenue").assertTextEquals("17,000 ج.س").assertIsDisplayed()
+        compose.onNodeWithTag("daily-bill-target").assertTextEquals("21,528.85 ج.س").assertIsDisplayed()
+        compose.onNodeWithTag("daily-shortfall").assertTextEquals("4,528.85 ج.س").assertIsDisplayed()
+        compose.onNodeWithTag("daily-shortfall-bank").assertTextEquals("بنكك: 5,887.51 ج.س")
+        compose.onRoot().captureRoboImage("build/reports/ui/reconciled-day-progress.png")
+        compose.onNodeWithTag("dashboard-list").performScrollToNode(hasTestTag("cycle-remaining"))
+        compose.onNodeWithTag("cycle-remaining").assertTextEquals("327,461.54 ج.س")
+        val panel = com.example.notifications.PanelSnapshot.from(snapshot, now)
+        assertEquals(2152885L, panel.dailyTarget)
+        assertEquals(452885L, panel.dailyShortfall)
+        assertEquals(32746154L, panel.remainingBill)
+    }
+
 }
