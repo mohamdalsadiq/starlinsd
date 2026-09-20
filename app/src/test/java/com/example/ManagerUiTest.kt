@@ -134,7 +134,7 @@ class ManagerUiTest {
         compose.onNodeWithTag("cycle-remaining").assertTextEquals("310,400 ج.س").assertIsDisplayed()
         compose.onRoot().captureRoboImage("build/reports/ui/large-arabic-text.png")
     }
-    @Test @Config(sdk = [36], qualifiers = "w800dp-h360dp-mdpi-night")
+    @Test @Config(sdk = [36], qualifiers = "w800dp-h360dp-land-night-mdpi")
     fun landscapeDarkDashboardPreservesTargetAndIncome() {
         val now = System.currentTimeMillis()
         val day = Revenue.day(now)
