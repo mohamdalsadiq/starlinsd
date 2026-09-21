@@ -4,12 +4,14 @@ import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
-/** Minimal read-only wire subset. Sources and compatibility limits: docs/STARLINK-TEST.md. */
+/** Bounded wire subset. Sources and compatibility limits: docs/STARLINK-TEST.md. */
 internal object StarlinkProtocol {
     const val MAX_BYTES = 1024 * 1024
     enum class Query(val field: Int) { STATUS(1004), CLIENTS(3002) }
-    data class Client(val name: String, val ip: String, val mac: String, val active: Boolean?)
-    data class Reply(val kind: String, val clients: List<Client>?, val hardware: String, val software: String)
+    data class Client(val name: String, val ip: String, val mac: String, val active: Boolean?,
+        val id: Long? = null, val blocked: Boolean? = null, val role: Long? = null)
+    data class Reply(val kind: String, val clients: List<Client>?, val hardware: String, val software: String,
+        val routerId: String = "")
     class RpcFailure(val code: Int, val layer: String) : Exception("$layer=$code")
 
     fun request(query: Query): ByteArray = field(query.field, byteArrayOf())
@@ -53,10 +55,7 @@ internal object StarlinkProtocol {
 
     fun decode(payload: ByteArray): Reply {
         val response = fields(payload)
-        response.singleBytes(2)?.let { status ->
-            val code = fields(status).singleNumber(1) ?: 0
-            if (code != 0L) throw RpcFailure(code.toInt(), "Starlink")
-        }
+        checkStatus(payload)
         val variants = response.filter { it.number in setOf(2004, 3002, 3004) }
         require(variants.size == 1) { "unsupported_response" }
         val variant = variants.single()
@@ -73,40 +72,53 @@ internal object StarlinkProtocol {
             entries.map { entry ->
                 val client = fields(entry.bytes ?: error("invalid_client"))
                 Client(client.string(31).ifBlank { client.string(1) }.ifBlank { "جهاز بدون اسم" },
-                    client.string(3), client.string(2), client.singleNumber(58)?.let { it != 0L })
+                    client.string(3), client.string(2), client.boolean(58),
+                    client.singleNumber(43)?.also { require(it in 0..0xffffffffL) }?.takeIf { it != 0L },
+                    client.boolean(42), client.singleNumber(14))
             }
         } else null
         val infoField = if (variant.number == 2004) 1 else 3
         val info = if (variant.number == 3002) emptyList() else inner.singleBytes(infoField)?.let(::fields).orEmpty()
         return Reply(when (variant.number) { 2004 -> "DISH"; 3004 -> "ROUTER"; else -> "CLIENTS" },
-            clients, info.string(2), info.string(3))
+            clients, info.string(2), info.string(3), if (variant.number == 3004) info.string(1) else "")
     }
 
-    private data class WireField(val number: Int, val bytes: ByteArray? = null, val numeric: Long? = null)
-    private fun List<WireField>.singleBytes(number: Int): ByteArray? {
+    fun checkStatus(payload: ByteArray) {
+        fields(payload).singleBytes(2)?.let { status ->
+            val code = fields(status).singleNumber(1) ?: 0
+            require(code in 0..16) { "invalid_application_status" }
+            if (code != 0L) throw RpcFailure(code.toInt(), "Starlink")
+        }
+    }
+    internal data class WireField(val number: Int, val bytes: ByteArray? = null, val numeric: Long? = null, val raw: ByteArray = byteArrayOf())
+    internal fun List<WireField>.singleBytes(number: Int): ByteArray? {
         val matches = filter { it.number == number }
         require(matches.size <= 1) { "duplicate_field" }
         return matches.singleOrNull()?.let { it.bytes ?: error("wrong_wire_type") }
     }
-    private fun List<WireField>.singleNumber(number: Int): Long? {
+    internal fun List<WireField>.singleNumber(number: Int): Long? {
         val matches = filter { it.number == number }
         require(matches.size <= 1) { "duplicate_field" }
         return matches.singleOrNull()?.let { it.numeric ?: error("wrong_wire_type") }
     }
-    private fun List<WireField>.string(number: Int): String = singleBytes(number)?.let {
+    internal fun List<WireField>.boolean(number: Int): Boolean? = singleNumber(number)?.let {
+        require(it == 0L || it == 1L) { "invalid_boolean" }; it == 1L
+    }
+    internal fun List<WireField>.string(number: Int): String = singleBytes(number)?.let {
         require(it.size <= 2048) { "string_too_long" }
         it.toString(Charsets.UTF_8).filter { ch -> !ch.isISOControl() && ch !in '\u202a'..'\u202e' && ch !in '\u2066'..'\u2069' }.take(160)
     }.orEmpty()
-    private fun fields(data: ByteArray): List<WireField> {
+    internal fun fields(data: ByteArray): List<WireField> {
         require(data.size <= MAX_BYTES) { "response_too_large" }
         val buffer = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
         val result = mutableListOf<WireField>()
         while (buffer.hasRemaining()) {
             require(result.size < 8192) { "too_many_fields" }
+            val start = buffer.position()
             val tag = varint(buffer)
             require(tag > 0 && tag <= 0xffffffffL && tag ushr 3 > 0) { "invalid_tag" }
             val number = (tag ushr 3).toInt()
-            result += when ((tag and 7).toInt()) {
+            val entry = when ((tag and 7).toInt()) {
                 0 -> WireField(number, numeric = varint(buffer))
                 1 -> { require(buffer.remaining() >= 8); buffer.long; WireField(number) }
                 2 -> {
@@ -117,8 +129,19 @@ internal object StarlinkProtocol {
                 5 -> { require(buffer.remaining() >= 4); buffer.int; WireField(number) }
                 else -> error("unsupported_wire_type")
             }
+            result += entry.copy(raw = data.copyOfRange(start, buffer.position()))
         }
         return result
+    }
+    internal fun numberField(number: Int, value: Long): ByteArray {
+        require(number > 0 && value >= 0)
+        val out = ByteArrayOutputStream()
+        for (v in listOf(number.toLong() shl 3, value)) {
+            var n = v
+            while (n >= 128) { out.write(((n and 127) or 128).toInt()); n = n ushr 7 }
+            out.write(n.toInt())
+        }
+        return out.toByteArray()
     }
     private fun varint(buffer: ByteBuffer): Long {
         var value = 0L

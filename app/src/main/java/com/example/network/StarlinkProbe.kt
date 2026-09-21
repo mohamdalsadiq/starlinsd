@@ -34,7 +34,9 @@ internal data class ProbeReport(val steps: List<ProbeStep>, val clients: List<St
         appendLine("وقت الاختبار: $at")
         appendLine(summary)
         steps.forEach { appendLine("${it.target}: ${it.outcome}") }
-        append("عدد السجلات المستلمة: ${clients?.size ?: "غير متاح"}")
+        appendLine("عدد السجلات المستلمة: ${clients?.size ?: "غير متاح"}")
+        appendLine("سجلات بمعرّف: ${clients?.count { it.id != null } ?: 0}")
+        append("سجلات بحالة إيقاف صريحة: ${clients?.count { it.blocked != null } ?: 0}")
     }
 }
 
@@ -91,7 +93,10 @@ internal class StarlinkProbe(context: Context) {
         })
     }
 
-    private suspend fun call(network: Network, host: String, port: Int, web: Boolean, query: StarlinkProtocol.Query): StarlinkProtocol.Reply {
+    private suspend fun call(network: Network, host: String, port: Int, web: Boolean, query: StarlinkProtocol.Query): StarlinkProtocol.Reply =
+        StarlinkProtocol.decode(exchange(network, host, port, web, StarlinkProtocol.request(query)))
+
+    internal suspend fun exchange(network: Network, host: String, port: Int, web: Boolean, payload: ByteArray): ByteArray {
         require((host == "192.168.1.1" && port == 9000) || (host == "192.168.100.1" && port == 9200))
         val client = OkHttpClient.Builder()
             .socketFactory(network.socketFactory).proxy(Proxy.NO_PROXY)
@@ -104,7 +109,7 @@ internal class StarlinkProbe(context: Context) {
             .header("te", "trailers").header("grpc-timeout", "4S").header("grpc-accept-encoding", "identity")
             .header("Accept-Encoding", "identity")
             .apply { if (web) header("x-grpc-web", "1") }
-            .post(StarlinkProtocol.frame(StarlinkProtocol.request(query)).toRequestBody(contentType.toMediaType())).build()
+            .post(StarlinkProtocol.frame(payload).toRequestBody(contentType.toMediaType())).build()
         try {
             return suspendCancellableCoroutine { continuation ->
                 val call = client.newCall(request)
@@ -119,7 +124,7 @@ internal class StarlinkProbe(context: Context) {
                                 val source = it.body?.source() ?: error("missing_body")
                                 if (source.request((StarlinkProtocol.MAX_BYTES + 1).toLong())) error("response_too_large")
                                 val body = source.readByteArray()
-                                StarlinkProtocol.decode(StarlinkProtocol.unwrap(body, it.header("grpc-status"), it.trailers()["grpc-status"], web))
+                                StarlinkProtocol.unwrap(body, it.header("grpc-status"), it.trailers()["grpc-status"], web)
                             }
                             if (continuation.isActive) continuation.resume(reply)
                         } catch (e: Exception) { if (continuation.isActive) continuation.resumeWithException(e) }

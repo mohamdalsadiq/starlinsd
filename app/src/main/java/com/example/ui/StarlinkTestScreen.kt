@@ -28,15 +28,16 @@ import kotlinx.coroutines.launch
     val scope = rememberCoroutineScope()
     var job by remember { mutableStateOf<Job?>(null) }
     var running by remember { mutableStateOf(false) }
+    var controlling by remember { mutableStateOf(false) }
     var progress by remember { mutableStateOf("") }
     var report by remember { mutableStateOf<ProbeReport?>(null) }
     var notice by remember { mutableStateOf("") }
     LazyColumn(Modifier.fillMaxSize().testTag("starlink-screen"), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Panel {
             SectionHeading(Icons.Default.Router, "اختبار الاتصال المحلي", "قراءة تجريبية من راوتر Starlink")
-            Text("اتصل بشبكة Wi-Fi الرئيسية لراوتر Starlink مباشرة. الاختبار يطلب قائمة الأجهزة وحالة الطبق فقط؛ لا يفصل جهازًا ولا يغيّر إعدادات الشبكة.")
+            Text("اتصل بشبكة Wi-Fi الرئيسية لراوتر Starlink مباشرة. زر القراءة يعرض الأجهزة وحالة الطبق. تجربة الإيقاف منفصلة وتحتاج اختيار جهاز وتأكيدًا منك.")
             Text("لا يحتاج كلمة مرور حساب Starlink. لا يعمل تلقائيًا في الخلفية، وتتوقف المحاولة عند مغادرة الصفحة. قد لا يتيح تحديث الراوتر قراءة القائمة.", style = MaterialTheme.typography.bodySmall)
-            Button(enabled = !running, modifier = Modifier.fillMaxWidth().testTag("starlink-start"), onClick = {
+            Button(enabled = !running && !controlling, modifier = Modifier.fillMaxWidth().testTag("starlink-start"), onClick = {
                 running = true; report = null; notice = ""; progress = "جاري فحص Wi-Fi…"
                 job = scope.launch {
                     try { report = if (runProbe != null) runProbe { progress = it } else probe.run { progress = it } }
@@ -56,6 +57,7 @@ import kotlinx.coroutines.launch
             }) { Text("إعدادات Wi-Fi") }
             if (notice.isNotBlank()) Text(notice)
         } }
+        item { StarlinkControlPanel(report?.clients.orEmpty(), running, { controlling = it }) }
         report?.let { current ->
             item { Panel {
                 Text(current.summary, style = MaterialTheme.typography.titleMedium)
@@ -71,6 +73,8 @@ import kotlinx.coroutines.launch
                 Text("${index + 1}. ${device.name}", style = MaterialTheme.typography.titleMedium)
                 Text("IP: ${device.ip.ifBlank { "غير متاح" }}")
                 Text("MAC: ${device.mac.ifBlank { "غير متاح" }}")
+                Text("ID: ${device.id ?: "غير متاح"}")
+                Text(when (device.blocked) { true -> "الإنترنت: موقوف من الراوتر"; false -> "الإنترنت: غير موقوف حسب الرد"; null -> "حالة الإيقاف: الحقل غير موجود في الرد" })
                 Text(when (device.active) { true -> "الحالة من الراوتر: نشط"; false -> "الحالة من الراوتر: غير نشط"; null -> "حالة الاتصال: غير مؤكدة من الرد" })
             } }
             item { Title("تفاصيل المحاولة") }
