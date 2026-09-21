@@ -109,6 +109,7 @@ internal fun amount(minor: Long): String {
                 Box(Modifier.widthIn(max = 720.dp).fillMaxSize()) {
                     stateHolder.SaveableStateProvider(if (detail.isNotBlank()) detail else "tab-$tab") {
                         when {
+                            detail == "اختبار Starlink" -> StarlinkTestScreen()
                             detail == "الإعدادات" -> {
                                 val config by vm.settings.collectAsStateWithLifecycle()
                                 val now by vm.clock.collectAsStateWithLifecycle()
@@ -184,6 +185,7 @@ internal fun amount(minor: Long): String {
 @Composable private fun MoreScreen(open: (String) -> Unit) {
     LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Title("المزيد", "أدوات مشروعك وإعدادات التطبيق") }
+        item { Card(onClick = { open("اختبار Starlink") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.Router, "اختبار Starlink", "قراءة الأجهزة عبر Wi-Fi · تجربة محلية") } } }
         item { Card(onClick = { open("الباقات والأسعار") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.LocalOffer, "الباقات والأسعار", "إدارة المدة والسعر وأهل البيت") } } }
         item { Card(onClick = { open("التقارير") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.BarChart, "التقارير", "الدخل والتغطية وسجل الأيام") } } }
         item { Card(onClick = { open("الإعدادات") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.Settings, "الإعدادات", "النسخ الاحتياطي والصلاحيات والدورة") } } }

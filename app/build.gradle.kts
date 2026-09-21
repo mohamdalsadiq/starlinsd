@@ -13,8 +13,8 @@ android {
     applicationId = "com.aistudio.starlinkmanager.zbxpq"
     minSdk = 24
     targetSdk = 36
-    versionCode = 9
-    versionName = "3.4.1"
+    versionCode = 10
+    versionName = "3.5.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -61,6 +61,7 @@ android {
 }
 
 dependencies {
+  implementation(libs.okhttp)
   implementation(platform(libs.androidx.compose.bom))
   implementation(libs.androidx.activity.compose)
   implementation(libs.androidx.compose.material.icons.core)
