@@ -1,5 +1,7 @@
 package com.example
 
+import android.content.Context
+import android.net.ConnectivityManager
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
@@ -18,6 +20,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import androidx.test.core.app.ApplicationProvider
@@ -57,7 +60,10 @@ class StarlinkUiTest {
         compose.onNodeWithTag("starlink-start").assertIsEnabled()
     }
     @Test fun `no wifi produces actionable result without pretending zero devices`() = runBlocking {
-        val result = StarlinkProbe(ApplicationProvider.getApplicationContext()).run {}
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val connectivity = context.getSystemService(ConnectivityManager::class.java)
+        shadowOf(connectivity).clearAllNetworks()
+        val result = StarlinkProbe(context).run {}
         assertNull(result.clients)
         assertTrue(result.summary.contains("Wi-Fi"))
         assertTrue(result.steps.isEmpty())
