@@ -28,6 +28,9 @@ internal object CloudPolicy {
     const val AUTH = "https://api.starlink.com/auth-rp/auth/user"
     const val HANDLE = "https://api2.starlink.com/SpaceX.API.Device.Device/Handle"
     private val names = setOf("Starlink.Com.Sso", "Starlink.Com.Access.V1")
+    const val LOGIN_COOKIE = "Starlink.Com.Sso"
+    const val ACCESS_COOKIE = "Starlink.Com.Access.V1"
+    val SESSION_COOKIE_URLS = listOf(LOGIN, "https://auth.starlink.com/", AUTH, HANDLE)
     fun loginUrlAllowed(value: String): Boolean = runCatching {
         val uri = URI(value)
         val host = uri.host?.lowercase().orEmpty()
@@ -49,7 +52,26 @@ internal object CloudPolicy {
         }
         return result.entries.joinToString("; ") { "${it.key}=${it.value}" }
     }
-    fun hasLogin(cookie: String): Boolean = cookie.split(';').any { it.trim().startsWith("Starlink.Com.Sso=") }
+    fun hasLogin(cookie: String): Boolean = cookie.split(';').any {
+        val name = it.substringBefore('=').trim()
+        name == LOGIN_COOKIE || name == ACCESS_COOKIE
+    }
+    fun sessionDiagnostics(cookiesByUrl: List<Pair<String, String?>>): String {
+        fun summarize(header: String?): String {
+            val safe = runCatching { cookies(header) }.getOrDefault("")
+            val namesPresent = safe.split(';')
+                .map { it.substringBefore('=').trim() }
+                .filter { it.isNotEmpty() }
+                .toSet()
+            val sso = if (LOGIN_COOKIE in namesPresent) "YES" else "NO"
+            val access = if (ACCESS_COOKIE in namesPresent) "YES" else "NO"
+            return "SSO=$sso ACCESS=$access KNOWN=${namesPresent.size}"
+        }
+        return cookiesByUrl.joinToString("; ") { (url, header) ->
+            val host = runCatching { URI(url).host ?: url }.getOrDefault(url)
+            "$host[${summarize(header)}]"
+        }
+    }
     fun target(router: String, payload: ByteArray): ByteArray {
         require(router.matches(Regex("Router-[A-Za-z0-9-]{1,120}"))) { "cloud_invalid_router_id" }
         val fields = StarlinkProtocol.fields(payload)
