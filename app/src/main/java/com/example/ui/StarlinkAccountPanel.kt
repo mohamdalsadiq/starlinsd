@@ -21,7 +21,9 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.DialogWindowProvider
 import com.example.network.*
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.TimeoutCancellationException
 import java.io.ByteArrayInputStream
@@ -89,7 +91,13 @@ import java.io.ByteArrayInputStream
                         settings.setSupportMultipleWindows(false)
                         settings.cacheMode = WebSettings.LOAD_NO_CACHE
                         settings.saveFormData = false
-                        CookieManager.getInstance().setAcceptThirdPartyCookies(this, false)
+                        run {
+                            val cookieManager = CookieManager.getInstance()
+                            cookieManager.setAcceptCookie(true)
+                            // Starlink login may set session cookies across Starlink subdomains.
+                            // Android 12+ WebView defaults third-party cookies to disabled for modern apps.
+                            cookieManager.setAcceptThirdPartyCookies(this, true)
+                        }
                         webViewClient = object : WebViewClient() {
                             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                                 val reject = !CloudPolicy.loginUrlAllowed(request.url.toString())
@@ -117,26 +125,48 @@ import java.io.ByteArrayInputStream
                 })
                 if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
                 Button(enabled = !busy, modifier = Modifier.fillMaxWidth(), onClick = {
-                    val manager = CookieManager.getInstance()
-                    val cookieHeaders = CloudPolicy.SESSION_COOKIE_URLS.map { url ->
-                        url to runCatching { manager.getCookie(url) }.getOrNull()
-                    }
-                    val candidate = runCatching {
-                        CloudPolicy.cookies(*cookieHeaders.map { it.second }.toTypedArray())
-                    }.getOrNull()
-                    if (candidate == null || !CloudPolicy.hasLogin(candidate)) {
-                        message = "اكتمل تسجيل الدخول في الصفحة، لكن Slotra لم يجد Cookie جلسة قابلة للاستخدام. لا نرسل أي طلب Cloud حتى تتوفر الجلسة."
-                        diagnostic = "LOGIN: session_not_available; COOKIES: ${CloudPolicy.sessionDiagnostics(cookieHeaders)}"
-                    } else {
-                        busy = true; message = "جاري التحقق من الجلسة ومطابقة الراوتر…"
-                        scope.launch {
-                            try {
-                                withTimeout(60000) { StarlinkCloud(CloudSessionVault(context)).connect(candidate, AndroidRouterLink(context)) }
+                    busy = true
+                    message = "جاري قراءة جلسة WebView والتحقق من الربط…"
+                    scope.launch {
+                        try {
+                            val session = withContext(Dispatchers.IO) {
+                                val manager = CookieManager.getInstance()
+                                manager.flush()
+                                val cookieHeaders = CloudPolicy.SESSION_COOKIE_URLS.map { url ->
+                                    url to runCatching { manager.getCookie(url) }.getOrNull()
+                                }
+                                val candidate = runCatching {
+                                    CloudPolicy.cookies(*cookieHeaders.map { it.second }.toTypedArray())
+                                }.getOrNull()
+                                Triple(
+                                    manager.hasCookies(),
+                                    manager.acceptCookie(),
+                                    cookieHeaders to candidate
+                                )
+                            }
+                            val hasCookies = session.first
+                            val cookiesAccepted = session.second
+                            val (cookieHeaders, candidate) = session.third
+                            if (candidate == null || !CloudPolicy.hasLogin(candidate)) {
+                                message = "اكتمل تسجيل الدخول في الصفحة، لكن Slotra لم يجد Cookie جلسة قابلة للاستخدام. لا نرسل أي طلب Cloud حتى تتوفر الجلسة."
+                                diagnostic = "LOGIN: session_not_available; WEBVIEW_COOKIES: HAS_COOKIES=${if (hasCookies) "YES" else "NO"} ACCEPT=${if (cookiesAccepted) "YES" else "NO"}; COOKIES: ${CloudPolicy.sessionDiagnostics(cookieHeaders)}"
+                            } else {
+                                message = "جاري التحقق من الجلسة ومطابقة الراوتر…"
+                                withTimeout(60000) {
+                                    StarlinkCloud(CloudSessionVault(context)).connect(candidate, AndroidRouterLink(context))
+                                }
                                 onComplete()
-                            } catch (_: TimeoutCancellationException) { message = "انتهت مهلة التحقق من الحساب. لم نرسل أمر حظر."; diagnostic = "LOGIN: timeout" }
-                            catch (e: CancellationException) { throw e }
-                            catch (e: Exception) { message = controlError(e); diagnostic = "LOGIN: ${errorCode(e)}" }
-                            finally { busy = false }
+                            }
+                        } catch (_: TimeoutCancellationException) {
+                            message = "انتهت مهلة التحقق من الحساب. لم نرسل أمر حظر."
+                            diagnostic = "LOGIN: timeout"
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            message = controlError(e)
+                            diagnostic = "LOGIN: ${errorCode(e)}"
+                        } finally {
+                            busy = false
                         }
                     }
                 }) { Text("التحقق من الربط") }
