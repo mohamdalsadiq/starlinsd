@@ -18,7 +18,7 @@ data class Session(
 ) { fun clock() = Clock(duration, served, resumed, state == "ACTIVE") }
 
 @Entity(tableName = "settings")
-data class BusinessSettings(@PrimaryKey val id: Int = 1, val graceMinutes: Int = 30, val premiumBps: Int = 2500,
+data class BusinessSettings(@PrimaryKey val id: Int = 1, val graceMinutes: Int = com.example.domain.Rules.RECOGNITION_MINUTES, val premiumBps: Int = 2500,
     val usdCents: Long = 0, val bankRate: Long = 0, val cycleStart: Long = 0, val cycleEnd: Long = 0, val expenses: Long = 0,
     @ColumnInfo(defaultValue = "50") val maxSubscribers: Int = 50,
     @ColumnInfo(defaultValue = "''") val cycleId: String = "")
@@ -43,8 +43,17 @@ data class Debt(@PrimaryKey val id: String, val name: String, val total: Long, v
 @Entity(tableName = "debt_payments")
 data class DebtPayment(@PrimaryKey val id: String, val debtId: String, val at: Long, val amount: Long)
 
+@Entity(tableName = "balance_updates")
+data class BalanceUpdate(@PrimaryKey(autoGenerate = true) val id: Long = 0, val at: Long,
+    val cash: Long, val bank: Long, val cashReceived: Long, val bankReceived: Long,
+    val premiumBps: Int, val reason: String, val expectedCash: Long = 0, val expectedBank: Long = 0)
+
 @Dao
 interface BusinessDao {
+    @Query("SELECT * FROM balance_updates ORDER BY at, id") fun observeBalanceUpdates(): Flow<List<BalanceUpdate>>
+    @Query("SELECT * FROM balance_updates ORDER BY at, id") suspend fun balanceUpdates(): List<BalanceUpdate>
+    @Insert suspend fun balanceUpdate(update: BalanceUpdate): Long
+
     @Query("SELECT * FROM revenue_corrections ORDER BY id") fun observeCorrections(): Flow<List<RevenueCorrection>>
     @Query("SELECT * FROM revenue_corrections ORDER BY id") suspend fun corrections(): List<RevenueCorrection>
     @Insert suspend fun correct(correction: RevenueCorrection)

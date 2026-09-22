@@ -2,7 +2,7 @@ name: Android Build
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "feat/slotra-daily-plan" ]
   pull_request:
     branches: [ "main" ]
   workflow_dispatch:
@@ -52,7 +52,7 @@ jobs:
                 print('TEST_FAILURE', (failure.text or '')[:4000])
         for p in pathlib.Path('app/build/reports/ui').glob('*.png'):
             print('UI_PREVIEW_BASE64', p.name, base64.b64encode(p.read_bytes()).decode())
-        for p in pathlib.Path('app/schemas').rglob('5.json'):
+        for p in pathlib.Path('app/schemas').rglob('6.json'):
             print('ROOM_SCHEMA_BASE64', str(p), base64.b64encode(p.read_bytes()).decode())
         PYCODE
 

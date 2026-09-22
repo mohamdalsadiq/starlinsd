@@ -23,7 +23,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val debts = repo.dao.observeDebts().stateIn(viewModelScope, sharing, emptyList())
     val debtPayments = repo.dao.observeDebtPayments().stateIn(viewModelScope, sharing, emptyList())
     fun correctRevenue(source: String, amount: Long, count: Int, voided: Boolean, reason: String) = work {
-        repo.correctRevenue(source, amount, count, voided, reason); message.value = "تم تصحيح الإيراد وإعادة حساب السجل"
+        repo.correctRevenue(source, amount, count, voided, reason); message.value = "تم تصحيح الإيراد وإعادة حساب أهداف الأيام"
     }
     fun saveDebt(debt: Debt) = work { repo.saveDebt(debt); message.value = "تم حفظ خطة الدين" }
     fun payDebt(id: String, debtId: String, amount: Long) = work { repo.payDebt(id, debtId, amount); message.value = "تم تسجيل السداد الفعلي" }
@@ -44,9 +44,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     ) { sessions, sales, corrections, settings, cycles ->
         FinancialData(sessions, sales, corrections, settings ?: BusinessSettings(), cycles, emptyList(), emptyList())
     }
-    val financial = combine(accountingBase, repo.dao.observeDebts(), repo.dao.observeDebtPayments(), clock) { base, debts, payments, _ ->
+    val financial = combine(accountingBase, repo.dao.observeDebts(), repo.dao.observeDebtPayments(), repo.dao.observeBalanceUpdates(), clock) { base, debts, payments, balances, _ ->
         // Fresh writes must be included immediately, not at the next fifteen-second tick.
-        reportCache.get(base.copy(debts = debts, payments = payments), System.currentTimeMillis())
+        reportCache.get(base.copy(debts = debts, payments = payments, balanceUpdates = balances), System.currentTimeMillis())
     }.flowOn(Dispatchers.Default).distinctUntilChanged()
         .stateIn(viewModelScope, sharing, null)
 
@@ -88,7 +88,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun savePlan(plan: Plan) = work { repo.savePlan(plan); message.value = "تم حفظ الباقة" }
     fun saveShortcut(shortcut: Shortcut) = work { repo.saveShortcut(shortcut); message.value = "تم حفظ الاختصار" }
     fun deleteShortcut(shortcut: Shortcut) = work { db.shortcutDao().delete(shortcut) }
-    fun saveSettings(settings: BusinessSettings) = work { repo.saveSettings(settings); message.value = "تم حفظ الإعدادات للاشتراكات الجديدة" }
+    fun saveSettings(settings: BusinessSettings) = work { repo.saveSettings(settings); message.value = "تم حفظ الإعدادات وإعادة حساب خطة الفاتورة" }
+    fun updateBalance(cash: Long, bank: Long, reason: String) = work {
+        repo.updateBalance(cash, bank, reason)
+        message.value = "تم تحديث الرصيد وإعادة حساب المطلوب للفاتورة"
+    }
     fun dismissRestore() { pendingRestore.value = null; restoreText = null }
     fun previewRestore(uri: Uri) = work {
         dismissRestore()
