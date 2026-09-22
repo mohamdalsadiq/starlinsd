@@ -156,15 +156,21 @@ internal class StarlinkCloud(private val store: CloudSessionStore, private val h
         require(CloudPolicy.hasLogin(next)) { "cloud_login_missing" }
         return next
     }
-    suspend fun connect(candidate: String, local: RouterControlLink) {
+    suspend fun connect(candidate: String, local: RouterControlLink) = withContext(Dispatchers.IO) {
+        // Login verification touches both HTTPS and the blocking LAN Starlink probe.
+        // Keep the entire verification transaction off the Android main thread.
         val safe = CloudPolicy.cookies(candidate)
         check(CloudPolicy.hasLogin(safe)) { "cloud_login_missing" }
         cookie = refresh(safe)
         try {
             // Authenticated read for the exact LAN router proves access before saving a session.
-            AuthenticatedRouterLink(local, this).exchange(StarlinkProtocol.request(StarlinkProtocol.Query.STATUS))
-            withContext(Dispatchers.IO) { store.write(cookie!!) }
-        } catch (e: Exception) { cookie = null; throw e }
+            AuthenticatedRouterLink(local, this@StarlinkCloud)
+                .exchange(StarlinkProtocol.request(StarlinkProtocol.Query.STATUS))
+            store.write(cookie!!)
+        } catch (e: Exception) {
+            cookie = null
+            throw e
+        }
     }
     suspend fun exchange(router: String, payload: ByteArray): ByteArray {
         if (cookie == null) {
