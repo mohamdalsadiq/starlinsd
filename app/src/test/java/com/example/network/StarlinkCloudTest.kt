@@ -66,6 +66,38 @@ class StarlinkCloudTest {
         assertEquals(2, calls)
         assertTrue(store.value!!.contains("Access.V1=fresh"))
     }
+    @Test fun `link verification keeps blocking cloud and local work off the caller thread`() = runBlocking {
+        val store = object : CloudSessionStore {
+            var value: String? = null
+            override fun read(): String? = value
+            override fun write(cookie: String) {
+                assertNotEquals("main", Thread.currentThread().name)
+                value = cookie
+            }
+            override fun clear() { value = null }
+        }
+        val http = CloudHttp { url, _, _ ->
+            assertNotEquals("main", Thread.currentThread().name)
+            if (url == CloudPolicy.AUTH) {
+                CloudHttpReply(200, "{}".toByteArray(), "application/json")
+            } else {
+                assertEquals(CloudPolicy.HANDLE, url)
+                grpc(status)
+            }
+        }
+        val local = object : RouterControlLink {
+            override val localIps = setOf("192.168.1.20")
+            override suspend fun exchange(payload: ByteArray): ByteArray {
+                assertNotEquals("main", Thread.currentThread().name)
+                assertArrayEquals(StarlinkProtocol.request(StarlinkProtocol.Query.STATUS), payload)
+                return status
+            }
+        }
+
+        StarlinkCloud(store, http).connect("Starlink.Com.Sso=test-session", local)
+        assertNotNull(store.value)
+    }
+
     @Test fun `account without router access cannot persist session`() {
         val store = Store()
         val http = CloudHttp { url, _, _ ->
