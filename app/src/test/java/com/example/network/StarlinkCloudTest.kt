@@ -44,6 +44,24 @@ class StarlinkCloudTest {
             assertFalse(it, CloudPolicy.loginUrlAllowed(it))
         }
     }
+    @Test fun `access cookie alone is accepted as an authenticated session`() {
+        assertTrue(CloudPolicy.hasLogin("Starlink.Com.Access.V1=access-only"))
+        assertFalse(CloudPolicy.hasLogin("tracking=ignored"))
+    }
+
+    @Test fun `session diagnostics never expose cookie values`() {
+        val diagnostic = CloudPolicy.sessionDiagnostics(
+            listOf(
+                CloudPolicy.LOGIN to "Starlink.Com.Sso=secret-sso",
+                CloudPolicy.AUTH to "Starlink.Com.Access.V1=secret-access"
+            )
+        )
+        assertTrue(diagnostic.contains("www.starlink.com[SSO=YES ACCESS=NO"))
+        assertTrue(diagnostic.contains("api.starlink.com[SSO=NO ACCESS=YES"))
+        assertFalse(diagnostic.contains("secret-sso"))
+        assertFalse(diagnostic.contains("secret-access"))
+    }
+
     @Test fun `only account session cookies are retained without header injection`() {
         assertEquals("Starlink.Com.Sso=test-session; Starlink.Com.Access.V1=new", CloudPolicy.cookies(
             "tracking=do-not-store; Starlink.Com.Sso=test-session; Starlink.Com.Access.V1=old",
