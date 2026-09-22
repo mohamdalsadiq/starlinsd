@@ -14,13 +14,15 @@ import androidx.compose.ui.unit.dp
 import com.example.network.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.TimeoutCancellationException
 
 @Composable internal fun StarlinkControlPanel(
     clients: List<StarlinkProtocol.Client>, readBusy: Boolean, onBusy: (Boolean) -> Unit,
-    controller: RouterControl? = null,
+    controller: RouterControl? = null, cloud: Boolean = false, accountReady: Boolean = true,
 ) {
     val context = LocalContext.current
-    val control = remember(context, controller) { controller ?: RouterControl(context.applicationContext) }
+    val control = remember(context, controller, cloud) { controller ?: RouterControl(context.applicationContext, cloud) }
     val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
     var pending by remember { mutableStateOf<PendingPause?>(null) }
@@ -41,24 +43,26 @@ import kotlinx.coroutines.launch
     fun execute(action: suspend () -> Unit) {
         busy = true; onBusy(true); message = "جاري قراءة بيانات الراوتر والتحقق…"
         scope.launch {
-            try { action() }
+            try { withTimeout(90000) { action() } }
+            catch (_: TimeoutCancellationException) { message = "انتهت مهلة الفحص. لو بدأ الإرسال، راجع الجهاز واستخدم إعادة الإنترنت؛ لن نكرر الأمر تلقائيًا."; diagnostic = "CONTROL: timeout" }
             catch (e: CancellationException) { throw e }
             catch (e: Exception) { message = controlError(e); diagnostic = "CONTROL: ${errorCode(e)}" }
             finally { refreshPending(); busy = false; onBusy(false) }
         }
     }
     Panel {
-        Text("تجربة إيقاف جهاز واحد", style = MaterialTheme.typography.titleLarge)
+        Text(if (cloud) "تجربة الإيقاف عبر الحساب" else "تجربة إيقاف جهاز واحد", style = MaterialTheme.typography.titleLarge)
         Text("اختر هاتفًا آخر تملكه للتجربة. نقرأ الهوية أولًا، ثم نعرض تأكيدًا قبل تغيير الإيقاف. التجربة مستقلة عن الاشتراكات والحسابات.")
         Text("جهّز تطبيق Starlink لإلغاء الإيقاف عند الحاجة. مغادرة الصفحة أثناء الإرسال قد تترك النتيجة غير مؤكدة؛ سجل الاسترجاع يبقى محفوظًا.", style = MaterialTheme.typography.bodySmall)
+        if (cloud && !accountReady) Text("اربط الحساب أعلاه قبل تجربة التحكم. لو لديك اختبار سابق، أعد الربط لاسترجاعه.")
         if (pending != null) {
             Text("اختبار يحتاج مراجعة: ${pending!!.device.name}", style = MaterialTheme.typography.titleMedium)
             Text("قد يكون الجهاز موقوفًا. افحص إعادة الإنترنت حتى لو لم تصلك نتيجة الأمر السابق.")
-            Button(enabled = !busy && !readBusy, modifier = Modifier.fillMaxWidth().testTag("starlink-restore"), onClick = {
+            Button(enabled = !busy && !readBusy && (accountReady || pending?.cloud == false), modifier = Modifier.fillMaxWidth().testTag("starlink-restore"), onClick = {
                 execute { preview = control.prepareRestore(); acknowledged = false; message = "راجع الجهاز ثم أكد إعادة الإنترنت." }
             }) { Text("فحص إعادة الإنترنت") }
         } else {
-            OutlinedButton(enabled = !busy && !readBusy && !storageError && clients.any { it.id != null },
+            OutlinedButton(enabled = !busy && !readBusy && !storageError && accountReady && clients.any { it.id != null },
                 modifier = Modifier.fillMaxWidth().testTag("starlink-select"), onClick = { choosing = true }) { Text("اختيار جهاز للتجربة") }
             if (clients.isEmpty()) Text("ابدأ اختبار القراءة لعرض الأجهزة.")
             else if (clients.none { it.id != null }) Text("الرد لم يُرجع معرّفًا مناسبًا للتحكم. انسخ التشخيص؛ لن نعتمد على IP وحده.")
@@ -88,6 +92,7 @@ import kotlinx.coroutines.launch
         Column(Modifier.verticalScroll(rememberScrollState())) {
             Text("${prepared.pending.device.name}\nID: ${prepared.pending.device.id}\nIP: ${prepared.pending.device.ip}")
             Text(if (prepared.pause) "سيُرسل أمر تجريبي لإيقاف الإنترنت لهذا الجهاز. قد يظل متصلًا بالـWi-Fi. أعد الإنترنت بعد الاختبار من هنا أو من تطبيق Starlink."
+                else if (prepared.pending.cloud) "سيُزال الإيقاف الدائم لهذا الجهاز. لا تعدّل إيقافه من تطبيق آخر أثناء التجربة؛ الجداول الأخرى تبقى كما هي."
                 else "سيُزال فقط جدول الإيقاف الذي أضافه اختبار Slotra، مع الحفاظ على أي جداول أخرى.")
             Row { Checkbox(checked = acknowledged, onCheckedChange = { acknowledged = it }, modifier = Modifier.testTag("starlink-control-ack"))
                 Text("تأكدت من الجهاز وأستطيع إلغاء الإيقاف من تطبيق Starlink.", modifier = Modifier.padding(top = 12.dp)) }

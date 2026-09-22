@@ -8,7 +8,7 @@ import com.example.network.StarlinkProtocol.singleNumber
 import com.example.network.StarlinkProtocol.string
 import java.io.ByteArrayOutputStream
 
-/** Independent implementation from the published protobuf schema; no collection writes. */
+/** Independent implementation from the published protobuf schema; bounded local and authenticated cloud requests. */
 internal object RouterControlProtocol {
     const val MAX_CONFIG = 262144
     data class Config(val revision: Long, val entries: List<ByteArray>, val routerMac: String)
@@ -53,11 +53,11 @@ internal object RouterControlProtocol {
         it.number == 5 && fields(it.bytes ?: error("invalid_schedule")).string(2) == marker
     }.map { it.raw })
     fun updatedEntry(old: ByteArray?, device: StarlinkProtocol.Client, marker: String, pause: Boolean): ByteArray {
-        require(marker.matches(Regex("slotra-[a-f0-9-]{36}"))) { "invalid_marker" }
+        require(marker == "_permanent" || marker.matches(Regex("slotra-[a-f0-9-]{36}"))) { "invalid_marker" }
         val id = device.id ?: error("missing_client_id")
         require(id in 1..0xffffffffL) { "invalid_client_id" }
         var base = old ?: (numberField(1, id) +
-            (if (fullMac(device.mac)) field(2, device.mac.toByteArray()) else byteArrayOf()) +
+            (if (fullMac(device.mac) || (marker == "_permanent" && device.mac.isNotBlank())) field(2, device.mac.toByteArray()) else byteArrayOf()) +
             field(3, device.name.toByteArray()))
         base = withoutMarker(base, marker)
         if (old != null && fields(base).singleNumber(1).let { it == null || it == 0L }) {
@@ -72,6 +72,33 @@ internal object RouterControlProtocol {
     fun setClientRequest(entry: ByteArray): ByteArray {
         require(entry.size <= 16384)
         return field(3017, field(2, entry))
+    }
+    fun cloudEntries(config: Config, device: StarlinkProtocol.Client, updated: ByteArray): List<ByteArray> {
+        val ids = config.entries.map { fields(it).singleNumber(1) ?: error("missing_config_client_id") }
+        require(ids.all { it in 1..0xffffffffL } && ids.distinct().size == ids.size) { "ambiguous_client_id" }
+        // Validate identity before replacing; never use the masked MAC as a collection key.
+        entry(config, device)
+        return if (device.id in ids) config.entries.mapIndexed { index, bytes -> if (ids[index] == device.id) updated else bytes }
+            else config.entries + updated
+    }
+    fun setCloudClientsRequest(entries: List<ByteArray>): ByteArray {
+        require(entries.size in 1..512 && entries.all { it.size <= 16384 }) { "client_config_too_large" }
+        val config = join(entries.map { field(74, it) }) + numberField(1089, 1)
+        require(config.size <= MAX_CONFIG) { "config_too_large" }
+        return field(3001, field(1, config))
+    }
+    fun sameEntries(a: List<ByteArray>, b: List<ByteArray>): Boolean =
+        a.size == b.size && a.indices.all { a[it].contentEquals(b[it]) }
+    fun permanentIsFullWeek(entry: ByteArray): Boolean {
+        val schedules = fields(entry).filter { it.number == 5 }.map { fields(it.bytes ?: error("invalid_schedule")) }
+            .filter { it.string(2) == "_permanent" }
+        if (schedules.size != 1) return false
+        val schedule = schedules.single()
+        if (schedule.any { it.number !in setOf(1, 2) }) return false
+        val ranges = schedule.filter { it.number == 1 }
+        if (ranges.size != 1) return false
+        val range = fields(ranges.single().bytes ?: return false)
+        return range.all { it.number in setOf(1, 2) } && (range.singleNumber(1) ?: 0) == 0L && range.singleNumber(2) == 10080L
     }
     fun sameBytes(a: ByteArray?, b: ByteArray?): Boolean = if (a == null || b == null) a == null && b == null else a.contentEquals(b)
     private fun join(parts: List<ByteArray>): ByteArray = ByteArrayOutputStream().apply { parts.forEach { write(it) } }.toByteArray()

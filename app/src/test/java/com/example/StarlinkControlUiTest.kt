@@ -62,6 +62,29 @@ class StarlinkControlUiTest {
         compose.onNodeWithTag("starlink-control-result").assertTextContains("الراوتر رفض صلاحية التحكم", substring = true)
         compose.onNodeWithTag("starlink-restore").assertExists()
     }
+    @Test fun `cloud controls stay disabled until account connection and retain familiar layout`() {
+        val device = StarlinkProtocol.Client("realme-C55", "192.168.1.103", "8a:bb:a2:XX:XX:XX", null, 977656928, role = 1)
+        compose.setContent { ManagerTheme { Surface(Modifier.fillMaxSize()) {
+            StarlinkControlPanel(listOf(device), false, {}, cloud = true, accountReady = false)
+        } } }
+        compose.onNodeWithTag("starlink-select").assertIsNotEnabled()
+        compose.onNodeWithText("تجربة الإيقاف عبر الحساب").assertExists()
+        compose.onRoot().captureRoboImage("build/reports/ui/starlink-cloud-control.png")
+    }
+    @Test fun `cloud session is encrypted tamper rejected and excluded from backups`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val key = javax.crypto.spec.SecretKeySpec(ByteArray(32) { 17 }, "AES")
+        val vault = CloudSessionVault(context) { key }
+        val file = java.io.File(context.noBackupFilesDir, "starlink-session-v1.enc")
+        try {
+            vault.write("Starlink.Com.Sso=FAKE_TEST_SESSION")
+            assertFalse(file.readBytes().toString(Charsets.UTF_8).contains("FAKE_TEST_SESSION"))
+            assertEquals("Starlink.Com.Sso=FAKE_TEST_SESSION", CloudSessionVault(context) { key }.read())
+            val bytes = file.readBytes(); bytes[bytes.lastIndex] = (bytes.last().toInt() xor 1).toByte(); file.writeBytes(bytes)
+            assertThrows(IllegalStateException::class.java) { vault.read() }
+        } finally { vault.clear() }
+        assertFalse(file.exists())
+    }
     @Test fun `pending recovery journal survives reopening and excludes backup storage`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val journal = FilePauseJournal(context)

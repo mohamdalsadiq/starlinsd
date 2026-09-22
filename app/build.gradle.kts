@@ -13,8 +13,8 @@ android {
     applicationId = "com.aistudio.starlinkmanager.zbxpq"
     minSdk = 24
     targetSdk = 36
-    versionCode = 11
-    versionName = "3.6.0"
+    versionCode = 12
+    versionName = "3.7.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }

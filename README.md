@@ -78,3 +78,7 @@
 من إدارة الديون، أدخل الاسم والقيمة بقيمة الكاش والبداية والموعد. يُخصّص الفائض للديون الأقرب موعدًا أولًا. بعد الدفع فعليًا اضغط تسجيل سداد؛ السداد لا يُخصم مرتين. لا يُسمح بسداد يتجاوز الاحتياطي المتاح. عند تصحيح الإيراد، تحفظ المدفوعات ويظهر أي عجز تغطية، ولا تُخصص الأموال المدفوعة لدين آخر مرة ثانية.
 
 الحذف المالي يستبعد القيد من الحساب ويحفظ الأصل. التعديل والحذف ممكنان لليوم وللأيام السابقة من التقويم، دون إلغاء مؤقت الاشتراك. النسخ الاحتياطي v5 يشمل التصحيحات ودورات الفاتورة والديون والسداد، ويستعيد ملفات v2–v4 أيضًا.
+
+## Starlink owner-session trial (3.7.0)
+
+The optional account link now tests authenticated cloud pause/resume for one selected device. Local reads remain available without login. This is an unofficial, manually confirmed hardware experiment; it does not automate subscription blocking. See [the trial and security notes](docs/STARLINK-CLOUD-TEST.md).
