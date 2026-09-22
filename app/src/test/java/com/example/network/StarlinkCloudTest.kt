@@ -33,7 +33,11 @@ class StarlinkCloudTest {
             if (code != null) assertEquals(code, errorCode(e))
         }
     }
-    @Test fun `authenticated gRPC gateway uses Starlink api2 endpoint`() {\n        assertEquals("https://api2.starlink.com/SpaceX.API.Device.Device/Handle", CloudPolicy.HANDLE)\n    }\n\n    @Test fun `login policy rejects impersonation cleartext credentials ports and scripts`() {
+    @Test fun `authenticated gRPC gateway uses Starlink api2 endpoint`() {
+        assertEquals("https://api2.starlink.com/SpaceX.API.Device.Device/Handle", CloudPolicy.HANDLE)
+    }
+
+    @Test fun `login policy rejects impersonation cleartext credentials ports and scripts`() {
         assertTrue(CloudPolicy.loginUrlAllowed(CloudPolicy.LOGIN))
         assertTrue(CloudPolicy.loginUrlAllowed("https://auth.starlink.com/path"))
         listOf("http://starlink.com", "https://starlink.com.evil.test", "https://evilstarlink.com", "https://user@starlink.com", "https://starlink.com:444", "javascript:alert(1)", "file:///data/data/session").forEach {
