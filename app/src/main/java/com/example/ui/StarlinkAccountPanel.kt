@@ -118,9 +118,15 @@ import java.io.ByteArrayInputStream
                 if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
                 Button(enabled = !busy, modifier = Modifier.fillMaxWidth(), onClick = {
                     val manager = CookieManager.getInstance()
-                    val candidate = runCatching { CloudPolicy.cookies(manager.getCookie(CloudPolicy.LOGIN), manager.getCookie(CloudPolicy.HANDLE), manager.getCookie(CloudPolicy.AUTH)) }.getOrNull()
+                    val cookieHeaders = CloudPolicy.SESSION_COOKIE_URLS.map { url ->
+                        url to runCatching { manager.getCookie(url) }.getOrNull()
+                    }
+                    val candidate = runCatching {
+                        CloudPolicy.cookies(*cookieHeaders.map { it.second }.toTypedArray())
+                    }.getOrNull()
                     if (candidate == null || !CloudPolicy.hasLogin(candidate)) {
-                        message = "أكمل تسجيل الدخول أولًا، بما فيه رمز التحقق إن طُلب."; diagnostic = "LOGIN: session_not_available"
+                        message = "اكتمل تسجيل الدخول في الصفحة، لكن Slotra لم يجد Cookie جلسة قابلة للاستخدام. لا نرسل أي طلب Cloud حتى تتوفر الجلسة."
+                        diagnostic = "LOGIN: session_not_available; COOKIES: ${CloudPolicy.sessionDiagnostics(cookieHeaders)}"
                     } else {
                         busy = true; message = "جاري التحقق من الجلسة ومطابقة الراوتر…"
                         scope.launch {
