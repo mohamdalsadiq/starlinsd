@@ -26,7 +26,7 @@ import kotlin.coroutines.resumeWithException
 internal object CloudPolicy {
     const val LOGIN = "https://www.starlink.com/account"
     const val AUTH = "https://api.starlink.com/auth-rp/auth/user"
-    const val HANDLE = "https://starlink.com/api/SpaceX.API.Device.Device/Handle"
+    const val HANDLE = "https://api2.starlink.com/SpaceX.API.Device.Device/Handle"
     private val names = setOf("Starlink.Com.Sso", "Starlink.Com.Access.V1")
     fun loginUrlAllowed(value: String): Boolean = runCatching {
         val uri = URI(value)
