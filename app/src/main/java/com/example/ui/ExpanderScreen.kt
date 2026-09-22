@@ -1,206 +1,125 @@
 package com.example.ui
 
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.Context
-import android.content.Intent
-import android.provider.Settings
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.TextRange
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import com.example.MainViewModel
+import com.example.db.Plan
 import com.example.db.Shortcut
+import com.example.domain.TextRules
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun ExpanderScreen(viewModel: MainViewModel) {
-    val shortcuts by viewModel.shortcuts.collectAsState()
-    val context = LocalContext.current
-    var showDialog by remember { mutableStateOf(false) }
-
-    Scaffold(
-        floatingActionButton = {
-            FloatingActionButton(onClick = { showDialog = true }) {
-                Icon(Icons.Default.Add, contentDescription = "إضافة اختصار")
+@Composable fun ShortcutsScreen(shortcuts: List<Shortcut>, plans: List<Plan>, busy: Boolean,
+    save: (Shortcut) -> Unit, delete: (Shortcut) -> Unit) {
+    var editing by remember { mutableStateOf<Shortcut?>(null) }
+    var deleting by remember { mutableStateOf<Shortcut?>(null) }
+    var search by rememberSaveable { mutableStateOf("") }
+    var help by rememberSaveable { mutableStateOf(false) }
+    val rows = remember(shortcuts, search) { shortcuts.filter { it.keyword.contains(search, true) || it.phrase.contains(search, true) } }
+    val plansById = remember(plans) { plans.associateBy { it.id } }
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { Title("الاختصارات", "قوالب نصية وتسجيل اشتراكات بكلمة ومسافة") }
+        item { TextButton(onClick = { help = !help }) { Icon(Icons.Default.HelpOutline, null); Text(if (help) "إخفاء المساعدة" else "طريقة استخدام الاختصارات") } }
+        if (help) item { Panel {
+            Text("اكتب الاختصار ثم مسافة فقط، مثل س3. إن كان مرتبطًا بباقة يُسجّل مشتركًا برقم تلقائي. إضافة الاسم اختيارية: س3/محمد أو س3/محمد_أحمد.")
+            Text("اختر التطبيقات المسموحة وفعّل الخدمة من الإعدادات. الاختصار يسجّل بداية الوقت عند استبدال النص، وليس عند اتصال الجهاز أو إرسال الرسالة.")
+        } }
+        item { Button(enabled = !busy, onClick = { editing = Shortcut(keyword = "", phrase = "") }) { Text("إضافة اختصار") } }
+        item { Field("بحث في الاختصارات", search, { search = it }) }
+        if (rows.isEmpty()) item { Text("لا توجد اختصارات مطابقة. أضف اختصارًا جديدًا.") }
+        items(rows, key = { it.id }) { s -> Panel {
+            Text(s.keyword, style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.primary)
+            Text(s.phrase, maxLines = 3, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+            Text(if (s.planId == null) "نص فقط · لا يسجّل إيرادًا" else "باقة: ${plansById[s.planId]?.name ?: "غير متاحة"} · ${if (s.payment == "BANK") "تسعير بنكي قديم" else "سعر موحد"}")
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Switch(s.enabled, { save(s.copy(enabled = it)) }, enabled = !busy, modifier = Modifier.semantics { contentDescription = "تفعيل الاختصار ${s.keyword}" })
+                Text(if (s.enabled) "مفعّل" else "متوقف")
+                TextButton(enabled = !busy, onClick = { editing = s }) { Text("تعديل") }
+                TextButton(enabled = !busy, onClick = { deleting = s }) { Text("حذف") }
             }
-        }
-    ) { padding ->
-        Column(modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("اختصاراتي (${shortcuts.size})", fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                IconButton(onClick = { 
-                    context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                }) {
-                    Icon(Icons.Default.Settings, contentDescription = "إعدادات الخدمة")
-                }
-            }
-            
-            Spacer(modifier = Modifier.height(12.dp))
-
-            Card(
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
-            ) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    Text("💡 خطوة تفعيل الخدمة في أندرويد 13/14 (مهم جداً):", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                    Text("1. اضغط زر الإعدادات أعلاه ⚙️ للذهاب لإمكانية الوصول.\n2. إذا ظهرت لك عبارة (إعداد مقيد / Restricted setting):\nاذهب إلى إعدادات الهاتف ← التطبيقات ← مدير Starlink ← اضغط (⋮) بالأعلى ← (السماح بالإعدادات المقيدة).", fontSize = 12.sp)
-                    Spacer(modifier = Modifier.height(6.dp))
-                    TextButton(onClick = {
-                        val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                            data = android.net.Uri.fromParts("package", context.packageName, null)
-                        }
-                        context.startActivity(intent)
-                    }) {
-                        Text("فتح معلومات التطبيق للسماح بالإعداد المقيد")
-                    }
-                }
-            }
-            
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(shortcuts, key = { it.id }) { shortcut ->
-                    ShortcutCard(shortcut, viewModel)
-                }
-            }
-        }
+        } }
     }
-
-    if (showDialog) {
-        AddShortcutDialog(
-            onDismiss = { showDialog = false },
-            onSave = { k, p -> 
-                viewModel.saveShortcut(k, p)
-                showDialog = false
-            }
-        )
-    }
+    editing?.let { s -> ShortcutForm(s, plans, shortcuts, { editing = null }) { save(it); editing = null } }
+    deleting?.let { s -> AlertDialog(onDismissRequest = { deleting = null }, title = { Text("حذف ${s.keyword}؟") }, text = { Text("سيُحذف الاختصار، وتبقى الاشتراكات التي سجّلها محفوظة.") }, confirmButton = {
+        Button(onClick = { delete(s); deleting = null }) { Text("حذف") }
+    }, dismissButton = { TextButton(onClick = { deleting = null }) { Text("رجوع") } }) }
 }
 
-@Composable
-fun ShortcutCard(shortcut: Shortcut, viewModel: MainViewModel) {
-    val context = LocalContext.current
-    Card(modifier = Modifier.fillMaxWidth(), elevation = CardDefaults.cardElevation(2.dp)) {
-        Row(
-            modifier = Modifier.padding(16.dp).fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(shortcut.keyword, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                Text(shortcut.phrase, fontSize = 14.sp)
-            }
-            Row {
-                IconButton(onClick = {
-                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    clipboard.setPrimaryClip(ClipData.newPlainText("shortcut", shortcut.phrase))
-                }) {
-                    Icon(Icons.Default.ContentCopy, contentDescription = "نسخ")
-                }
-                IconButton(onClick = { viewModel.deleteShortcut(shortcut) }) {
-                    Icon(Icons.Default.Delete, contentDescription = "حذف", tint = MaterialTheme.colorScheme.error)
-                }
-            }
-        }
+@OptIn(ExperimentalLayoutApi::class)
+@Composable internal fun ShortcutForm(shortcut: Shortcut, plans: List<Plan>, existing: List<Shortcut>, dismiss: () -> Unit, save: (Shortcut) -> Unit) {
+    var keyword by rememberSaveable { mutableStateOf(shortcut.keyword) }
+    var phrase by rememberSaveable(stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue(shortcut.phrase)) }
+    var futureTime by remember { mutableStateOf(false) }
+    fun insert(tag: String) {
+        val from = phrase.selection.min; val to = phrase.selection.max
+        phrase = TextFieldValue(phrase.text.replaceRange(from, to, tag), TextRange(from + tag.length))
     }
+    var planId by rememberSaveable { mutableStateOf(shortcut.planId) }
+    var payment by rememberSaveable { mutableStateOf(shortcut.payment) }
+    val duplicate = existing.any { it.id != shortcut.id && it.keyword == keyword.trim() }
+    val valid = TextRules.validKeyword(keyword.trim()) && phrase.text.isNotBlank() && phrase.text.length <= 10000 && !duplicate
+    Form(if (shortcut.id == 0) "إضافة اختصار جديد" else "تعديل الاختصار", dismiss, {
+        save(shortcut.copy(keyword = keyword.trim(), phrase = phrase.text, planId = planId, payment = payment))
+    }, valid) {
+        Field("الكلمة المفتاحية (مثل mn)", keyword, { keyword = it })
+        if (duplicate) Text("هذه الكلمة مستخدمة؛ اختر كلمة أخرى.", color = MaterialTheme.colorScheme.error)
+        OutlinedTextField(phrase, { phrase = it }, modifier = Modifier.fillMaxWidth(), label = { Text("النص الممتد") }, minLines = 3)
+        Text("إضافة جاهزة إلى النص", style = MaterialTheme.typography.titleSmall)
+        Text("ضع المؤشر في النص ثم اختر العنصر. تُستبدل الرموز بالقيم عند استخدام الاختصار.", style = MaterialTheme.typography.bodySmall)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf(Triple("الاسم", "%client%", Icons.Default.Person), Triple("رقم الاشتراك", "%code%", Icons.Default.Tag),
+                Triple("وقت النهاية", "%end%", Icons.Default.Alarm), Triple("المدة", "%duration%", Icons.Default.HourglassTop),
+                Triple("السعر", "%price%", Icons.Default.Payments), Triple("الوقت الآن", "%time%", Icons.Default.Schedule),
+                Triple("التاريخ", "%date%", Icons.Default.Event), Triple("اليوم", "%day%", Icons.Default.Today)).forEach { (label, tag, icon) ->
+                AssistChip(onClick = { insert(tag) }, label = { Text(label) }, leadingIcon = { Icon(icon, null, Modifier.size(18.dp)) })
+            }
+            AssistChip(onClick = { futureTime = true }, label = { Text("وقت بعد مدة…") }, leadingIcon = { Icon(Icons.Default.MoreTime, null, Modifier.size(18.dp)) })
+        }
+        Text("الاسم التلقائي ورقم الاشتراك والمدة والسعر والنهاية تخص الاختصارات المرتبطة بباقة.", style = MaterialTheme.typography.bodySmall)
+        Text("نوع الاختصار", style = MaterialTheme.typography.titleSmall)
+        Choice("نص فقط", planId == null) { planId = null }
+        plans.filter { it.enabled || it.id == planId }.forEach { p -> Choice("${if (p.home) "✅ " else ""}${p.name}", planId == p.id) { planId = p.id } }
+        if (payment == "BANK" && planId != null && plans.find { it.id == planId }?.home != true) {
+            Text("هذا الاختصار محفوظ بتسعير بنكي قديم. يمكنك تحويل استخداماته القادمة للسعر الموحد دون تغيير إيراداته السابقة.", style = MaterialTheme.typography.bodySmall)
+            TextButton(onClick = { payment = "CASH" }) { Text("استخدام السعر الموحد") }
+        }
+        Text("معاينة النص", style = MaterialTheme.typography.labelLarge)
+        val plan = plans.find { it.id == planId }
+        val preview = TextRules.render(if (plan?.home == true) TextRules.householdTemplate(phrase.text) else phrase.text, System.currentTimeMillis(), "محمد", System.currentTimeMillis() + (plan?.minutes ?: 0) * 60000L,
+            plan?.let { com.example.domain.Money.show(if (payment == "BANK") it.bank else it.cash) }.orEmpty(), plan?.minutes?.toString().orEmpty(), code = if (planId != null) "1" else "")
+        Text(if (plan == null || plan.home) preview else TextRules.withReference(preview, "1"))
+        if (plan?.home == true) Text("أهل البيت: نص فقط؛ دون رقم أو وقت أو تنبيه أو إيراد.")
+        else if (planId != null) Text("الاسم اختياري عند الكتابة. مثال: اكتب ${keyword.ifBlank { "mm" }} ثم مسافة؛ سيضاف [1] تلقائيًا بعد النص ثم [2] للاشتراك التالي. الرقم نفسه يظهر في السجل والتنبيه. الأرقام المشغولة لا تتكرر.", style = MaterialTheme.typography.bodySmall)
+    }
+    if (futureTime) FutureTimeForm({ futureTime = false }) { insert(it); futureTime = false }
 }
 
-@Composable
-fun AddShortcutDialog(onDismiss: () -> Unit, onSave: (String, String) -> Unit) {
-    var keyword by remember { mutableStateOf("") }
-    var phrase by remember { mutableStateOf("") }
-    var showTimeDialog by remember { mutableStateOf(false) }
-
-    if (showTimeDialog) {
-        TimeAdditionDialog(
-            onDismiss = { showTimeDialog = false },
-            onConfirm = { hours ->
-                val tag = if (hours > 0) "%time+${hours}h%" else "%time%"
-                phrase += tag
-                showTimeDialog = false
-            }
-        )
-    }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("إضافة اختصار جديد") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    value = keyword,
-                    onValueChange = { keyword = it },
-                    label = { Text("الكلمة المفتاحية (مثل mn)") },
-                    singleLine = true
-                )
-                OutlinedTextField(
-                    value = phrase,
-                    onValueChange = { phrase = it },
-                    label = { Text("النص الممتد") },
-                    modifier = Modifier.height(120.dp)
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceEvenly
-                ) {
-                    Button(onClick = { phrase += "%date%" }) { Text("التاريخ") }
-                    Button(onClick = { phrase += "%day%" }) { Text("اليوم") }
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceEvenly
-                ) {
-                    Button(onClick = { phrase += "%time%" }) { Text("الوقت الحالي") }
-                    Button(onClick = { showTimeDialog = true }) { Text("إضافة ساعات") }
-                }
-            }
-        },
-        confirmButton = {
-            Button(onClick = {
-                if (keyword.isNotBlank() && phrase.isNotBlank()) {
-                    onSave(keyword.trim(), phrase)
-                }
-            }) {
-                Text("حفظ")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("إلغاء") }
-        }
-    )
+/** Text-only entry point also covered by the UI regression tests. */
+@Composable fun AddShortcutDialog(onDismiss: () -> Unit, onSave: (String, String) -> Unit) {
+    ShortcutForm(Shortcut(keyword = "", phrase = ""), emptyList(), emptyList(), onDismiss) { onSave(it.keyword, it.phrase) }
 }
 
-@Composable
-fun TimeAdditionDialog(onDismiss: () -> Unit, onConfirm: (Int) -> Unit) {
-    var hours by remember { mutableStateOf("") }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("كم عدد الساعات المراد إضافتها؟") },
-        text = {
-            OutlinedTextField(
-                value = hours,
-                onValueChange = { if (it.all { char -> char.isDigit() }) hours = it },
-                label = { Text("عدد الساعات") }
-            )
-        },
-        confirmButton = {
-            Button(onClick = { onConfirm(hours.toIntOrNull() ?: 0) }) { Text("تأكيد") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("إلغاء") } }
-    )
+@OptIn(ExperimentalLayoutApi::class)
+@Composable private fun FutureTimeForm(dismiss: () -> Unit, insert: (String) -> Unit) {
+    var hours by rememberSaveable { mutableStateOf("1") }
+    val parsed = com.example.domain.Money.parse(hours)
+    Form("إضافة وقت بعد مدة", dismiss, { insert("%time+${com.example.domain.Money.show(parsed!!)}h%") }, parsed != null && parsed in 1..876000) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("ربع ساعة" to "0.25", "نصف ساعة" to "0.5", "ساعة" to "1", "ساعتان" to "2", "3 ساعات" to "3").forEach { (label, value) ->
+                Choice(label, hours == value) { hours = value }
+            }
+        }
+        Field("الساعات · مثال 1.5 لساعة ونصف", hours, { hours = it })
+        Text("يُحسب هذا الوقت من لحظة استخدام الاختصار. لتوقيت نهاية الباقة الحقيقي اختر «وقت النهاية».")
+    }
 }
