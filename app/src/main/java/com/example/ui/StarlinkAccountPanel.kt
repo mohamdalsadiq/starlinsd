@@ -27,6 +27,10 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.TimeoutCancellationException
 import java.io.ByteArrayInputStream
+import java.util.concurrent.ConcurrentHashMap
+import androidx.webkit.WebSettingsCompat
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 
 @Composable internal fun StarlinkAccountPanel(blocked: Boolean, onBusy: (Boolean) -> Unit, onLinked: (Boolean) -> Unit) {
     val context = LocalContext.current
@@ -66,6 +70,7 @@ import java.io.ByteArrayInputStream
     var busy by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf("سجّل الدخول، ثم اضغط التحقق من الربط. ابقَ متصلًا براوتر Starlink.") }
     var diagnostic by remember { mutableStateOf("") }
+    val capturedCookies = remember { ConcurrentHashMap<String, String>() }
     DisposableEffect(Unit) { onBusy(true); onDispose { onBusy(false) } }
     Dialog(onDismissRequest = { if (!busy) onClose() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         val window = (LocalView.current.parent as? DialogWindowProvider)?.window
@@ -91,6 +96,9 @@ import java.io.ByteArrayInputStream
                         settings.setSupportMultipleWindows(false)
                         settings.cacheMode = WebSettings.LOAD_NO_CACHE
                         settings.saveFormData = false
+                        if (WebViewFeature.isFeatureSupported(WebViewFeature.COOKIE_INTERCEPT)) {
+                            WebSettingsCompat.setCookiesIncludedInShouldInterceptRequest(settings, true)
+                        }
                         run {
                             val cookieManager = CookieManager.getInstance()
                             cookieManager.setAcceptCookie(true)
@@ -105,6 +113,11 @@ import java.io.ByteArrayInputStream
                                 return reject
                             }
                             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+                                val host = request.url.host?.lowercase().orEmpty()
+                                val cookieHeader = request.requestHeaders["Cookie"]
+                                if (host.endsWith(".starlink.com") && !cookieHeader.isNullOrBlank()) {
+                                    capturedCookies[host] = cookieHeader
+                                }
                                 if (request.url.scheme != "https" || (request.isForMainFrame && !CloudPolicy.loginUrlAllowed(request.url.toString())))
                                     return WebResourceResponse("text/plain", "UTF-8", 403, "Blocked", emptyMap(), ByteArrayInputStream(byteArrayOf()))
                                 return null
@@ -135,13 +148,17 @@ import java.io.ByteArrayInputStream
                                 val cookieHeaders = CloudPolicy.SESSION_COOKIE_URLS.map { url ->
                                     url to runCatching { manager.getCookie(url) }.getOrNull()
                                 }
+                                val interceptedHeaders = capturedCookies.entries.map { (host, header) ->
+                                    "https://$host/" to header
+                                }
+                                val allHeaders = cookieHeaders + interceptedHeaders
                                 val candidate = runCatching {
-                                    CloudPolicy.cookies(*cookieHeaders.map { it.second }.toTypedArray())
+                                    CloudPolicy.cookies(*allHeaders.map { it.second }.toTypedArray())
                                 }.getOrNull()
                                 Triple(
                                     manager.hasCookies(),
                                     manager.acceptCookie(),
-                                    cookieHeaders to candidate
+                                    allHeaders to candidate
                                 )
                             }
                             val hasCookies = session.first
@@ -149,7 +166,7 @@ import java.io.ByteArrayInputStream
                             val (cookieHeaders, candidate) = session.third
                             if (candidate == null || !CloudPolicy.hasLogin(candidate)) {
                                 message = "اكتمل تسجيل الدخول في الصفحة، لكن Slotra لم يجد Cookie جلسة قابلة للاستخدام. لا نرسل أي طلب Cloud حتى تتوفر الجلسة."
-                                diagnostic = "LOGIN: session_not_available; WEBVIEW_COOKIES: HAS_COOKIES=${if (hasCookies) "YES" else "NO"} ACCEPT=${if (cookiesAccepted) "YES" else "NO"}; COOKIES: ${CloudPolicy.sessionDiagnostics(cookieHeaders)}"
+                                diagnostic = "LOGIN: session_not_available; WEBVIEW_COOKIES: HAS_COOKIES=${if (hasCookies) "YES" else "NO"} ACCEPT=${if (cookiesAccepted) "YES" else "NO"} INTERCEPTED=${capturedCookies.size}; COOKIES: ${CloudPolicy.sessionDiagnostics(cookieHeaders)}; INTERCEPTED: ${CloudPolicy.sessionDiagnostics(interceptedHeaders)}"
                             } else {
                                 message = "جاري التحقق من الجلسة ومطابقة الراوتر…"
                                 withTimeout(60000) {
@@ -180,6 +197,7 @@ import java.io.ByteArrayInputStream
     DisposableEffect(Unit) {
         onDispose {
             view?.let { it.stopLoading(); it.clearCache(true); it.clearHistory(); it.destroy() }; view = null
+            capturedCookies.clear()
             CookieManager.getInstance().removeAllCookies(null)
             WebStorage.getInstance().deleteAllData()
         }
