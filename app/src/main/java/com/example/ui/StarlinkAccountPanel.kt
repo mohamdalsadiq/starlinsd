@@ -29,7 +29,6 @@ import kotlinx.coroutines.TimeoutCancellationException
 import java.io.ByteArrayInputStream
 import java.util.concurrent.ConcurrentHashMap
 import androidx.webkit.WebSettingsCompat
-import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 
 @Composable internal fun StarlinkAccountPanel(blocked: Boolean, onBusy: (Boolean) -> Unit, onLinked: (Boolean) -> Unit) {
@@ -158,12 +157,14 @@ import androidx.webkit.WebViewFeature
                                 Triple(
                                     manager.hasCookies(),
                                     manager.acceptCookie(),
-                                    allHeaders to candidate
+                                    allHeaders to candidate,
+                                    interceptedHeaders
                                 )
                             }
                             val hasCookies = session.first
                             val cookiesAccepted = session.second
                             val (cookieHeaders, candidate) = session.third
+                            val interceptedHeaders = session.fourth
                             if (candidate == null || !CloudPolicy.hasLogin(candidate)) {
                                 message = "اكتمل تسجيل الدخول في الصفحة، لكن Slotra لم يجد Cookie جلسة قابلة للاستخدام. لا نرسل أي طلب Cloud حتى تتوفر الجلسة."
                                 diagnostic = "LOGIN: session_not_available; WEBVIEW_COOKIES: HAS_COOKIES=${if (hasCookies) "YES" else "NO"} ACCEPT=${if (cookiesAccepted) "YES" else "NO"} INTERCEPTED=${capturedCookies.size}; COOKIES: ${CloudPolicy.sessionDiagnostics(cookieHeaders)}; INTERCEPTED: ${CloudPolicy.sessionDiagnostics(interceptedHeaders)}"
