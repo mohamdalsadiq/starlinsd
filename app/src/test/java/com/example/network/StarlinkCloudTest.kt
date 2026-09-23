@@ -33,8 +33,11 @@ class StarlinkCloudTest {
             if (code != null) assertEquals(code, errorCode(e))
         }
     }
-    @Test fun `authenticated gRPC gateway uses Starlink api2 endpoint`() {
-        assertEquals("https://api2.starlink.com/SpaceX.API.Device.Device/Handle", CloudPolicy.HANDLE)
+    @Test fun `authenticated gRPC gateway uses the same-origin starlink endpoint`() {
+        // starlink.com CSP allows only same-origin and wifi.starlink.com, so the session is
+        // issued for the apex origin rather than a separate api2. host.
+        assertEquals("https://starlink.com/api/SpaceX.API.Device.Device/Handle", CloudPolicy.HANDLE)
+        assertTrue(CloudPolicy.sessionHost(java.net.URI(CloudPolicy.HANDLE).host))
     }
 
     @Test fun `session cookie origins include the apex starlink domain`() {
