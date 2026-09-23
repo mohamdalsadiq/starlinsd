@@ -23,10 +23,13 @@ import com.example.network.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.TimeoutCancellationException
 import java.io.ByteArrayInputStream
+import java.net.URI
+import kotlin.coroutines.resume
 
 @Composable internal fun StarlinkAccountPanel(blocked: Boolean, onBusy: (Boolean) -> Unit, onLinked: (Boolean) -> Unit) {
     val context = LocalContext.current
@@ -63,9 +66,14 @@ import java.io.ByteArrayInputStream
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var view by remember { mutableStateOf<WebView?>(null) }
+    val observedUrls = remember { mutableStateListOf<String>() }
     var busy by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf("سجّل الدخول، ثم اضغط التحقق من الربط. ابقَ متصلًا براوتر Starlink.") }
     var diagnostic by remember { mutableStateOf("") }
+    fun observe(url: String?) {
+        val safe = url?.let(CloudPolicy::cookieProbeUrl) ?: return
+        if (safe !in observedUrls && observedUrls.size < 64) observedUrls += safe
+    }
     DisposableEffect(Unit) { onBusy(true); onDispose { onBusy(false) } }
     Dialog(onDismissRequest = { if (!busy) onClose() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         val window = (LocalView.current.parent as? DialogWindowProvider)?.window
@@ -100,14 +108,22 @@ import java.io.ByteArrayInputStream
                         }
                         webViewClient = object : WebViewClient() {
                             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                                observe(request.url.toString())
                                 val reject = !CloudPolicy.loginUrlAllowed(request.url.toString())
                                 if (reject) { message = "أوقفنا انتقالًا خارج نطاق Starlink. لم تُرسل بيانات الربط لأي موقع آخر."; diagnostic = "LOGIN: navigation_blocked" }
                                 return reject
                             }
                             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+                                observe(request.url.toString())
                                 if (request.url.scheme != "https" || (request.isForMainFrame && !CloudPolicy.loginUrlAllowed(request.url.toString())))
                                     return WebResourceResponse("text/plain", "UTF-8", 403, "Blocked", emptyMap(), ByteArrayInputStream(byteArrayOf()))
                                 return null
+                            }
+                            override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) {
+                                observe(url)
+                            }
+                            override fun onPageFinished(view: WebView, url: String?) {
+                                observe(url)
                             }
                             override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
                                 handler.cancel(); message = "تعذر التحقق من شهادة الاتصال بـStarlink."; diagnostic = "LOGIN: tls_rejected"
@@ -129,10 +145,12 @@ import java.io.ByteArrayInputStream
                     message = "جاري قراءة جلسة WebView والتحقق من الربط…"
                     scope.launch {
                         try {
+                            val storageOrigins = starlinkStorageOrigins()
+                            val probeUrls = CloudPolicy.sessionCookieProbeUrls(observedUrls)
                             val session = withContext(Dispatchers.IO) {
                                 val manager = CookieManager.getInstance()
                                 manager.flush()
-                                val cookieHeaders = CloudPolicy.SESSION_COOKIE_URLS.map { url ->
+                                val cookieHeaders = probeUrls.map { url ->
                                     url to runCatching { manager.getCookie(url) }.getOrNull()
                                 }
                                 val candidate = runCatching {
@@ -149,7 +167,7 @@ import java.io.ByteArrayInputStream
                             val (cookieHeaders, candidate) = session.third
                             if (candidate == null || !CloudPolicy.hasLogin(candidate)) {
                                 message = "اكتمل تسجيل الدخول في الصفحة، لكن Slotra لم يجد Cookie جلسة قابلة للاستخدام. لا نرسل أي طلب Cloud حتى تتوفر الجلسة."
-                                diagnostic = "LOGIN: session_not_available; WEBVIEW_COOKIES: HAS_COOKIES=${if (hasCookies) "YES" else "NO"} ACCEPT=${if (cookiesAccepted) "YES" else "NO"}; COOKIES: ${CloudPolicy.sessionDiagnostics(cookieHeaders)}"
+                                diagnostic = "LOGIN: session_not_available; WEBVIEW_COOKIES: HAS_COOKIES=${if (hasCookies) "YES" else "NO"} ACCEPT=${if (cookiesAccepted) "YES" else "NO"}; OBSERVED_HOSTS: ${diagnosticHosts(observedUrls)}; WEB_STORAGE: ${diagnosticHosts(storageOrigins)}; COOKIES: ${CloudPolicy.sessionDiagnostics(cookieHeaders)}"
                             } else {
                                 message = "جاري التحقق من الجلسة ومطابقة الراوتر…"
                                 withTimeout(60000) {
@@ -184,4 +202,18 @@ import java.io.ByteArrayInputStream
             WebStorage.getInstance().deleteAllData()
         }
     }
+}
+
+private suspend fun starlinkStorageOrigins(): List<String> = suspendCancellableCoroutine { continuation ->
+    WebStorage.getInstance().getOrigins { origins ->
+        val values = origins.keys.mapNotNull(CloudPolicy::cookieProbeUrl).distinct()
+        if (continuation.isActive) continuation.resume(values)
+    }
+}
+
+private fun diagnosticHosts(urls: List<String>): String {
+    if (urls.isEmpty()) return "none"
+    return urls.mapNotNull {
+        runCatching { URI(it).host?.lowercase() }.getOrNull()
+    }.distinct().joinToString(",")
 }

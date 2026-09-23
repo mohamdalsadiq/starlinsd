@@ -31,12 +31,17 @@ internal object CloudPolicy {
     const val LOGIN_COOKIE = "Starlink.Com.Sso"
     const val ACCESS_COOKIE = "Starlink.Com.Access.V1"
     val SESSION_COOKIE_URLS = listOf(LOGIN, "https://auth.starlink.com/", AUTH, HANDLE)
-    fun loginUrlAllowed(value: String): Boolean = runCatching {
+    fun cookieProbeUrl(value: String): String? = runCatching {
         val uri = URI(value)
         val host = uri.host?.lowercase().orEmpty()
-        uri.scheme == "https" && uri.userInfo == null && uri.port in setOf(-1, 443) &&
+        val allowed = uri.scheme == "https" && uri.userInfo == null && uri.port in setOf(-1, 443) &&
             (host == "starlink.com" || host.endsWith(".starlink.com"))
-    }.getOrDefault(false)
+        if (!allowed) null
+        else URI("https", null, host, -1, uri.rawPath?.takeIf { it.isNotBlank() } ?: "/", null, null).toString()
+    }.getOrNull()
+    fun loginUrlAllowed(value: String): Boolean = cookieProbeUrl(value) != null
+    fun sessionCookieProbeUrls(observed: Collection<String>): List<String> =
+        (SESSION_COOKIE_URLS + observed).mapNotNull(::cookieProbeUrl).distinct()
     fun cookies(vararg headers: String?): String {
         val result = linkedMapOf<String, String>()
         headers.filterNotNull().forEach { header ->
