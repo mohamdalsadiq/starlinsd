@@ -37,9 +37,25 @@ class StarlinkCloudTest {
         assertEquals("https://api2.starlink.com/SpaceX.API.Device.Device/Handle", CloudPolicy.HANDLE)
     }
 
+    @Test fun `session cookie origins include the apex starlink domain`() {
+        // Regression: the account session lives on the apex host, which was excluded, producing
+        // LOGIN: session_not_available even though the WebView login had succeeded.
+        assertTrue(CloudPolicy.SESSION_COOKIE_URLS.contains("https://starlink.com/"))
+        assertEquals("https://starlink.com/", CloudPolicy.SESSION_COOKIE_URLS.first())
+        assertTrue(CloudPolicy.SESSION_COOKIE_URLS.any { it == "https://starlink.com/account" })
+    }
+
+    @Test fun `apex and subdomains are session hosts but lookalikes are not`() {
+        listOf("starlink.com", "STARLINK.COM", "www.starlink.com", "auth.starlink.com", "api2.starlink.com")
+            .forEach { assertTrue(it, CloudPolicy.sessionHost(it)) }
+        listOf("starlink.com.evil.test", "evilstarlink.com", "notstarlink.com", "")
+            .forEach { assertFalse(it, CloudPolicy.sessionHost(it)) }
+    }
+
     @Test fun `login policy rejects impersonation cleartext credentials ports and scripts`() {
         assertTrue(CloudPolicy.loginUrlAllowed(CloudPolicy.LOGIN))
         assertTrue(CloudPolicy.loginUrlAllowed("https://auth.starlink.com/path"))
+        assertTrue(CloudPolicy.loginUrlAllowed(CloudPolicy.ROOT))
         listOf("http://starlink.com", "https://starlink.com.evil.test", "https://evilstarlink.com", "https://user@starlink.com", "https://starlink.com:444", "javascript:alert(1)", "file:///data/data/session").forEach {
             assertFalse(it, CloudPolicy.loginUrlAllowed(it))
         }
@@ -52,10 +68,12 @@ class StarlinkCloudTest {
     @Test fun `session diagnostics never expose cookie values`() {
         val diagnostic = CloudPolicy.sessionDiagnostics(
             listOf(
+                CloudPolicy.ROOT to "Starlink.Com.Sso=secret-sso",
                 CloudPolicy.LOGIN to "Starlink.Com.Sso=secret-sso",
                 CloudPolicy.AUTH to "Starlink.Com.Access.V1=secret-access"
             )
         )
+        assertTrue(diagnostic.contains("starlink.com[SSO=YES ACCESS=NO"))
         assertTrue(diagnostic.contains("www.starlink.com[SSO=YES ACCESS=NO"))
         assertTrue(diagnostic.contains("api.starlink.com[SSO=NO ACCESS=YES"))
         assertFalse(diagnostic.contains("secret-sso"))

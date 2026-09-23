@@ -115,7 +115,9 @@ import androidx.webkit.WebViewFeature
                             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
                                 val host = request.url.host?.lowercase().orEmpty()
                                 val cookieHeader = request.requestHeaders["Cookie"]
-                                if (host.endsWith(".starlink.com") && !cookieHeader.isNullOrBlank()) {
+                                // Includes the apex host `starlink.com`, which carries the real
+                                // account session; endsWith(".starlink.com") alone excluded it.
+                                if (CloudPolicy.sessionHost(host) && !cookieHeader.isNullOrBlank()) {
                                     capturedCookies[host] = cookieHeader
                                 }
                                 if (request.url.scheme != "https" || (request.isForMainFrame && !CloudPolicy.loginUrlAllowed(request.url.toString())))
