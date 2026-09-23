@@ -24,18 +24,29 @@ import kotlin.coroutines.resumeWithException
 
 /** The account session is never sent to a LAN endpoint, diagnostics, or a third-party server. */
 internal object CloudPolicy {
+    /**
+     * After login Starlink migrates the account session onto the apex domain `starlink.com`
+     * itself (cookies `Starlink.Com.Sso` / `Starlink.Com.Access.V1`), not onto www./auth./api.
+     * Host-only cookies on the apex are NOT returned by CookieManager.getCookie() for any
+     * subdomain URL, so the apex origin must be read explicitly.
+     */
+    const val ROOT = "https://starlink.com/"
     const val LOGIN = "https://www.starlink.com/account"
     const val AUTH = "https://api.starlink.com/auth-rp/auth/user"
     const val HANDLE = "https://api2.starlink.com/SpaceX.API.Device.Device/Handle"
     private val names = setOf("Starlink.Com.Sso", "Starlink.Com.Access.V1")
     const val LOGIN_COOKIE = "Starlink.Com.Sso"
     const val ACCESS_COOKIE = "Starlink.Com.Access.V1"
-    val SESSION_COOKIE_URLS = listOf(LOGIN, "https://auth.starlink.com/", AUTH, HANDLE)
+    val SESSION_COOKIE_URLS = listOf(ROOT, "https://starlink.com/account", LOGIN, "https://auth.starlink.com/", AUTH, HANDLE)
+    /** True for any origin whose cookie jar can hold the account session, apex included. */
+    fun sessionHost(host: String): Boolean {
+        val value = host.lowercase()
+        return value == "starlink.com" || value.endsWith(".starlink.com")
+    }
     fun loginUrlAllowed(value: String): Boolean = runCatching {
         val uri = URI(value)
         val host = uri.host?.lowercase().orEmpty()
-        uri.scheme == "https" && uri.userInfo == null && uri.port in setOf(-1, 443) &&
-            (host == "starlink.com" || host.endsWith(".starlink.com"))
+        uri.scheme == "https" && uri.userInfo == null && uri.port in setOf(-1, 443) && sessionHost(host)
     }.getOrDefault(false)
     fun cookies(vararg headers: String?): String {
         val result = linkedMapOf<String, String>()
