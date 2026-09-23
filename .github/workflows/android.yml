@@ -67,11 +67,25 @@ jobs:
           app/build/test-results/
           app/schemas/
 
+    - name: Sign and verify installable Debug APK
+      run: |
+        SDK_BUILD_TOOLS="$ANDROID_HOME/build-tools/36.0.0"
+        INPUT="app/build/outputs/apk/debug/app-debug.apk"
+        OUTPUT="app/build/outputs/apk/debug/slotra-3.7.0-preview-signed.apk"
+        "$SDK_BUILD_TOOLS/apksigner" sign \
+          --ks debug.keystore \
+          --ks-pass pass:android \
+          --key-pass pass:android \
+          --ks-key-alias androiddebugkey \
+          --out "$OUTPUT" \
+          "$INPUT"
+        "$SDK_BUILD_TOOLS/apksigner" verify --verbose --min-sdk-version 24 "$OUTPUT"
+
     - name: Upload APK Artifact
       uses: actions/upload-artifact@v7
       with:
-        name: app-debug
-        path: app/build/outputs/apk/debug/app-debug.apk
+        name: app-debug-signed
+        path: app/build/outputs/apk/debug/slotra-3.7.0-preview-signed.apk
         if-no-files-found: error
 
     - name: Bundle unsigned release for local signing
