@@ -95,6 +95,7 @@ import androidx.webkit.WebViewFeature
                         settings.setSupportMultipleWindows(false)
                         settings.cacheMode = WebSettings.LOAD_NO_CACHE
                         settings.saveFormData = false
+                        @SuppressLint("WrongConstant")
                         if (WebViewFeature.isFeatureSupported(WebViewFeature.COOKIE_INTERCEPT)) {
                             WebSettingsCompat.setCookiesIncludedInShouldInterceptRequest(settings, true)
                         }
