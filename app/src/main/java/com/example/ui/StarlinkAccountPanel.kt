@@ -184,7 +184,10 @@ import androidx.webkit.WebViewFeature
                             throw e
                         } catch (e: Exception) {
                             message = controlError(e)
-                            diagnostic = "LOGIN: ${errorCode(e)}"
+                            // e.cause carries the real network exception class for cloud_network_failed
+                            // (see AccountHttp.onFailure); errorCode(e) itself is left untouched so
+                            // controlError()'s dispatch and other call sites stay exact-match safe.
+                            diagnostic = "LOGIN: ${errorCode(e)}${e.cause?.let { ":${it.javaClass.simpleName}" }.orEmpty()}"
                         } finally {
                             busy = false
                         }
