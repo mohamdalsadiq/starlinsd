@@ -39,7 +39,7 @@ internal object CloudPolicy {
      * the account session is actually issued for is the same-origin one, not a separate
      * api2. host. Unverified against hardware - see docs/STARLINK-APEX-SESSION-CHECKPOINT.md.
      */
-    const val HANDLE = "https://starlink.com/api/SpaceX.API.Device.Device/Handle"
+    const val HANDLE = "https://api2.starlink.com/SpaceX.API.Device.Device/Handle"
     private val names = setOf("Starlink.Com.Sso", "Starlink.Com.Access.V1")
     const val LOGIN_COOKIE = "Starlink.Com.Sso"
     const val ACCESS_COOKIE = "Starlink.Com.Access.V1"
