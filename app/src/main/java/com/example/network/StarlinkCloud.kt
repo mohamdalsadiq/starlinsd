@@ -162,7 +162,7 @@ internal class AccountHttp : CloudHttp {
                 continuation.invokeOnCancellation { call.cancel() }
                 call.enqueue(object : Callback {
                     override fun onFailure(call: Call, e: IOException) {
-                        if (continuation.isActive) continuation.resumeWithException(IOException("cloud_network_failed"))
+                        if (continuation.isActive) continuation.resumeWithException(IOException("cloud_network_failed:${e.javaClass.simpleName}"))
                     }
                     override fun onResponse(call: Call, response: Response) {
                         try {
@@ -174,7 +174,7 @@ internal class AccountHttp : CloudHttp {
                             }
                             if (continuation.isActive) continuation.resume(result)
                         } catch (_: Exception) {
-                            if (continuation.isActive) continuation.resumeWithException(IOException("cloud_network_failed:${e.javaClass.simpleName}"))
+                            if (continuation.isActive) continuation.resumeWithException(IOException("cloud_response_invalid"))
                         }
                     }
                 })
