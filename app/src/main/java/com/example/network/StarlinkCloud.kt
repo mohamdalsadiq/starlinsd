@@ -174,7 +174,7 @@ internal class AccountHttp : CloudHttp {
                             }
                             if (continuation.isActive) continuation.resume(result)
                         } catch (_: Exception) {
-                            if (continuation.isActive) continuation.resumeWithException(IOException("cloud_response_invalid"))
+                            if (continuation.isActive) continuation.resumeWithException(IOException("cloud_network_failed:${e.javaClass.simpleName}"))
                         }
                     }
                 })
