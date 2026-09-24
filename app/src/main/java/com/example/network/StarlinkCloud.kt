@@ -152,7 +152,19 @@ internal class AccountHttp : CloudHttp {
             .retryOnConnectionFailure(false).connectTimeout(10, TimeUnit.SECONDS).readTimeout(15, TimeUnit.SECONDS)
             .callTimeout(20, TimeUnit.SECONDS).build()
         val request = Request.Builder().url(url).header("Cookie", CloudPolicy.cookies(cookie))
-            .header("Accept-Encoding", "identity").apply {
+            .header("Accept-Encoding", "identity")
+            // Confirmed on-device (curl, 2026-09-24): api.starlink.com bare-403s ("whydoyoucare?",
+            // empty body) any request that doesn't look like a same-site browser fetch from the
+            // account page, cookies or not; adding these headers alone (no TLS-fingerprint change)
+            // reached the real backend and got a 200. Applied to both endpoints since HANDLE sees
+            // the same origin/CSP relationship from the account page's perspective.
+            .header("User-Agent", "Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36")
+            .header("Origin", "https://www.starlink.com")
+            .header("Referer", "https://www.starlink.com/account")
+            .header("Sec-Fetch-Site", "same-site")
+            .header("Sec-Fetch-Mode", "cors")
+            .header("Sec-Fetch-Dest", "empty")
+            .apply {
                 if (body == null) header("Accept", "application/json")
                 else header("x-grpc-web", "1").post(StarlinkProtocol.frame(body).toRequestBody("application/grpc-web+proto".toMediaType()))
             }.build()
@@ -193,7 +205,11 @@ internal class StarlinkCloud(private val store: CloudSessionStore, private val h
     private suspend fun refresh(base: String): String {
         val reply = http.request(CloudPolicy.AUTH, base, null)
         check(reply.code == 200) { "cloud_http_${reply.code}" }
-        require(reply.contentType.startsWith("application/json")) { "cloud_response_invalid" }
+        // A verified on-device probe (curl, 2026-09-24) got a real 200 back as text/plain with an
+        // empty body for an anonymous request to this same endpoint - so only an HTML error or
+        // challenge page is rejected here; hasLogin() below is the actual gate on whether the
+        // session cookies we're holding are real ones, independent of this response's shape.
+        require(!reply.contentType.startsWith("text/html")) { "cloud_response_invalid" }
         val next = CloudPolicy.cookies(base, *reply.cookies.toTypedArray())
         require(CloudPolicy.hasLogin(next)) { "cloud_login_missing" }
         return next
