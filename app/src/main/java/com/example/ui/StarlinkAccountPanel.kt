@@ -21,10 +21,15 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.DialogWindowProvider
 import com.example.network.*
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.TimeoutCancellationException
 import java.io.ByteArrayInputStream
+import java.util.concurrent.ConcurrentHashMap
+import androidx.webkit.WebSettingsCompat
+import androidx.webkit.WebViewFeature
 
 @Composable internal fun StarlinkAccountPanel(blocked: Boolean, onBusy: (Boolean) -> Unit, onLinked: (Boolean) -> Unit) {
     val context = LocalContext.current
@@ -64,6 +69,7 @@ import java.io.ByteArrayInputStream
     var busy by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf("سجّل الدخول، ثم اضغط التحقق من الربط. ابقَ متصلًا براوتر Starlink.") }
     var diagnostic by remember { mutableStateOf("") }
+    val capturedCookies = remember { ConcurrentHashMap<String, String>() }
     DisposableEffect(Unit) { onBusy(true); onDispose { onBusy(false) } }
     Dialog(onDismissRequest = { if (!busy) onClose() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         val window = (LocalView.current.parent as? DialogWindowProvider)?.window
@@ -89,7 +95,17 @@ import java.io.ByteArrayInputStream
                         settings.setSupportMultipleWindows(false)
                         settings.cacheMode = WebSettings.LOAD_NO_CACHE
                         settings.saveFormData = false
-                        CookieManager.getInstance().setAcceptThirdPartyCookies(this, false)
+                        @SuppressLint("WrongConstant")
+                        if (WebViewFeature.isFeatureSupported(WebViewFeature.COOKIE_INTERCEPT)) {
+                            WebSettingsCompat.setCookiesIncludedInShouldInterceptRequest(settings, true)
+                        }
+                        run {
+                            val cookieManager = CookieManager.getInstance()
+                            cookieManager.setAcceptCookie(true)
+                            // Starlink login may set session cookies across Starlink subdomains.
+                            // Android 12+ WebView defaults third-party cookies to disabled for modern apps.
+                            cookieManager.setAcceptThirdPartyCookies(this, true)
+                        }
                         webViewClient = object : WebViewClient() {
                             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                                 val reject = !CloudPolicy.loginUrlAllowed(request.url.toString())
@@ -97,6 +113,13 @@ import java.io.ByteArrayInputStream
                                 return reject
                             }
                             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+                                val host = request.url.host?.lowercase().orEmpty()
+                                val cookieHeader = request.requestHeaders["Cookie"]
+                                // Includes the apex host `starlink.com`, which carries the real
+                                // account session; endsWith(".starlink.com") alone excluded it.
+                                if (CloudPolicy.sessionHost(host) && !cookieHeader.isNullOrBlank()) {
+                                    capturedCookies[host] = cookieHeader
+                                }
                                 if (request.url.scheme != "https" || (request.isForMainFrame && !CloudPolicy.loginUrlAllowed(request.url.toString())))
                                     return WebResourceResponse("text/plain", "UTF-8", 403, "Blocked", emptyMap(), ByteArrayInputStream(byteArrayOf()))
                                 return null
@@ -117,20 +140,53 @@ import java.io.ByteArrayInputStream
                 })
                 if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
                 Button(enabled = !busy, modifier = Modifier.fillMaxWidth(), onClick = {
-                    val manager = CookieManager.getInstance()
-                    val candidate = runCatching { CloudPolicy.cookies(manager.getCookie(CloudPolicy.LOGIN), manager.getCookie(CloudPolicy.HANDLE), manager.getCookie(CloudPolicy.AUTH)) }.getOrNull()
-                    if (candidate == null || !CloudPolicy.hasLogin(candidate)) {
-                        message = "أكمل تسجيل الدخول أولًا، بما فيه رمز التحقق إن طُلب."; diagnostic = "LOGIN: session_not_available"
-                    } else {
-                        busy = true; message = "جاري التحقق من الجلسة ومطابقة الراوتر…"
-                        scope.launch {
-                            try {
-                                withTimeout(60000) { StarlinkCloud(CloudSessionVault(context)).connect(candidate, AndroidRouterLink(context)) }
+                    busy = true
+                    message = "جاري قراءة جلسة WebView والتحقق من الربط…"
+                    scope.launch {
+                        try {
+                            val session = withContext(Dispatchers.IO) {
+                                val manager = CookieManager.getInstance()
+                                manager.flush()
+                                val cookieHeaders = CloudPolicy.SESSION_COOKIE_URLS.map { url ->
+                                    url to runCatching { manager.getCookie(url) }.getOrNull()
+                                }
+                                val interceptedHeaders = capturedCookies.entries.map { (host, header) ->
+                                    "https://$host/" to header
+                                }
+                                val allHeaders = cookieHeaders + interceptedHeaders
+                                val candidate = runCatching {
+                                    CloudPolicy.cookies(*allHeaders.map { it.second }.toTypedArray())
+                                }.getOrNull()
+                                Triple(
+                                    manager.hasCookies(),
+                                    manager.acceptCookie(),
+                                    allHeaders to candidate
+                                )
+                            }
+                            val hasCookies = session.first
+                            val cookiesAccepted = session.second
+                            val (cookieHeaders, candidate) = session.third
+                            if (candidate == null || !CloudPolicy.hasLogin(candidate)) {
+                                message = "اكتمل تسجيل الدخول في الصفحة، لكن Slotra لم يجد Cookie جلسة قابلة للاستخدام. لا نرسل أي طلب Cloud حتى تتوفر الجلسة."
+                                val interceptedForDiagnostics = capturedCookies.entries.map { (host, header) -> "https://$host/" to header }
+                                diagnostic = "LOGIN: session_not_available; WEBVIEW_COOKIES: HAS_COOKIES=${if (hasCookies) "YES" else "NO"} ACCEPT=${if (cookiesAccepted) "YES" else "NO"} INTERCEPTED=${capturedCookies.size}; COOKIES: ${CloudPolicy.sessionDiagnostics(cookieHeaders)}; INTERCEPTED: ${CloudPolicy.sessionDiagnostics(interceptedForDiagnostics)}"
+                            } else {
+                                message = "جاري التحقق من الجلسة ومطابقة الراوتر…"
+                                withTimeout(60000) {
+                                    StarlinkCloud(CloudSessionVault(context)).connect(candidate, AndroidRouterLink(context))
+                                }
                                 onComplete()
-                            } catch (_: TimeoutCancellationException) { message = "انتهت مهلة التحقق من الحساب. لم نرسل أمر حظر."; diagnostic = "LOGIN: timeout" }
-                            catch (e: CancellationException) { throw e }
-                            catch (e: Exception) { message = controlError(e); diagnostic = "LOGIN: ${errorCode(e)}" }
-                            finally { busy = false }
+                            }
+                        } catch (_: TimeoutCancellationException) {
+                            message = "انتهت مهلة التحقق من الحساب. لم نرسل أمر حظر."
+                            diagnostic = "LOGIN: timeout"
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            message = controlError(e)
+                            diagnostic = "LOGIN: ${errorCode(e)}"
+                        } finally {
+                            busy = false
                         }
                     }
                 }) { Text("التحقق من الربط") }
@@ -144,6 +200,7 @@ import java.io.ByteArrayInputStream
     DisposableEffect(Unit) {
         onDispose {
             view?.let { it.stopLoading(); it.clearCache(true); it.clearHistory(); it.destroy() }; view = null
+            capturedCookies.clear()
             CookieManager.getInstance().removeAllCookies(null)
             WebStorage.getInstance().deleteAllData()
         }

@@ -33,13 +33,56 @@ class StarlinkCloudTest {
             if (code != null) assertEquals(code, errorCode(e))
         }
     }
+    @Test fun `authenticated gRPC gateway uses the same-origin starlink endpoint`() {
+        // starlink.com CSP allows only same-origin and wifi.starlink.com, so the session is
+        // issued for the apex origin rather than a separate api2. host.
+        assertEquals("https://starlink.com/api/SpaceX.API.Device.Device/Handle", CloudPolicy.HANDLE)
+        assertTrue(CloudPolicy.sessionHost(java.net.URI(CloudPolicy.HANDLE).host))
+    }
+
+    @Test fun `session cookie origins include the apex starlink domain`() {
+        // Regression: the account session lives on the apex host, which was excluded, producing
+        // LOGIN: session_not_available even though the WebView login had succeeded.
+        assertTrue(CloudPolicy.SESSION_COOKIE_URLS.contains("https://starlink.com/"))
+        assertEquals("https://starlink.com/", CloudPolicy.SESSION_COOKIE_URLS.first())
+        assertTrue(CloudPolicy.SESSION_COOKIE_URLS.any { it == "https://starlink.com/account" })
+    }
+
+    @Test fun `apex and subdomains are session hosts but lookalikes are not`() {
+        listOf("starlink.com", "STARLINK.COM", "www.starlink.com", "auth.starlink.com", "api2.starlink.com")
+            .forEach { assertTrue(it, CloudPolicy.sessionHost(it)) }
+        listOf("starlink.com.evil.test", "evilstarlink.com", "notstarlink.com", "")
+            .forEach { assertFalse(it, CloudPolicy.sessionHost(it)) }
+    }
+
     @Test fun `login policy rejects impersonation cleartext credentials ports and scripts`() {
         assertTrue(CloudPolicy.loginUrlAllowed(CloudPolicy.LOGIN))
         assertTrue(CloudPolicy.loginUrlAllowed("https://auth.starlink.com/path"))
+        assertTrue(CloudPolicy.loginUrlAllowed(CloudPolicy.ROOT))
         listOf("http://starlink.com", "https://starlink.com.evil.test", "https://evilstarlink.com", "https://user@starlink.com", "https://starlink.com:444", "javascript:alert(1)", "file:///data/data/session").forEach {
             assertFalse(it, CloudPolicy.loginUrlAllowed(it))
         }
     }
+    @Test fun `access cookie alone is accepted as an authenticated session`() {
+        assertTrue(CloudPolicy.hasLogin("Starlink.Com.Access.V1=access-only"))
+        assertFalse(CloudPolicy.hasLogin("tracking=ignored"))
+    }
+
+    @Test fun `session diagnostics never expose cookie values`() {
+        val diagnostic = CloudPolicy.sessionDiagnostics(
+            listOf(
+                CloudPolicy.ROOT to "Starlink.Com.Sso=secret-sso",
+                CloudPolicy.LOGIN to "Starlink.Com.Sso=secret-sso",
+                CloudPolicy.AUTH to "Starlink.Com.Access.V1=secret-access"
+            )
+        )
+        assertTrue(diagnostic.contains("starlink.com[SSO=YES ACCESS=NO"))
+        assertTrue(diagnostic.contains("www.starlink.com[SSO=YES ACCESS=NO"))
+        assertTrue(diagnostic.contains("api.starlink.com[SSO=NO ACCESS=YES"))
+        assertFalse(diagnostic.contains("secret-sso"))
+        assertFalse(diagnostic.contains("secret-access"))
+    }
+
     @Test fun `only account session cookies are retained without header injection`() {
         assertEquals("Starlink.Com.Sso=test-session; Starlink.Com.Access.V1=new", CloudPolicy.cookies(
             "tracking=do-not-store; Starlink.Com.Sso=test-session; Starlink.Com.Access.V1=old",
@@ -66,6 +109,45 @@ class StarlinkCloudTest {
         assertEquals(2, calls)
         assertTrue(store.value!!.contains("Access.V1=fresh"))
     }
+    @Test fun `link verification keeps blocking cloud and local work off the caller thread`() = runBlocking {
+        val caller = Thread.currentThread()
+        val originalName = caller.name
+        caller.name = "main"
+        try {
+            val store = object : CloudSessionStore {
+                var value: String? = null
+                override fun read(): String? = value
+                override fun write(cookie: String) {
+                    assertNotEquals("main", Thread.currentThread().name)
+                    value = cookie
+                }
+                override fun clear() { value = null }
+            }
+            val http = CloudHttp { url, _, _ ->
+                assertNotEquals("main", Thread.currentThread().name)
+                if (url == CloudPolicy.AUTH) {
+                    CloudHttpReply(200, "{}".toByteArray(), "application/json")
+                } else {
+                    assertEquals(CloudPolicy.HANDLE, url)
+                    grpc(status)
+                }
+            }
+            val local = object : RouterControlLink {
+                override val localIps = setOf("192.168.1.20")
+                override suspend fun exchange(payload: ByteArray): ByteArray {
+                    assertNotEquals("main", Thread.currentThread().name)
+                    assertArrayEquals(StarlinkProtocol.request(StarlinkProtocol.Query.STATUS), payload)
+                    return status
+                }
+            }
+
+            StarlinkCloud(store, http).connect("Starlink.Com.Sso=test-session", local)
+            assertNotNull(store.value)
+        } finally {
+            caller.name = originalName
+        }
+    }
+
     @Test fun `account without router access cannot persist session`() {
         val store = Store()
         val http = CloudHttp { url, _, _ ->
