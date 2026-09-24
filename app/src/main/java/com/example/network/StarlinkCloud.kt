@@ -162,7 +162,10 @@ internal class AccountHttp : CloudHttp {
                 continuation.invokeOnCancellation { call.cancel() }
                 call.enqueue(object : Callback {
                     override fun onFailure(call: Call, e: IOException) {
-                        if (continuation.isActive) continuation.resumeWithException(IOException("cloud_network_failed:${e.javaClass.simpleName}"))
+                        // The cause is kept (not appended to the message) so this string still
+                        // matches errorCode()'s [a-z_][a-z0-9_]* pattern; StarlinkAccountPanel
+                        // reads e.cause separately to show the real underlying exception type.
+                        if (continuation.isActive) continuation.resumeWithException(IOException("cloud_network_failed", e))
                     }
                     override fun onResponse(call: Call, response: Response) {
                         try {
