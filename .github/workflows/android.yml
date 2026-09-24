@@ -2,7 +2,7 @@ name: Android Build
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "feat/slotra-daily-plan", "agent/slotra-auth-control-v1", "agent/starlink-apex-session-v1" ]
   pull_request:
     branches: [ "main" ]
   workflow_dispatch:
@@ -18,24 +18,99 @@ jobs:
     steps:
     - uses: actions/checkout@v7
 
-    - name: Set up JDK 17
+    - name: Set up JDK 21
       uses: actions/setup-java@v6
       with:
-        java-version: '17'
+        java-version: '21'
         distribution: 'temurin'
 
     - name: Setup Gradle
       uses: gradle/actions/setup-gradle@v6
 
+    - name: Set up Android SDK
+      uses: android-actions/setup-android@v4
+
+    - name: Install Android SDK packages
+      run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
     - name: Generate debug.keystore
       run: |
         keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "C=US, O=Android, CN=Android Debug"
 
-    - name: Build Debug APK
-      run: gradle assembleDebug
+    - name: Test, lint, and build Debug APK
+      run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleRelease -PunsignedRelease -Proborazzi.test.record=true --stacktrace
+
+    - name: Summarize verification
+      if: always()
+      run: |
+        python - <<'PYCODE'
+        import base64, pathlib, xml.etree.ElementTree as ET
+        for p in pathlib.Path('app/build/test-results').rglob('TEST-*.xml'):
+            suite = ET.parse(p).getroot()
+            print('TEST_SUMMARY', suite.attrib)
+            for failure in suite.findall('.//failure'):
+                print('TEST_FAILURE', (failure.text or '')[:4000])
+        for p in pathlib.Path('app/build/reports/ui').glob('*.png'):
+            print('UI_PREVIEW_BASE64', p.name, base64.b64encode(p.read_bytes()).decode())
+        for p in pathlib.Path('app/schemas').rglob('6.json'):
+            print('ROOM_SCHEMA_BASE64', str(p), base64.b64encode(p.read_bytes()).decode())
+        PYCODE
+
+    - name: Upload verification reports
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: verification-reports
+        if-no-files-found: ignore
+        path: |
+          app/build/reports/
+          app/build/test-results/
+          app/schemas/
+
+    - name: Sign and verify installable Debug APK
+      run: |
+        SDK_BUILD_TOOLS="$ANDROID_HOME/build-tools/36.0.0"
+        INPUT="app/build/outputs/apk/debug/app-debug.apk"
+        OUTPUT="app/build/outputs/apk/debug/slotra-3.7.0-preview-signed.apk"
+        "$SDK_BUILD_TOOLS/apksigner" sign \
+          --ks debug.keystore \
+          --ks-pass pass:android \
+          --key-pass pass:android \
+          --ks-key-alias androiddebugkey \
+          --out "$OUTPUT" \
+          "$INPUT"
+        "$SDK_BUILD_TOOLS/apksigner" verify --verbose --min-sdk-version 24 "$OUTPUT"
 
     - name: Upload APK Artifact
       uses: actions/upload-artifact@v7
       with:
-        name: app-debug
-        path: app/build/outputs/apk/debug/app-debug.apk
+        name: app-debug-signed
+        path: app/build/outputs/apk/debug/slotra-3.7.0-preview-signed.apk
+        if-no-files-found: error
+
+    - name: Bundle unsigned release for local signing
+      run: |
+        python - <<'PYCODE'
+        import os, pathlib, zipfile, json, base64, hashlib
+        sdk = pathlib.Path(os.environ['ANDROID_HOME']) / 'build-tools/36.0.0'
+        files = {
+            'slotra-unsigned.apk': pathlib.Path('app/build/outputs/apk/release/app-release-unsigned.apk'),
+            'apksigner.jar': sdk / 'lib/apksigner.jar',
+            'zipalign': sdk / 'zipalign',
+            'lib64/libc++.so': sdk / 'lib64/libc++.so',
+        }
+        with zipfile.ZipFile('build/slotra-unsigned.zip', 'w', zipfile.ZIP_DEFLATED) as archive:
+            for name, path in files.items(): archive.write(path, name)
+        payload = pathlib.Path('build/slotra-unsigned.zip').read_bytes()
+        print('UNSIGNED_SHA256', hashlib.sha256(payload).hexdigest())
+        for index, offset in enumerate(range(0, len(payload), 24000)):
+            print('UNSIGNED_PART', index, base64.b64encode(payload[offset:offset+24000]).decode())
+        print('UNSIGNED_BYTES', len(payload))
+        PYCODE
+
+    - name: Upload unsigned release
+      uses: actions/upload-artifact@v7
+      with:
+        name: slotra-unsigned-release
+        path: build/slotra-unsigned.zip
+        if-no-files-found: error
