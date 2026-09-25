@@ -12,7 +12,6 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.File
 import java.io.IOException
-import java.net.InetAddress
 import java.net.URI
 import java.security.KeyStore
 import java.util.concurrent.TimeUnit
@@ -149,6 +148,9 @@ internal fun interface CloudHttp {
 internal class AccountHttp : CloudHttp {
     override suspend fun request(url: String, cookie: String, body: ByteArray?): CloudHttpReply {
         require(url == CloudPolicy.AUTH || url == CloudPolicy.HANDLE) { "cloud_endpoint_not_allowed" }
+        val client = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
+            .retryOnConnectionFailure(false).connectTimeout(10, TimeUnit.SECONDS).readTimeout(15, TimeUnit.SECONDS)
+            .callTimeout(20, TimeUnit.SECONDS).build()
         val request = Request.Builder().url(url).header("Cookie", CloudPolicy.cookies(cookie))
             .header("Accept-Encoding", "identity")
             // Confirmed on-device (curl, 2026-09-24): api.starlink.com bare-403s ("whydoyoucare?",
@@ -166,56 +168,35 @@ internal class AccountHttp : CloudHttp {
                 if (body == null) header("Accept", "application/json")
                 else header("x-grpc-web", "1").post(StarlinkProtocol.frame(body).toRequestBody("application/grpc-web+proto".toMediaType()))
             }.build()
-
-        // starlink.com is Fastly-fronted with several edge IPs (curl, 2026-09-24: api.starlink.com
-        // resolved to 4 distinct addresses). A single fixed connection can hit one edge that is
-        // rate-limiting or silently dropping this specific account's requests while the others
-        // still answer normally (matches the intermittent SocketTimeoutException pattern seen on
-        // repeated same-account attempts). Try each resolved address before giving up.
-        val host = request.url.host
-        val addresses = runCatching { InetAddress.getAllByName(host).toList() }
-            .getOrElse { throw IOException("cloud_network_failed", it) }
-        require(addresses.isNotEmpty()) { "cloud_dns_empty" }
-
-        var lastFailure: IOException? = null
-        for (address in addresses.distinctBy { it.hostAddress }) {
-            val client = OkHttpClient.Builder()
-                .dns { hostname -> if (hostname == host) listOf(address) else Dns.SYSTEM.lookup(hostname) }
-                .followRedirects(false).followSslRedirects(false)
-                .retryOnConnectionFailure(false).connectTimeout(10, TimeUnit.SECONDS).readTimeout(15, TimeUnit.SECONDS)
-                .callTimeout(20, TimeUnit.SECONDS).build()
-            try {
-                return suspendCancellableCoroutine { continuation ->
-                    val call = client.newCall(request)
-                    continuation.invokeOnCancellation { call.cancel() }
-                    call.enqueue(object : Callback {
-                        override fun onFailure(call: Call, e: IOException) {
-                            if (continuation.isActive) continuation.resumeWithException(e)
-                        }
-                        override fun onResponse(call: Call, response: Response) {
-                            try {
-                                val result = response.use {
-                                    val source = it.body?.source() ?: error("cloud_missing_body")
-                                    require(!source.request((StarlinkProtocol.MAX_BYTES + 1).toLong())) { "response_too_large" }
-                                    CloudHttpReply(it.code, source.readByteArray(), it.header("Content-Type").orEmpty(),
-                                        it.headers("Set-Cookie"), it.header("grpc-status"))
-                                }
-                                if (continuation.isActive) continuation.resume(result)
-                            } catch (_: Exception) {
-                                if (continuation.isActive) continuation.resumeWithException(IOException("cloud_response_invalid"))
+        try {
+            return suspendCancellableCoroutine { continuation ->
+                val call = client.newCall(request)
+                continuation.invokeOnCancellation { call.cancel() }
+                call.enqueue(object : Callback {
+                    override fun onFailure(call: Call, e: IOException) {
+                        // The cause is kept (not appended to the message) so this string still
+                        // matches errorCode()'s [a-z_][a-z0-9_]* pattern; StarlinkAccountPanel
+                        // reads e.cause separately to show the real underlying exception type.
+                        if (continuation.isActive) continuation.resumeWithException(IOException("cloud_network_failed", e))
+                    }
+                    override fun onResponse(call: Call, response: Response) {
+                        try {
+                            val result = response.use {
+                                val source = it.body?.source() ?: error("cloud_missing_body")
+                                require(!source.request((StarlinkProtocol.MAX_BYTES + 1).toLong())) { "response_too_large" }
+                                CloudHttpReply(it.code, source.readByteArray(), it.header("Content-Type").orEmpty(),
+                                    it.headers("Set-Cookie"), it.header("grpc-status"))
                             }
+                            if (continuation.isActive) continuation.resume(result)
+                        } catch (_: Exception) {
+                            if (continuation.isActive) continuation.resumeWithException(IOException("cloud_response_invalid"))
                         }
-                    })
-                }
-            } catch (e: IOException) {
-                lastFailure = e
-            } finally {
-                client.dispatcher.cancelAll(); client.connectionPool.evictAll(); client.dispatcher.executorService.shutdown()
+                    }
+                })
             }
+        } finally {
+            client.dispatcher.cancelAll(); client.connectionPool.evictAll(); client.dispatcher.executorService.shutdown()
         }
-        // Cause is kept (not appended to the message) so this still matches errorCode()'s
-        // [a-z_][a-z0-9_]* pattern; StarlinkAccountPanel reads e.cause for the real exception type.
-        throw IOException("cloud_network_failed", lastFailure)
     }
 }
 
