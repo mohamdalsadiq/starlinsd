@@ -2,7 +2,7 @@ name: Android Build
 
 on:
   push:
-    branches: [ "main", "feat/slotra-daily-plan" ]
+    branches: [ "main", "feat/slotra-daily-plan", "feat/starlink-client-control-v2" ]
   pull_request:
     branches: [ "main" ]
   workflow_dispatch:
