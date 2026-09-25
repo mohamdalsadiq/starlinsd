@@ -124,7 +124,7 @@ internal class AccountHttp : CloudHttp {
 
         val host = request.url.host
         val addresses = runCatching { InetAddress.getAllByName(host).toList() }
-            .getOrElse { throw IOException("cloud_dns_failed:\${it.javaClass.simpleName}") }
+            .getOrElse { throw IOException("cloud_dns_failed:${it.javaClass.simpleName}") }
         require(addresses.isNotEmpty()) { "cloud_dns_empty" }
 
         var lastFailure: IOException? = null
@@ -168,7 +168,7 @@ internal class AccountHttp : CloudHttp {
                 client.dispatcher.executorService.shutdown()
             }
         }
-        throw IOException("cloud_network_failed:\${lastFailure?.javaClass?.simpleName ?: "Unknown"}")
+        throw IOException("cloud_network_failed:${lastFailure?.javaClass?.simpleName ?: "Unknown"}")
     }
 }
 
