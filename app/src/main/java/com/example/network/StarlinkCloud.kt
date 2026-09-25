@@ -26,7 +26,7 @@ import kotlin.coroutines.resumeWithException
 internal object CloudPolicy {
     const val LOGIN = "https://www.starlink.com/account"
     const val AUTH = "https://api.starlink.com/auth-rp/auth/user"
-    const val HANDLE = "https://starlink.com/api/SpaceX.API.Device.Device/Handle"
+    const val HANDLE = "https://api2.starlink.com/SpaceX.API.Device.Device/Handle"
     private val names = setOf("Starlink.Com.Sso", "Starlink.Com.Access.V1")
     fun loginUrlAllowed(value: String): Boolean = runCatching {
         val uri = URI(value)
@@ -110,12 +110,18 @@ internal class AccountHttp : CloudHttp {
     override suspend fun request(url: String, cookie: String, body: ByteArray?): CloudHttpReply {
         require(url == CloudPolicy.AUTH || url == CloudPolicy.HANDLE) { "cloud_endpoint_not_allowed" }
         val client = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
-            .retryOnConnectionFailure(false).connectTimeout(10, TimeUnit.SECONDS).readTimeout(15, TimeUnit.SECONDS)
-            .callTimeout(20, TimeUnit.SECONDS).build()
+            .retryOnConnectionFailure(true).connectTimeout(8, TimeUnit.SECONDS).readTimeout(12, TimeUnit.SECONDS)
+            .callTimeout(18, TimeUnit.SECONDS).build()
         val request = Request.Builder().url(url).header("Cookie", CloudPolicy.cookies(cookie))
-            .header("Accept-Encoding", "identity").apply {
+            .header("Accept-Encoding", "identity")
+            .header("Origin", "https://www.starlink.com")
+            .header("Referer", "https://www.starlink.com/")
+            .header("User-Agent", "Mozilla/5.0 (Linux; Android) AppleWebKit/537.36 Chrome/140 Mobile Safari/537.36").apply {
                 if (body == null) header("Accept", "application/json")
-                else header("x-grpc-web", "1").post(StarlinkProtocol.frame(body).toRequestBody("application/grpc-web+proto".toMediaType()))
+                else header("Accept", "application/grpc-web+proto")
+                    .header("x-grpc-web", "1")
+                    .header("Connect-Protocol-Version", "1")
+                    .post(StarlinkProtocol.frame(body).toRequestBody("application/grpc-web+proto".toMediaType()))
             }.build()
         try {
             return suspendCancellableCoroutine { continuation ->
@@ -123,7 +129,7 @@ internal class AccountHttp : CloudHttp {
                 continuation.invokeOnCancellation { call.cancel() }
                 call.enqueue(object : Callback {
                     override fun onFailure(call: Call, e: IOException) {
-                        if (continuation.isActive) continuation.resumeWithException(IOException("cloud_network_failed"))
+                        if (continuation.isActive) continuation.resumeWithException(IOException("cloud_network_failed:${e.javaClass.simpleName}"))
                     }
                     override fun onResponse(call: Call, response: Response) {
                         try {
