@@ -23,11 +23,14 @@ import com.example.network.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.TimeoutCancellationException
 import java.io.ByteArrayInputStream
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.coroutines.resume
 import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewFeature
 
@@ -60,7 +63,38 @@ import androidx.webkit.WebViewFeature
     }, copyDiagnostic = { value -> clipboard.setText(AnnotatedString("Slotra ${com.example.BuildConfig.VERSION_NAME} · ربط Starlink\n$value")) })
 }
 
-@SuppressLint("SetJavaScriptEnabled")
+/**
+ * One-off diagnostic probe: issues the same authenticated GET the native client sends, but from
+ * inside the WebView's own JS engine via fetch({credentials:'include'}) - the real cookie jar and
+ * the real browser TLS fingerprint, neither of which this function ever touches or exposes as
+ * text. Used only to tell whether a native HTTP client's fingerprint is what a later native-call
+ * failure is about, without extracting or logging any raw cookie value. Times out on its own;
+ * never blocks the real flow.
+ */
+private suspend fun probeAuthViaWebView(webView: WebView): String = withTimeoutOrNull(15000) {
+    suspendCancellableCoroutine { continuation ->
+        val probeName = "SlotraAuthProbe"
+        val bridge = object {
+            @JavascriptInterface
+            fun onResult(status: String) {
+                webView.post {
+                    runCatching { webView.removeJavascriptInterface(probeName) }
+                    if (continuation.isActive) continuation.resume(status)
+                }
+            }
+        }
+        webView.addJavascriptInterface(bridge, probeName)
+        webView.evaluateJavascript(
+            "fetch('${CloudPolicy.AUTH}', {credentials:'include'})" +
+                ".then(function(r){window.$probeName.onResult(String(r.status));})" +
+                ".catch(function(e){window.$probeName.onResult('error:'+(e&&e.message?e.message:'x'));});",
+            null
+        )
+        continuation.invokeOnCancellation { webView.post { runCatching { webView.removeJavascriptInterface(probeName) } } }
+    }
+} ?: "timeout"
+
+@SuppressLint("SetJavaScriptEnabled", "JavascriptInterface")
 @Suppress("DEPRECATION")
 @Composable private fun StarlinkLoginDialog(onClose: () -> Unit, onBusy: (Boolean) -> Unit, onComplete: () -> Unit, copyDiagnostic: (String) -> Unit) {
     val context = LocalContext.current
@@ -143,6 +177,10 @@ import androidx.webkit.WebViewFeature
                     busy = true
                     message = "جاري قراءة جلسة WebView والتحقق من الربط…"
                     scope.launch {
+                        // Set once, right before the native connect() call below, and read from
+                        // both catch branches - never touched concurrently since this is all one
+                        // sequential coroutine.
+                        var webAuthProbe = ""
                         try {
                             val session = withContext(Dispatchers.IO) {
                                 val manager = CookieManager.getInstance()
@@ -172,6 +210,12 @@ import androidx.webkit.WebViewFeature
                                 diagnostic = "LOGIN: session_not_available; WEBVIEW_COOKIES: HAS_COOKIES=${if (hasCookies) "YES" else "NO"} ACCEPT=${if (cookiesAccepted) "YES" else "NO"} INTERCEPTED=${capturedCookies.size}; COOKIES: ${CloudPolicy.sessionDiagnostics(cookieHeaders)}; INTERCEPTED: ${CloudPolicy.sessionDiagnostics(interceptedForDiagnostics)}"
                             } else {
                                 message = "جاري التحقق من الجلسة ومطابقة الراوتر…"
+                                // Diagnostic only: confirms whether the very same authenticated
+                                // request succeeds through the WebView's genuine browser fetch
+                                // right before the native client attempts it. Isolates a native
+                                // TLS/client-fingerprint block from anything session- or
+                                // account-specific, without ever handling the raw cookie value.
+                                webAuthProbe = view?.let { probeAuthViaWebView(it) } ?: "no_webview"
                                 withTimeout(60000) {
                                     StarlinkCloud(CloudSessionVault(context)).connect(candidate, AndroidRouterLink(context))
                                 }
@@ -179,7 +223,7 @@ import androidx.webkit.WebViewFeature
                             }
                         } catch (_: TimeoutCancellationException) {
                             message = "انتهت مهلة التحقق من الحساب. لم نرسل أمر حظر."
-                            diagnostic = "LOGIN: timeout"
+                            diagnostic = "LOGIN: timeout${if (webAuthProbe.isNotBlank()) "; WEBVIEW_AUTH_PROBE=$webAuthProbe" else ""}"
                         } catch (e: CancellationException) {
                             throw e
                         } catch (e: Exception) {
@@ -187,7 +231,7 @@ import androidx.webkit.WebViewFeature
                             // e.cause carries the real network exception class for cloud_network_failed
                             // (see AccountHttp.onFailure); errorCode(e) itself is left untouched so
                             // controlError()'s dispatch and other call sites stay exact-match safe.
-                            diagnostic = "LOGIN: ${errorCode(e)}${e.cause?.let { ":${it.javaClass.simpleName}" }.orEmpty()}"
+                            diagnostic = "LOGIN: ${errorCode(e)}${e.cause?.let { ":${it.javaClass.simpleName}" }.orEmpty()}${if (webAuthProbe.isNotBlank()) "; WEBVIEW_AUTH_PROBE=$webAuthProbe" else ""}"
                         } finally {
                             busy = false
                         }
