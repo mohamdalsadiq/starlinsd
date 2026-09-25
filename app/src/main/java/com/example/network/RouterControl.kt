@@ -61,6 +61,11 @@ internal class AndroidRouterLink(context: Context) : RouterControlLink {
         .mapNotNull { it.address.hostAddress }.toSet()
     init { check(localIps.isNotEmpty()) { "unknown_local_ip" }; checkNetwork() }
     private fun checkNetwork() {
+        // An active VPN anywhere on the device can still intercept sockets bound to the Wi-Fi
+        // Network object depending on the VPN app/Android version, producing a bare
+        // SocketException/ErrnoException with no useful detail - confirmed on-device
+        // (2026-09-24). Checking just the selected network's own transport isn't enough.
+        check(connectivity.allNetworks.none { connectivity.getNetworkCapabilities(it)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true }) { "vpn_active" }
         val caps = connectivity.getNetworkCapabilities(network)
         check(caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true && !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) { "wifi_changed" }
         val properties = connectivity.getLinkProperties(network) ?: error("wifi_changed")
@@ -241,6 +246,7 @@ internal fun controlError(e: Exception): String = when (errorCode(e)) {
     "client_identity_changed", "client_not_present", "config_changed", "expired_confirmation" -> "تغيرت البيانات أو انتهت صلاحية التأكيد؛ حدّث القراءة وافحص الجهاز مجددًا."
     "existing_block_schedule" -> "للجهاز إيقاف أو جدول سابق؛ ألغِه من تطبيق Starlink قبل تجربة Slotra."
     "pending_test_exists" -> "أكمل إعادة الإنترنت للاختبار السابق أولًا."
+    "vpn_active" -> "يوجد VPN نشط على الجهاز، وقد يمنع الوصول المباشر للراوتر المحلي حتى لو الاتصال مربوط بشبكة Wi-Fi الصحيحة. عطّل الـVPN ثم أعد المحاولة."
     "different_router", "unknown_router_identity", "wrong_gateway", "wifi_changed", "no_wifi", "unknown_local_ip" -> "تعذر تأكيد الاتصال بنفس راوتر Starlink. اتصل بشبكته الرئيسية وأعد المحاولة."
     else -> "تعذر إكمال فحص التحكم (${errorCode(e)})."
 }
