@@ -96,6 +96,11 @@ class StarlinkCloudTest {
         rejects("cloud_http_302") { StarlinkCloud(store, http).connect("Starlink.Com.Sso=test-session", lan()) }
         assertEquals(1, calls); assertNull(store.value)
     }
+    @Test fun `cloud handle uses observed api2 grpc gateway`() {
+        assertEquals("https://api2.starlink.com/SpaceX.API.Device.Device/Handle", CloudPolicy.HANDLE)
+        assertTrue(CloudPolicy.loginUrlAllowed(CloudPolicy.HANDLE))
+    }
+
     @Test fun `allowlist prohibits caller target injection and unsupported router commands`() {
         rejects { CloudPolicy.target("ut-dish", field(1004, byteArrayOf())) }
         rejects { CloudPolicy.target(router, field(1011, byteArrayOf())) }
