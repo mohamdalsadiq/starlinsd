@@ -12,6 +12,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.File
 import java.io.IOException
+import java.net.InetAddress
 import java.net.URI
 import java.security.KeyStore
 import java.util.concurrent.TimeUnit
@@ -109,9 +110,6 @@ internal fun interface CloudHttp {
 internal class AccountHttp : CloudHttp {
     override suspend fun request(url: String, cookie: String, body: ByteArray?): CloudHttpReply {
         require(url == CloudPolicy.AUTH || url == CloudPolicy.HANDLE) { "cloud_endpoint_not_allowed" }
-        val client = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
-            .retryOnConnectionFailure(true).connectTimeout(8, TimeUnit.SECONDS).readTimeout(12, TimeUnit.SECONDS)
-            .callTimeout(18, TimeUnit.SECONDS).build()
         val request = Request.Builder().url(url).header("Cookie", CloudPolicy.cookies(cookie))
             .header("Accept-Encoding", "identity")
             .header("Origin", "https://www.starlink.com")
@@ -123,32 +121,54 @@ internal class AccountHttp : CloudHttp {
                     .header("Connect-Protocol-Version", "1")
                     .post(StarlinkProtocol.frame(body).toRequestBody("application/grpc-web+proto".toMediaType()))
             }.build()
-        try {
-            return suspendCancellableCoroutine { continuation ->
-                val call = client.newCall(request)
-                continuation.invokeOnCancellation { call.cancel() }
-                call.enqueue(object : Callback {
-                    override fun onFailure(call: Call, e: IOException) {
-                        if (continuation.isActive) continuation.resumeWithException(IOException("cloud_network_failed:${e.javaClass.simpleName}"))
-                    }
-                    override fun onResponse(call: Call, response: Response) {
-                        try {
-                            val result = response.use {
-                                val source = it.body?.source() ?: error("cloud_missing_body")
-                                require(!source.request((StarlinkProtocol.MAX_BYTES + 1).toLong())) { "response_too_large" }
-                                CloudHttpReply(it.code, source.readByteArray(), it.header("Content-Type").orEmpty(),
-                                    it.headers("Set-Cookie"), it.header("grpc-status"))
-                            }
-                            if (continuation.isActive) continuation.resume(result)
-                        } catch (_: Exception) {
-                            if (continuation.isActive) continuation.resumeWithException(IOException("cloud_response_invalid"))
+
+        val host = request.url.host
+        val addresses = runCatching { InetAddress.getAllByName(host).toList() }
+            .getOrElse { throw IOException("cloud_dns_failed:\${it.javaClass.simpleName}") }
+        require(addresses.isNotEmpty()) { "cloud_dns_empty" }
+
+        var lastFailure: IOException? = null
+        for (address in addresses.distinctBy { it.hostAddress }) {
+            val client = OkHttpClient.Builder()
+                .dns { hostname ->
+                    if (hostname == host) listOf(address) else okhttp3.Dns.SYSTEM.lookup(hostname)
+                }
+                .followRedirects(false).followSslRedirects(false)
+                .retryOnConnectionFailure(false)
+                .connectTimeout(6, TimeUnit.SECONDS).readTimeout(6, TimeUnit.SECONDS)
+                .callTimeout(8, TimeUnit.SECONDS).build()
+            try {
+                return suspendCancellableCoroutine { continuation ->
+                    val call = client.newCall(request)
+                    continuation.invokeOnCancellation { call.cancel() }
+                    call.enqueue(object : Callback {
+                        override fun onFailure(call: Call, e: IOException) {
+                            if (continuation.isActive) continuation.resumeWithException(e)
                         }
-                    }
-                })
+                        override fun onResponse(call: Call, response: Response) {
+                            try {
+                                val result = response.use {
+                                    val source = it.body?.source() ?: error("cloud_missing_body")
+                                    require(!source.request((StarlinkProtocol.MAX_BYTES + 1).toLong())) { "response_too_large" }
+                                    CloudHttpReply(it.code, source.readByteArray(), it.header("Content-Type").orEmpty(),
+                                        it.headers("Set-Cookie"), it.header("grpc-status"))
+                                }
+                                if (continuation.isActive) continuation.resume(result)
+                            } catch (_: Exception) {
+                                if (continuation.isActive) continuation.resumeWithException(IOException("cloud_response_invalid"))
+                            }
+                        }
+                    })
+                }
+            } catch (e: IOException) {
+                lastFailure = e
+            } finally {
+                client.dispatcher.cancelAll()
+                client.connectionPool.evictAll()
+                client.dispatcher.executorService.shutdown()
             }
-        } finally {
-            client.dispatcher.cancelAll(); client.connectionPool.evictAll(); client.dispatcher.executorService.shutdown()
         }
+        throw IOException("cloud_network_failed:\${lastFailure?.javaClass?.simpleName ?: "Unknown"}")
     }
 }
 
