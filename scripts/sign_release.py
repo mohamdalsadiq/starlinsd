@@ -29,6 +29,8 @@ def sign(bundle, kit, output):
         if not path.is_file():
             raise ValueError("Recover the existing private signing kit; do not generate a replacement key")
     expected = hashlib.sha256(ssl.PEM_cert_to_DER_cert(cert.read_text())).hexdigest()
+    if expected != "ec2716e37b05a51578422eef8ea7f913d06e1f622ad2072b75bd6402d91847f9":
+        raise ValueError("This is not Slotra's original release certificate; refusing an incompatible update")
     with tempfile.TemporaryDirectory(prefix="slotra-sign-") as directory:
         root = pathlib.Path(directory)
         required = ["slotra-unsigned.apk", "apksigner.jar", "zipalign", "lib64/libc++.so"]

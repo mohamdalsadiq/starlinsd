@@ -58,7 +58,7 @@ interface ShortcutDao {
     @Query("SELECT * FROM shortcuts") suspend fun list(): List<Shortcut>
 }
 
-@Database(entities = [Device::class, Shortcut::class, Plan::class, Session::class, BusinessSettings::class, Sequence::class, ManualSale::class, SlotReservation::class, RevenueCorrection::class, BillingCycle::class, Debt::class, DebtPayment::class], version = 5, exportSchema = true)
+@Database(entities = [Device::class, Shortcut::class, Plan::class, Session::class, BusinessSettings::class, Sequence::class, ManualSale::class, SlotReservation::class, RevenueCorrection::class, BillingCycle::class, Debt::class, DebtPayment::class, BalanceUpdate::class], version = 6, exportSchema = true)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun deviceDao(): DeviceDao
     abstract fun shortcutDao(): ShortcutDao
@@ -100,10 +100,15 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL("DELETE FROM slot_reservations WHERE sessionId IN (SELECT id FROM sessions WHERE home = 1)")
             }
         }
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS balance_updates (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, at INTEGER NOT NULL, cash INTEGER NOT NULL, bank INTEGER NOT NULL, cashReceived INTEGER NOT NULL, bankReceived INTEGER NOT NULL, premiumBps INTEGER NOT NULL, reason TEXT NOT NULL, expectedCash INTEGER NOT NULL, expectedBank INTEGER NOT NULL)")
+            }
+        }
         fun getDatabase(context: Context): AppDatabase =
             instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, "app_db")
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                     .build().also { instance = it }
             }
     }

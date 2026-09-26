@@ -13,13 +13,18 @@ import androidx.core.content.ContextCompat
 import com.example.MainActivity
 import com.example.data.SubscriptionRepository
 import com.example.db.Session
+import com.example.domain.Revenue
 import com.example.domain.Rules
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.util.Calendar
 
 object SubscriptionAlarms {
     private const val CHANNEL = "subscription_deadlines"
+    // No Room migration needed: this is a simple on/off schedule preference, not business data,
+    // so it follows StatusPanel's own SharedPreferences pattern instead of BusinessSettings.
+    private const val DAILY_CLOSE_PREFS = "daily_close"
     private val lock = Mutex()
     private fun pending(context: Context): PendingIntent = PendingIntent.getBroadcast(context, 0,
         Intent(context, SubscriptionAlarmReceiver::class.java).setAction("RECONCILE")
@@ -35,6 +40,23 @@ object SubscriptionAlarms {
         return runtime && channelEnabled && NotificationManagerCompat.from(context).areNotificationsEnabled()
     }
 
+    /** Minutes since local midnight for the scheduled daily network closure, or -1 if disabled. */
+    fun dailyCloseMinute(context: Context): Int = context.applicationContext.getSharedPreferences(DAILY_CLOSE_PREFS, 0).getInt("minute", -1)
+    fun setDailyCloseMinute(context: Context, minute: Int) {
+        require(minute == -1 || minute in 0..1439) { "الوقت من 00:00 إلى 23:59، أو ألغِه" }
+        context.applicationContext.getSharedPreferences(DAILY_CLOSE_PREFS, 0).edit().putInt("minute", minute).apply()
+    }
+    /** Today's occurrence of [minute], or null if disabled. May already be in the past. */
+    private fun todayClose(now: Long, minute: Int): Long? {
+        if (minute !in 0..1439) return null
+        return Calendar.getInstance().apply { timeInMillis = Revenue.day(now); add(Calendar.MINUTE, minute) }.timeInMillis
+    }
+    /** The next future occurrence of [minute] at/after [now] (today's if still ahead, else tomorrow's). */
+    private fun nextDailyClose(now: Long, minute: Int): Long? {
+        val today = todayClose(now, minute) ?: return null
+        return if (today > now) today else Calendar.getInstance().apply { timeInMillis = today; add(Calendar.DAY_OF_MONTH, 1) }.timeInMillis
+    }
+
     // Both notification and exact-alarm permissions are checked immediately before use,
     // including a SecurityException fallback if access changes.
     @SuppressLint("MissingPermission")
@@ -42,6 +64,17 @@ object SubscriptionAlarms {
         val app = context.applicationContext
         val repo = SubscriptionRepository(app)
         val now = System.currentTimeMillis()
+        // Applies at most once per occurrence: `applied` only ever holds an already-passed close
+        // time, so a later same-day refresh (e.g. a fresh session started after closing time)
+        // never re-triggers it, and the next day's occurrence is a strictly larger timestamp.
+        val closeMinute = dailyCloseMinute(app)
+        val closePrefs = app.getSharedPreferences(DAILY_CLOSE_PREFS, 0)
+        todayClose(now, closeMinute)?.let { close ->
+            if (now >= close && closePrefs.getLong("applied", 0L) < close) {
+                repo.forceEndAll(close)
+                closePrefs.edit().putLong("applied", close).apply()
+            }
+        }
         val sessions = repo.reconcile(now)
         val nm = app.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= 26) nm.createNotificationChannel(NotificationChannel(CHANNEL, "مواعيد المشتركين", NotificationManager.IMPORTANCE_HIGH))
@@ -67,7 +100,8 @@ object SubscriptionAlarms {
         }.filter { it > now }.minOrNull()
         // Midnight refresh keeps day totals correct even when no timer is active.
         val midnight = if (StatusPanel.enabled(app) && StatusPanel.allowed(app)) StatusPanel.nextMidnight(now) else null
-        val next = listOfNotNull(deadline, midnight).minOrNull()
+        val dailyClose = nextDailyClose(now, closeMinute)
+        val next = listOfNotNull(deadline, midnight, dailyClose).minOrNull()
         val manager = app.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         manager.cancel(pending(app))
         if (next != null) {

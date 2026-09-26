@@ -2,7 +2,7 @@ name: Android Build
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "feat/slotra-daily-plan" ]
   pull_request:
     branches: [ "main" ]
   workflow_dispatch:
@@ -16,19 +16,19 @@ jobs:
     timeout-minutes: 30
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
 
     - name: Set up JDK 21
-      uses: actions/setup-java@v4
+      uses: actions/setup-java@v6
       with:
         java-version: '21'
         distribution: 'temurin'
 
     - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@v4
+      uses: gradle/actions/setup-gradle@v6
 
     - name: Set up Android SDK
-      uses: android-actions/setup-android@v3
+      uses: android-actions/setup-android@v4
 
     - name: Install Android SDK packages
       run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
@@ -52,13 +52,13 @@ jobs:
                 print('TEST_FAILURE', (failure.text or '')[:4000])
         for p in pathlib.Path('app/build/reports/ui').glob('*.png'):
             print('UI_PREVIEW_BASE64', p.name, base64.b64encode(p.read_bytes()).decode())
-        for p in pathlib.Path('app/schemas').rglob('5.json'):
+        for p in pathlib.Path('app/schemas').rglob('6.json'):
             print('ROOM_SCHEMA_BASE64', str(p), base64.b64encode(p.read_bytes()).decode())
         PYCODE
 
     - name: Upload verification reports
       if: always()
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: verification-reports
         if-no-files-found: ignore
@@ -68,7 +68,7 @@ jobs:
           app/schemas/
 
     - name: Upload APK Artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: app-debug
         path: app/build/outputs/apk/debug/app-debug.apk
@@ -87,8 +87,6 @@ jobs:
         }
         with zipfile.ZipFile('build/slotra-unsigned.zip', 'w', zipfile.ZIP_DEFLATED) as archive:
             for name, path in files.items(): archive.write(path, name)
-        # Public unsigned build bytes only. This read-only transfer also works
-        # when the artifact provider's signed URL cannot be read by the workspace.
         payload = pathlib.Path('build/slotra-unsigned.zip').read_bytes()
         print('UNSIGNED_SHA256', hashlib.sha256(payload).hexdigest())
         for index, offset in enumerate(range(0, len(payload), 24000)):
@@ -97,7 +95,7 @@ jobs:
         PYCODE
 
     - name: Upload unsigned release
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: slotra-unsigned-release
         path: build/slotra-unsigned.zip

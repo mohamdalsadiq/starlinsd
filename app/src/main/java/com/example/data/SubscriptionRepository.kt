@@ -17,7 +17,8 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
     suspend fun initialize() = db.withTransaction {
         if (dao.settings() == null) dao.settings(BusinessSettings())
         val existing = dao.settings()!!
-        if (existing.cycleId.isBlank()) saveSettings(existing)
+        if (existing.cycleId.isBlank() || existing.graceMinutes != Rules.RECOGNITION_MINUTES)
+            saveSettings(existing.copy(graceMinutes = Rules.RECOGNITION_MINUTES))
         if (dao.plans().isEmpty()) {
             val one = dao.insertPlan(Plan(name = "ساعة", minutes = 60, cash = 50000, bank = 62500))
             val three = dao.insertPlan(Plan(name = "3 ساعات", minutes = 180, cash = 100000, bank = 125000))
@@ -52,7 +53,7 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
             plan = plan.name, started = now, resumed = now, duration = plan.minutes * Rules.MINUTE,
             amount = amount, cashEquivalent = if (payment == "BANK") Money.bankToCash(amount, settings.premiumBps) else amount,
             payment = payment, premiumBps = settings.premiumBps, home = plan.home,
-            grace = settings.graceMinutes * Rules.MINUTE, source = source, reference = reference)
+            grace = Rules.RECOGNITION_MINUTES * Rules.MINUTE, source = source, reference = reference)
     }
 
     suspend fun release(id: String) = dao.release(id)
@@ -94,6 +95,23 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
 
     suspend fun reconcile(now: Long = time()): List<Session> = db.withTransaction {
         dao.sessions().map { old -> advance(old, now).also { if (it != old) dao.updateSession(it) } }
+    }
+
+    /**
+     * Force-ends every ACTIVE/PAUSED session at [now] (e.g. a scheduled daily network closure),
+     * recognizing revenue immediately even if the five-minute qualification period has not
+     * elapsed - the plan was already sold and paid for, so cutting the session short doesn't
+     * reduce what's owed. `served` is set to the actual elapsed time (not the full duration) so
+     * the record honestly reflects an early cutoff. Reference numbers are kept, matching how a
+     * naturally-ended session already keeps its number for the rest of the day.
+     */
+    suspend fun forceEndAll(now: Long) = db.withTransaction {
+        dao.sessions().filter { it.state in listOf("ACTIVE", "PAUSED") }.forEach { old ->
+            val next = if (old.home) old.copy(state = "CANCELLED", reference = "", amount = 0, cashEquivalent = 0, recognized = 0, warned = true, notified = true)
+                else old.copy(state = "ENDED", served = Rules.served(old.clock(), now),
+                    recognized = if (old.recognized == 0L) now else old.recognized, warned = true, notified = true)
+            if (next != old) dao.updateSession(next)
+        }
     }
 
     suspend fun changeState(id: String, action: String) = db.withTransaction {
@@ -153,8 +171,8 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
             require(cycles.none { it.id != id && s.cycleStart < it.end && s.cycleEnd > it.start }) { "توجد دورة محفوظة تتداخل مع هذه التواريخ" }
             val cost = Math.addExact(Money.bankToCash(Money.bill(s.usdCents, s.bankRate), s.premiumBps), s.expenses)
             dao.cycle(BillingCycle(id, s.cycleStart, s.cycleEnd, cost))
-            dao.settings(s.copy(cycleId = id))
-        } else dao.settings(s)
+            dao.settings(s.copy(cycleId = id, graceMinutes = Rules.RECOGNITION_MINUTES))
+        } else dao.settings(s.copy(graceMinutes = Rules.RECOGNITION_MINUTES))
     }
 
     suspend fun correctRevenue(source: String, amount: Long, count: Int, voided: Boolean, reason: String) = db.withTransaction {
@@ -177,6 +195,20 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
         val remaining = (debt.total - paid).coerceAtLeast(0)
         require(amount > 0 && amount <= remaining) { "السداد لا يتجاوز المبلغ المتبقي من الدين" }
         dao.payDebt(DebtPayment(id, debtId, time(), amount))
+    }
+
+    suspend fun updateBalance(cash: Long, bank: Long, reason: String) = db.withTransaction {
+        require(cash in 0..99999999999 && bank in 0..99999999999) { "راجع الرصيد؛ أدخل مبلغًا موجبًا أو صفرًا" }
+        require(reason.trim().length in 1..200) { "اكتب سبب تحديث الرصيد" }
+        val now = time()
+        val config = dao.settings() ?: BusinessSettings()
+        val receipts = com.example.domain.BalanceBook.receipts(dao.sessions(), dao.manualSales())
+        val totals = com.example.domain.BalanceBook.totals(receipts, now)
+        val expected = com.example.domain.BalanceBook.expected(dao.balanceUpdates(), receipts, now, config.cycleStart)
+        // Pending paid sessions are already included, so five-minute recognition cannot add them again.
+        dao.balanceUpdate(BalanceUpdate(at = now, cash = cash, bank = bank, cashReceived = totals.cash,
+            bankReceived = totals.bank, premiumBps = config.premiumBps, reason = reason.trim(),
+            expectedCash = expected.cash, expectedBank = expected.bank))
     }
 
     suspend fun restoreJson(json: String) = withContext(Dispatchers.IO) {
@@ -202,7 +234,7 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
 
     suspend fun exportJson(): String = withContext(Dispatchers.IO) {
         db.withTransaction {
-            val root = org.json.JSONObject().put("version", 5).put("format", "slotra-backup").put("exportedAt", System.currentTimeMillis())
+            val root = org.json.JSONObject().put("version", 6).put("format", "slotra-backup").put("exportedAt", System.currentTimeMillis())
             fun rows(query: String): org.json.JSONArray {
                 val result = org.json.JSONArray()
                 db.openHelper.readableDatabase.query(query).use { c -> while (c.moveToNext()) {
@@ -216,7 +248,7 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
                 } }
                 return result
             }
-            listOf("plans", "sessions", "settings", "shortcuts", "devices", "sequences", "manual_sales", "revenue_corrections", "billing_cycles", "debts", "debt_payments").forEach { table -> root.put(table, rows("SELECT * FROM $table")) }
+            BackupData.tables.forEach { table -> root.put(table, rows("SELECT * FROM $table")) }
             root.put("allowedApps", org.json.JSONArray(com.example.service.ExpanderHealth.allowed(context).toList()))
             root.toString(2)
         }

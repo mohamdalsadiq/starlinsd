@@ -9,7 +9,7 @@ data class BackupData(val rows: Map<String, List<JSONObject>>, val apps: Set<Str
     val summary: String get() = "${rows.getValue("sessions").size} اشتراك · ${rows.getValue("manual_sales").size} قيد دخل · ${rows.getValue("shortcuts").size} اختصار"
     companion object {
         const val MAX_BYTES = 20 * 1024 * 1024
-        val tables = listOf("plans", "sessions", "settings", "shortcuts", "devices", "sequences", "manual_sales", "revenue_corrections", "billing_cycles", "debts", "debt_payments")
+        val tables = listOf("plans", "sessions", "settings", "shortcuts", "devices", "sequences", "manual_sales", "revenue_corrections", "billing_cycles", "debts", "debt_payments", "balance_updates")
         private val fields = mapOf(
             "plans" to "id name minutes cash bank home enabled",
             "sessions" to "id client plan started resumed duration served state amount cashEquivalent payment premiumBps home grace recognized warned notified source reference",
@@ -21,15 +21,16 @@ data class BackupData(val rows: Map<String, List<JSONObject>>, val apps: Set<Str
             "revenue_corrections" to "id source amount cashEquivalent count voided at reason",
             "billing_cycles" to "id start end cost",
             "debts" to "id name total start due",
-            "debt_payments" to "id debtId at amount")
+            "debt_payments" to "id debtId at amount",
+            "balance_updates" to "id at cash bank cashReceived bankReceived premiumBps reason expectedCash expectedBank")
         private val strings = setOf("name", "client", "plan", "state", "payment", "source", "reference", "keyword", "phrase", "ip", "cycleId", "debtId", "reason")
         fun parse(text: String): BackupData {
             require(text.toByteArray(Charsets.UTF_8).size <= MAX_BYTES) { "النسخة أكبر من 20 ميجابايت" }
             val root = JSONObject(text)
             val version = root.getInt("version")
-            require(version in 2..5) { "إصدار النسخة الاحتياطية غير مدعوم" }
+            require(version in 2..6) { "إصدار النسخة الاحتياطية غير مدعوم" }
             val rows = tables.associateWith { table ->
-                val array = if (table == "manual_sales" && version < 4 || table == "sequences" && version < 3 || table in listOf("revenue_corrections", "billing_cycles", "debts", "debt_payments") && version < 5)
+                val array = if (table == "balance_updates" && version < 6 || table == "manual_sales" && version < 4 || table == "sequences" && version < 3 || table in listOf("revenue_corrections", "billing_cycles", "debts", "debt_payments") && version < 5)
                     org.json.JSONArray() else root.getJSONArray(table)
                 require(array.length() <= 100000) { "عدد السجلات يتجاوز الحد" }
                 val keys = fields.getValue(table).split(' ').toSet()
@@ -52,6 +53,12 @@ data class BackupData(val rows: Map<String, List<JSONObject>>, val apps: Set<Str
                     listOf("cash", "bank", "usdCents", "bankRate", "expenses", "unitPrice", "total").filter { it in keys }.forEach { range(it, 99999999999) }
                     listOf("amount", "cashEquivalent").filter { it in keys }.forEach { range(it, 9999999999900000) }
                     when (table) {
+                        "balance_updates" -> {
+                            range("id", Long.MAX_VALUE, 1); range("at", 32503680000000, 1)
+                            range("cashReceived", Long.MAX_VALUE); range("bankReceived", Long.MAX_VALUE)
+                            range("expectedCash", Long.MAX_VALUE); range("expectedBank", Long.MAX_VALUE)
+                            require(row.getString("reason").isNotBlank())
+                        }
                         "billing_cycles" -> { range("cost", 9999999999999999); require(row.getLong("start") > 0 && row.getLong("end") > row.getLong("start")) }
                         "debts" -> { require(row.getString("name").isNotBlank()); range("total", 99999999999, 1); require(row.getLong("start") > 0 && row.getLong("due") >= row.getLong("start")) }
                         "debt_payments" -> { range("amount", 99999999999, 1) }
@@ -89,6 +96,12 @@ data class BackupData(val rows: Map<String, List<JSONObject>>, val apps: Set<Str
             val active = rows.getValue("sessions").filter { it.getString("state") in listOf("ACTIVE", "PAUSED") }.mapNotNull { it.getString("reference").toIntOrNull() }
             require(active.distinct().size == active.size) { "أرقام المشتركين النشطة مكررة" }
             (rows.getValue("sessions") + rows.getValue("manual_sales")).fold(0L) { total, row -> Math.addExact(total, row.getLong("amount")) }
+            val receipts = rows.getValue("sessions").filter { it.getInt("home") == 0 } + rows.getValue("manual_sales")
+            val receiptCash = receipts.filter { it.getString("payment") == "CASH" }.sumOf { it.getLong("amount") }
+            val receiptBank = receipts.filter { it.getString("payment") == "BANK" }.sumOf { it.getLong("amount") }
+            rows.getValue("balance_updates").forEach {
+                require(it.getLong("cashReceived") <= receiptCash && it.getLong("bankReceived") <= receiptBank) { "مرجع الرصيد لا يطابق التحصيلات" }
+            }
             val debtIds = rows.getValue("debts").associateBy { it.getString("id") }
             require(rows.getValue("debt_payments").all { it.getString("debtId") in debtIds }) { "دين غير موجود في النسخة" }
             debtIds.forEach { (id, debt) -> require(rows.getValue("debt_payments").filter { it.getString("debtId") == id }.sumOf { it.getLong("amount") } <= debt.getLong("total")) }
