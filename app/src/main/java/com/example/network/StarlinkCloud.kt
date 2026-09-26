@@ -24,15 +24,35 @@ import kotlin.coroutines.resumeWithException
 
 /** The account session is never sent to a LAN endpoint, diagnostics, or a third-party server. */
 internal object CloudPolicy {
+    /**
+     * After login Starlink migrates the account session onto the apex domain `starlink.com`
+     * itself (cookies `Starlink.Com.Sso` / `Starlink.Com.Access.V1`), not onto www./auth./api.
+     * Host-only cookies on the apex are NOT returned by CookieManager.getCookie() for any
+     * subdomain URL, so the apex origin must be read explicitly.
+     */
+    const val ROOT = "https://starlink.com/"
     const val LOGIN = "https://www.starlink.com/account"
     const val AUTH = "https://api.starlink.com/auth-rp/auth/user"
+    /**
+     * The gRPC-Web control gateway. Starlink's own account page is restricted by a CSP that
+     * permits only same-origin (starlink.com) and wifi.starlink.com connections, so the channel
+     * the account session is actually issued for is the same-origin one, not a separate
+     * api2. host. Unverified against hardware - see docs/STARLINK-APEX-SESSION-CHECKPOINT.md.
+     */
     const val HANDLE = "https://starlink.com/api/SpaceX.API.Device.Device/Handle"
     private val names = setOf("Starlink.Com.Sso", "Starlink.Com.Access.V1")
+    const val LOGIN_COOKIE = "Starlink.Com.Sso"
+    const val ACCESS_COOKIE = "Starlink.Com.Access.V1"
+    val SESSION_COOKIE_URLS = listOf(ROOT, "https://starlink.com/account", LOGIN, "https://auth.starlink.com/", AUTH, HANDLE)
+    /** True for any origin whose cookie jar can hold the account session, apex included. */
+    fun sessionHost(host: String): Boolean {
+        val value = host.lowercase()
+        return value == "starlink.com" || value.endsWith(".starlink.com")
+    }
     fun loginUrlAllowed(value: String): Boolean = runCatching {
         val uri = URI(value)
         val host = uri.host?.lowercase().orEmpty()
-        uri.scheme == "https" && uri.userInfo == null && uri.port in setOf(-1, 443) &&
-            (host == "starlink.com" || host.endsWith(".starlink.com"))
+        uri.scheme == "https" && uri.userInfo == null && uri.port in setOf(-1, 443) && sessionHost(host)
     }.getOrDefault(false)
     fun cookies(vararg headers: String?): String {
         val result = linkedMapOf<String, String>()
@@ -49,7 +69,26 @@ internal object CloudPolicy {
         }
         return result.entries.joinToString("; ") { "${it.key}=${it.value}" }
     }
-    fun hasLogin(cookie: String): Boolean = cookie.split(';').any { it.trim().startsWith("Starlink.Com.Sso=") }
+    fun hasLogin(cookie: String): Boolean = cookie.split(';').any {
+        val name = it.substringBefore('=').trim()
+        name == LOGIN_COOKIE || name == ACCESS_COOKIE
+    }
+    fun sessionDiagnostics(cookiesByUrl: List<Pair<String, String?>>): String {
+        fun summarize(header: String?): String {
+            val safe = runCatching { cookies(header) }.getOrDefault("")
+            val namesPresent = safe.split(';')
+                .map { it.substringBefore('=').trim() }
+                .filter { it.isNotEmpty() }
+                .toSet()
+            val sso = if (LOGIN_COOKIE in namesPresent) "YES" else "NO"
+            val access = if (ACCESS_COOKIE in namesPresent) "YES" else "NO"
+            return "SSO=$sso ACCESS=$access KNOWN=${namesPresent.size}"
+        }
+        return cookiesByUrl.joinToString("; ") { (url, header) ->
+            val host = runCatching { URI(url).host ?: url }.getOrDefault(url)
+            "$host[${summarize(header)}]"
+        }
+    }
     fun target(router: String, payload: ByteArray): ByteArray {
         require(router.matches(Regex("Router-[A-Za-z0-9-]{1,120}"))) { "cloud_invalid_router_id" }
         val fields = StarlinkProtocol.fields(payload)
@@ -157,13 +196,12 @@ internal class StarlinkCloud(private val store: CloudSessionStore, private val h
         return next
     }
     suspend fun connect(candidate: String, local: RouterControlLink) = withContext(Dispatchers.IO) {
-        // Login verification touches both HTTPS and the blocking LAN Starlink probe.
-        // Keep the entire verification transaction off the Android main thread.
         val safe = CloudPolicy.cookies(candidate)
         check(CloudPolicy.hasLogin(safe)) { "cloud_login_missing" }
         cookie = refresh(safe)
         try {
-            // Authenticated read for the exact LAN router proves access before saving a session.
+            // The complete link verification is main-safe: auth, LAN verification and session persistence
+            // may contain blocking platform/network/storage work and therefore stay on Dispatchers.IO.
             AuthenticatedRouterLink(local, this@StarlinkCloud)
                 .exchange(StarlinkProtocol.request(StarlinkProtocol.Query.STATUS))
             store.write(cookie!!)
