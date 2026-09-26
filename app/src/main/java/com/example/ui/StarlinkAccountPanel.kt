@@ -129,6 +129,17 @@ private suspend fun probeAuthViaWebView(webView: WebView): String = withTimeoutO
                         settings.setSupportMultipleWindows(false)
                         settings.cacheMode = WebSettings.LOAD_NO_CACHE
                         settings.saveFormData = false
+                        // Confirmed on-device (2026-09-25): the user's regular Chrome logs into
+                        // starlink.com fine; this WebView (both page navigation and the JS-fetch
+                        // probe below) times out on the authenticated request. Android WebView's
+                        // default UA carries "; wv)" and a leading "Version/X.Y " marker that real
+                        // Chrome's UA never has - a standard signal bot-detection uses to flag
+                        // in-app/embedded browsers. Stripped here so this WebView presents the
+                        // same UA shape as the Chrome that's already proven to work, while keeping
+                        // the device's real Chrome build number (no fixed/fake version string).
+                        settings.userAgentString = WebSettings.getDefaultUserAgent(ctx)
+                            .replace("; wv)", ")")
+                            .replace(Regex("Version/[0-9.]+\\s+"), "")
                         @SuppressLint("WrongConstant")
                         if (WebViewFeature.isFeatureSupported(WebViewFeature.COOKIE_INTERCEPT)) {
                             WebSettingsCompat.setCookiesIncludedInShouldInterceptRequest(settings, true)
