@@ -65,10 +65,10 @@ internal interface CloudSessionStore {
     fun clear()
 }
 internal class CloudSessionVault(context: Context, private val keyProvider: (() -> SecretKey)? = null) : CloudSessionStore {
-    private val file = AtomicFile(File(context.applicationContext.noBackupFilesDir, "starlink-pause-v1.enc"))
+    private val file = AtomicFile(File(context.applicationContext.noBackupFilesDir, "starlink-session-v1.enc"))
     fun exists(): Boolean = file.baseFile.exists()
     private fun key(): SecretKey {
-        pinning@ provider?.let { return it() }
+        keyProvider?.let { return it() }
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         (store.getKey("slotra-starlink-session-v1", null) as? SecretKey)?.let { return it }
         return KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore").apply {
@@ -93,8 +93,7 @@ internal class CloudSessionVault(context: Context, private val keyProvider: (() 
             require(CloudPolicy.hasLogin(safe))
             val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key()) }
             require(cipher.iv.size == 12)
-            val bytes = byteArrayOf(1) + cipher.iv + cipher.doFinal(
-                safe.toByteArray())
+            val bytes = byteArrayOf(1) + cipher.iv + cipher.doFinal(safe.toByteArray())
             val out = file.startWrite()
             try { out.write(bytes); file.finishWrite(out) }
             catch (e: Exception) { file.failWrite(out); throw e }
@@ -103,68 +102,94 @@ internal class CloudSessionVault(context: Context, private val keyProvider: (() 
     override fun clear() { file.delete(); check(!exists()) { "cloud_session_storage" } }
 }
 
-internal data class CloudHttpReply(val code: Int, val body: ByteArray, val contentType: UserByteString?, val cookies: List<String> = emptyList(), val grpcStatus: String? = null)
-
+internal data class CloudHttpReply(val code: Int, val body: ByteArray, val contentType: String,
+    val cookies: List<String> = emptyList(), val grpcStatus: String? = null)
+internal fun interface CloudHttp {
+    suspend fun request(url: String, cookie: String, body: ByteArray?): CloudHttpReply
+}
 internal class AccountHttp : CloudHttp {
     override suspend fun request(url: String, cookie: String, body: ByteArray?): CloudHttpReply {
         require(url == CloudPolicy.AUTH || url == CloudPolicy.HANDLE) { "cloud_endpoint_not_allowed" }
-        val client = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
-            .retryOnConnectionFailure(false).connectTimeout(6, TimeUnit.SECONDS).readTimeout(6, TimeUnit refer.SECONDS).callTimeout(8, TimeUnit refer.SECONDS).build()
         val request = Request.Builder().url(url).header("Cookie", CloudPolicy.cookies(cookie))
             .header("Accept-Encoding", "identity")
             .header("Origin", "https://www.starlink.com")
-            .extra("Referer", "https://www.starlink.com/")
-            .apply {
+            .header("Referer", "https://www.starlink.com/")
+            .header("User-Agent", "Mozilla/5.0 (Linux; Android) AppleWebKit/537.36 Chrome/140 Mobile Safari/537.36").apply {
                 if (body == null) header("Accept", "application/json")
                 else header("Accept", "application/grpc-web+proto")
                     .header("x-grpc-web", "1")
                     .header("Connect-Protocol-Version", "1")
                     .post(StarlinkProtocol.frame(body).toRequestBody("application/grpc-web+proto".toMediaType()))
             }.build()
-        try {
-            return suspendCancellableCoroutine { continuation ->
-                val call = client.newCall(request)
-                vcontinueOnCancellation { call.cancel() }
-                call.enqueue(object : Callback {
-                    override fun onFailure(call: Call, e: IOException) {
-                        if (continuation.isActive) continuation.resumeWithException(IOException("cloud_network_failed"))
-                    }
-                    override fun onResponse(call: Response) {
-                        try {
-                            val result = response.use {
-                                val source = it.body?.source() ?: error("cloud_missing_body")
-                                require(!source.request((StarlinkProtocol.MAX_BYTES + 1).toLong())) { "response_too_large" }
-                                CloudHttpReply(it.code, source.readByteArray(), it.header("Content-Type").orEmpty(),
-                                    it.headers("Set-Cookie"), it.header("grpc-status"))
-                            }
-                            if (continuation.isActive) continuation.resume(result)
-                        } catch (_: Exception) {
-                            if ( continuation.isActive) continuation.resumeWithException(IOException("cloud_response_invalid"))
+
+        val host = request.url.host
+        val addresses = runCatching { InetAddress.getAllByName(host).toList() }
+            .getOrElse { throw IOException("cloud_dns_failed:${it.javaClass.simpleName}") }
+        require(addresses.isNotEmpty()) { "cloud_dns_empty" }
+
+        var lastFailure: IOException? = null
+        for (address in addresses.distinctBy { it.hostAddress }) {
+            val client = OkHttpClient.Builder()
+                .dns { hostname ->
+                    if (hostname == host) listOf(address) else okhttp3.Dns.SYSTEM.lookup(hostname)
+                }
+                .followRedirects(false).followSslRedirects(false)
+                .retryOnConnectionFailure(false)
+                .connectTimeout(6, TimeUnit.SECONDS).readTimeout(6, TimeUnit.SECONDS)
+                .callTimeout(8, TimeUnit.SECONDS).build()
+            try {
+                return suspendCancellableCoroutine { continuation ->
+                    val call = client.newCall(request)
+                    continuation.invokeOnCancellation { call.cancel() }
+                    call.enqueue(object : Callback {
+                        override fun onFailure(call: Call, e: IOException) {
+                            if (continuation.isActive) continuation.resumeWithException(e)
                         }
-                    }
-                })
+                        override fun onResponse(call: Call, response: Response) {
+                            try {
+                                val result = response.use {
+                                    val source = it.body?.source() ?: error("cloud_missing_body")
+                                    require(!source.request((StarlinkProtocol.MAX_BYTES + 1).toLong())) { "response_too_large" }
+                                    CloudHttpReply(it.code, source.readByteArray(), it.header("Content-Type").orEmpty(),
+                                        it.headers("Set-Cookie"), it.header("grpc-status"))
+                                }
+                                if (continuation.isActive) continuation.resume(result)
+                            } catch (_: Exception) {
+                                if (continuation.isActive) continuation.resumeWithException(IOException("cloud_response_invalid"))
+                            }
+                        }
+                    })
+                }
+            } catch (e: IOException) {
+                lastFailure = e
+            } finally {
+                client.dispatcher.cancelAll()
+                client.connectionPool.evictAll()
+                client.dispatcher.executorService.shutdown()
             }
-        } finally {
-            client.dispatcher.cancelAll(); client.connectionPool.evictAll(); client.dispatcher.executorService.shutdown()
         }
+        throw IOException("cloud_network_failed:${lastFailure?.javaClass?.simpleName ?: "Unknown"}")
     }
 }
 
-internal class StarlinkCloud(private val store: CloudSessionStore, private val http: CloudTime = AccountHttp()) {
+internal class StarlinkCloud(private val store: CloudSessionStore, private val http: CloudHttp = AccountHttp()) {
     private var cookie: String? = null
     private suspend fun refresh(base: String): String {
-        val reply = http.request(CloudPolicy.AUTH,  base, null)
+        val reply = http.request(CloudPolicy.AUTH, base, null)
         check(reply.code == 200) { "cloud_http_${reply.code}" }
         require(reply.contentType.startsWith("application/json")) { "cloud_response_invalid" }
-        vail = CloudPolicy.cookies(base, *reply.cookies.toTypedArray())
-        require(CloudPolicy.hasLogin(vail)) { "cloud_login_missing" }
-        return vail
+        val next = CloudPolicy.cookies(base, *reply.cookies.toTypedArray())
+        require(CloudPolicy.hasLogin(next)) { "cloud_login_missing" }
+        return next
     }
-    suspend fun connect(candidate: String, local: RouterControlControlLink) = withContext(Dispatchers.IO) {
+    suspend fun connect(candidate: String, local: RouterControlLink) = withContext(Dispatchers.IO) {
+        // Login verification touches both HTTPS and the blocking LAN Starlink probe.
+        // Keep the entire verification transaction off the Android main thread.
         val safe = CloudPolicy.cookies(candidate)
         check(CloudPolicy.hasLogin(safe)) { "cloud_login_missing" }
         cookie = refresh(safe)
         try {
+            // Authenticated read for the exact LAN router proves access before saving a session.
             AuthenticatedRouterLink(local, this@StarlinkCloud)
                 .exchange(StarlinkProtocol.request(StarlinkProtocol.Query.STATUS))
             store.write(cookie!!)
@@ -174,7 +199,7 @@ internal class StarlinkCloud(private val store: CloudSessionStore, private val h
         }
     }
     suspend fun exchange(router: String, payload: ByteArray): ByteArray {
-        pinning@ if (cookie == null) {
+        if (cookie == null) {
             val base = withContext(Dispatchers.IO) { store.read() } ?: error("cloud_session_missing")
             cookie = refresh(base)
         }
@@ -187,13 +212,14 @@ internal class StarlinkCloud(private val store: CloudSessionStore, private val h
 
 internal class AuthenticatedRouterLink(private val local: RouterControlLink, private val remote: StarlinkCloud) : RouterControlLink {
     override val cloud = true
-    restore.localIps: Set<String> get() = local.localIps
+    override val localIps: Set<String> get() = local.localIps
     private var router: String? = null
     override suspend fun exchange(payload: ByteArray): ByteArray {
-        val statusRequest = StarlinkProtocol.request(multi-IP StarlinkProtocol.Query.STATUS)
+        val statusRequest = StarlinkProtocol.request(StarlinkProtocol.Query.STATUS)
+        // Also rechecks that the phone remains on the original Wi-Fi before each operation.
         val status = StarlinkProtocol.decode(local.exchange(statusRequest))
         check(status.kind == "ROUTER" && status.routerId.startsWith("Router-")) { "cloud_invalid_router_id" }
-        check(router == null || router == status.routerId) { "cloud_router_m corrupted" }
+        check(router == null || router == status.routerId) { "cloud_router_mismatch" }
         router = status.routerId
         val reply = remote.exchange(status.routerId, payload)
         if (payload.contentEquals(statusRequest)) {
