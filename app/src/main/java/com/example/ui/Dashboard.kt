@@ -139,16 +139,23 @@ private fun dateLabel(at: Long, pattern: String = "EEEE، d MMMM yyyy") = Simple
         Panel { Text("اضبط تواريخ الدورة وتكلفتها لإظهار المطلوب اليوم.") }
         return
     }
+    // day.surplus is only null in the no-cycle-configured case already handled above; defaulting
+    // to 0 here is just a null-safety guard, not a behavior choice.
+    val surplus = day.surplus ?: 0L
     val largeText = androidx.compose.ui.platform.LocalDensity.current.fontScale > 1.2f
     BoxWithConstraints(Modifier.fillMaxWidth()) {
-        if (maxWidth < 320.dp || largeText) {
+        // Widened from the old 2-tile breakpoint (320.dp) now that a third tile can be shown side
+        // by side; most phone widths fall under this and get the readable stacked layout instead.
+        if (maxWidth < 480.dp || largeText) {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 TargetTile("المطلوب اليوم للفاتورة · كاش", day.billTarget, "daily-bill-target", "يتجدد مع بداية كل يوم", premiumBps, Modifier.fillMaxWidth())
                 TargetTile("الناقص من هدف اليوم · كاش", day.shortfall, "daily-shortfall", if (day.shortfall == 0L) "تحقق هدف اليوم" else "ينقص مع التحصيل", premiumBps, Modifier.fillMaxWidth())
+                TargetTile("الفائض عن هدف اليوم · كاش", surplus, "daily-surplus", if (surplus == 0L) "لم يتجاوز التحصيل الهدف بعد" else "زيادة عن هدف اليوم", premiumBps, Modifier.fillMaxWidth())
             }
         } else Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             TargetTile("المطلوب اليوم للفاتورة · كاش", day.billTarget, "daily-bill-target", "يتجدد مع بداية كل يوم", premiumBps, Modifier.weight(1f))
             TargetTile("الناقص من هدف اليوم · كاش", day.shortfall, "daily-shortfall", if (day.shortfall == 0L) "تحقق هدف اليوم" else "ينقص مع التحصيل", premiumBps, Modifier.weight(1f))
+            TargetTile("الفائض عن هدف اليوم · كاش", surplus, "daily-surplus", if (surplus == 0L) "لم يتجاوز التحصيل الهدف بعد" else "زيادة عن هدف اليوم", premiumBps, Modifier.weight(1f))
         }
     }
 }

@@ -97,6 +97,23 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
         dao.sessions().map { old -> advance(old, now).also { if (it != old) dao.updateSession(it) } }
     }
 
+    /**
+     * Force-ends every ACTIVE/PAUSED session at [now] (e.g. a scheduled daily network closure),
+     * recognizing revenue immediately even if the five-minute qualification period has not
+     * elapsed - the plan was already sold and paid for, so cutting the session short doesn't
+     * reduce what's owed. `served` is set to the actual elapsed time (not the full duration) so
+     * the record honestly reflects an early cutoff. Reference numbers are kept, matching how a
+     * naturally-ended session already keeps its number for the rest of the day.
+     */
+    suspend fun forceEndAll(now: Long) = db.withTransaction {
+        dao.sessions().filter { it.state in listOf("ACTIVE", "PAUSED") }.forEach { old ->
+            val next = if (old.home) old.copy(state = "CANCELLED", reference = "", amount = 0, cashEquivalent = 0, recognized = 0, warned = true, notified = true)
+                else old.copy(state = "ENDED", served = Rules.served(old.clock(), now),
+                    recognized = if (old.recognized == 0L) now else old.recognized, warned = true, notified = true)
+            if (next != old) dao.updateSession(next)
+        }
+    }
+
     suspend fun changeState(id: String, action: String) = db.withTransaction {
         val now = time()
         val s = dao.session(id)?.let { advance(it, now) } ?: return@withTransaction
