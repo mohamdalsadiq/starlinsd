@@ -93,6 +93,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         repo.updateBalance(cash, bank, reason)
         message.value = "تم تحديث الرصيد وإعادة حساب المطلوب للفاتورة"
     }
+    /**
+     * [minute] is minutes since local midnight (0..1439), or -1 to disable. `work{}` already
+     * calls SubscriptionAlarms.refresh() afterward, which reschedules the next wake-up to include
+     * (or drop) this time immediately - no separate rescheduling call needed here.
+     */
+    fun setDailyClose(minute: Int) = work {
+        SubscriptionAlarms.setDailyCloseMinute(getApplication(), minute)
+        message.value = if (minute < 0) "أُلغي إغلاق الشبكة اليومي"
+            else "سيُنهي التطبيق كل الاشتراكات النشطة تلقائيًا الساعة ${String.format("%02d:%02d", minute / 60, minute % 60)}"
+    }
     fun dismissRestore() { pendingRestore.value = null; restoreText = null }
     fun previewRestore(uri: Uri) = work {
         dismissRestore()
