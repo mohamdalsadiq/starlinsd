@@ -1,25 +1,26 @@
 package com.example.network
 
+import com.example.data.SubscriptionRepository
 import com.example.db.DeviceListDao
 import com.example.db.Session
 
 /** Interface for repository operations the monitor needs — testable without a real database. */
-interface SessionControl {
+internal interface SessionControl {
     suspend fun reconcile(now: Long): List<Session>
     suspend fun changeState(id: String, action: String)
 }
 
 /** Extension to bridge SubscriptionRepository into SessionControl. */
-suspend fun SubscriptionRepository.asSessionControl(): SessionControl = object : SessionControl {
+internal suspend fun SubscriptionRepository.asSessionControl(): SessionControl = object : SessionControl {
     override suspend fun reconcile(now: Long): List<Session> = this@asSessionControl.reconcile(now)
     override suspend fun changeState(id: String, action: String) = this@asSessionControl.changeState(id, action)
 }
 
 /** Classifies a discovered router client into one of three categories. */
-enum class DeviceCategory { HOUSEHOLD, WATCHLIST, UNKNOWN }
+internal enum class DeviceCategory { HOUSEHOLD, WATCHLIST, UNKNOWN }
 
 /** Result of classifying a single router client. */
-data class ClassifiedDevice(
+internal data class ClassifiedDevice(
     val client: StarlinkProtocol.Client,
     val category: DeviceCategory,
 )
@@ -36,7 +37,7 @@ object DeviceClassifier {
     const val HOUSEHOLD = "HOUSEHOLD"
     const val WATCHLIST = "WATCHLIST"
 
-    fun classify(
+    internal fun classify(
         clients: List<StarlinkProtocol.Client>,
         householdIps: Set<String>,
         watchlistIps: Set<String>,
@@ -66,7 +67,7 @@ object DeviceClassifier {
  *
  * This class is testable with fake implementations of the dependencies.
  */
-class DeviceMonitor(
+internal class DeviceMonitor(
     private val repo: SessionControl,
     private val deviceListDao: DeviceListDao,
     private val now: () -> Long = { System.currentTimeMillis() },
@@ -75,7 +76,7 @@ class DeviceMonitor(
      * Runs one monitoring cycle. Returns a summary of actions taken.
      * Called periodically by DeviceMonitorWorker.
      */
-    suspend fun scan(clients: List<StarlinkProtocol.Client>): ScanResult {
+    internal suspend fun scan(clients: List<StarlinkProtocol.Client>): ScanResult {
         val householdIps = deviceListDao.byType(DeviceClassifier.HOUSEHOLD).map { it.ip }.toSet()
         val watchlistIps = deviceListDao.byType(DeviceClassifier.WATCHLIST).map { it.ip }.toSet()
         val classified = DeviceClassifier.classify(clients, householdIps, watchlistIps)
@@ -118,7 +119,7 @@ class DeviceMonitor(
     }
 }
 
-data class ScanResult(
+internal data class ScanResult(
     val totalSeen: Int,
     val household: Int,
     val watchlist: Int,
