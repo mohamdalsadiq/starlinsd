@@ -29,9 +29,9 @@ data class BackupData(val rows: Map<String, List<JSONObject>>, val apps: Set<Str
             require(text.toByteArray(Charsets.UTF_8).size <= MAX_BYTES) { "النسخة أكبر من 20 ميجابايت" }
             val root = JSONObject(text)
             val version = root.getInt("version")
-            require(version in 2..6) { "إصدار النسخة الاحتياطية غير مدعوم" }
+            require(version in 2..7) { "إصدار النسخة الاحتياطية غير مدعوم" }
             val rows = tables.associateWith { table ->
-                val array = if (table == "balance_updates" && version < 6 || table == "manual_sales" && version < 4 || table == "sequences" && version < 3 || table in listOf("revenue_corrections", "billing_cycles", "debts", "debt_payments") && version < 5)
+                val array = if (table == "balance_updates" && version < 6 || table == "manual_sales" && version < 4 || table == "sequences" && version < 3 || table in listOf("revenue_corrections", "billing_cycles", "debts", "debt_payments") && version < 5 || table == "device_lists" && version < 7)
                     org.json.JSONArray() else root.getJSONArray(table)
                 require(array.length() <= 100000) { "عدد السجلات يتجاوز الحد" }
                 val keys = fields.getValue(table).split(' ').toSet()
@@ -39,10 +39,11 @@ data class BackupData(val rows: Map<String, List<JSONObject>>, val apps: Set<Str
                     if (table == "settings" && version < 5) row.put("cycleId", "")
                     if (table == "settings" && version < 4) row.put("maxSubscribers", 50)
                     if (table == "sessions" && version < 3) row.put("reference", "")
+                    if (table == "sessions" && version < 7) row.put("deviceClientId", org.json.JSONObject.NULL)
                     require(row.keys().asSequence().toSet() == keys) { "حقول غير صالحة في $table" }
                     keys.forEach { key ->
                         val isString = key in strings || key == "id" && table in listOf("sessions", "manual_sales", "billing_cycles", "debts", "debt_payments")
-                        if (row.isNull(key)) require(table == "shortcuts" && key == "planId")
+                        if (row.isNull(key)) require((table == "shortcuts" && key == "planId") || (table == "sessions" && key == "deviceClientId"))
                         else if (isString) require(row.get(key) is String && row.getString(key).length <= if (key == "phrase") 10000 else 200) { "نص غير صالح" }
                         else require(row.get(key) is Number && Regex("[0-9]+").matches(row.get(key).toString()) && row.get(key).toString().toLongOrNull() != null) { "رقم غير صالح" }
                     }

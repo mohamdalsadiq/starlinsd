@@ -87,12 +87,20 @@ internal class DeviceMonitor(
             .mapNotNull { it.client.id }
             .toSet()
 
+        // Build a set of household clientIds — sessions linked to these are never monitored
+        val householdIds = classified
+            .filter { it.category == DeviceCategory.HOUSEHOLD }
+            .mapNotNull { it.client.id }
+            .toSet()
+
         val sessions = repo.reconcile(now())
         var paused = 0
         var resumed = 0
 
         sessions.filter { !it.home && it.deviceClientId != null }.forEach { session ->
             val linkedId = session.deviceClientId!!.toLongOrNull() ?: return@forEach
+            // Skip sessions linked to household devices — they are never monitored
+            if (linkedId in householdIds) return@forEach
             val isPresent = linkedId in connectedIds
 
             when {
