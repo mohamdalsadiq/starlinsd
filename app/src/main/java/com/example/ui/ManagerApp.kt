@@ -387,6 +387,20 @@ internal fun amount(minor: Long): String {
             Text("تغيير الأسعار أو النسبة لا يعيد تسعير السجلات السابقة. سجّل المصروفات بالقيمة المكافئة للكاش.")
         } }
         item { Panel {
+            SectionHeading(Icons.Default.Lock, "إغلاق الشبكة اليومي", "ينهي كل الاشتراكات النشطة تلقائيًا في وقت محدد")
+            // Re-reads on every clock tick (and right after a save, since work{} bumps `now`
+            // immediately) so the field reflects what's actually saved, not just local typing.
+            val savedMinute = remember(now) { SubscriptionAlarms.dailyCloseMinute(context) }
+            var closeTime by rememberSaveable(savedMinute) { mutableStateOf(if (savedMinute < 0) "" else String.format(Locale.ROOT, "%02d:%02d", savedMinute / 60, savedMinute % 60)) }
+            Field("وقت الإغلاق · HH:mm · اتركه فارغًا للإلغاء", closeTime, { closeTime = it })
+            val parsedMinute = Regex("^([01]?[0-9]|2[0-3]):([0-5][0-9])$").matchEntire(Money.normalize(closeTime))
+                ?.let { m -> m.groupValues[1].toInt() * 60 + m.groupValues[2].toInt() }
+            val validClose = closeTime.isBlank() || parsedMinute != null
+            Button(enabled = !busy && validClose, onClick = { vm.setDailyClose(if (closeTime.isBlank()) -1 else parsedMinute!!) }) { Text("حفظ وقت الإغلاق") }
+            if (!validClose) Text("اكتب الوقت بصيغة HH:mm، مثل 18:00", color = MaterialTheme.colorScheme.error)
+            Text("عند هذا الوقت تُنهى كل الاشتراكات النشطة والمتوقفة مؤقتًا فورًا، ويُحتسب إيرادها كاملًا حتى لو لم تكتمل مهلة التثبيت (${Rules.RECOGNITION_MINUTES} دقائق). أرقام اليوم لا تتاح لغيرها حتى بعد الإغلاق.", style = MaterialTheme.typography.bodySmall)
+        } }
+        item { Panel {
             SectionHeading(Icons.Default.CloudDone, "النسخ الاحتياطي والاستعادة")
             Text("${devices.size} من سجلات الأجهزة القديمة محفوظة. التصدير يشمل المشتركين والباقات والإعدادات والاختصارات والأجهزة.")
             TextButton(enabled = !busy, onClick = { export.launch("slotra-backup-${SimpleDateFormat("yyyy-MM-dd", Locale.ROOT).format(Date())}.json") }) { Text("حفظ نسخة · Google Drive أو ملف") }
