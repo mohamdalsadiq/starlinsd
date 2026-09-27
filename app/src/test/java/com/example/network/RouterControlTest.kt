@@ -91,7 +91,7 @@ class RouterControlTest {
     @Test fun `target matching the controller phone IP is rejected before any read or write`() {
         // Phase 4 (a): even with a valid id/MAC, a target whose IP is the controller's is aborted.
         val journal = Journal(); val link = Link(journal); val control = RouterControl({ link }, journal, { 0 }, {})
-        rejected { control.prepare(device.copy(ip = "192.168.1.20", mac = "8a:bb:a2:11:22:33")) }
+        rejected { control.prepare(device.copy(ip = "192.168.1.20")) }
         assertEquals(0, link.reads); assertEquals(0, link.writes)
     }
     @Test fun `target with unverifiable identity is rejected fail-closed`() {
@@ -103,13 +103,11 @@ class RouterControlTest {
         rejected { control.prepare(device.copy(mac = "00:00:00:00:00:00")) }
         assertEquals(0, link.reads); assertEquals(0, link.writes)
     }
-    @Test fun `target with real distinct MAC and non-local IP is allowed`() = runBlocking {
-        // Phase 4 (c): a device proven different from the controller (real MAC, other IP) passes.
+    @Test fun `target with real OUI and non-local IP is allowed`() = runBlocking {
+        // Phase 4 (c): a device with a real OUI (partially masked suffix is normal on
+        // Starlink) and a non-local IP passes the strengthened protection.
         val journal = Journal(); val link = Link(journal); val control = RouterControl({ link }, journal, { 0 }, {})
-        val safe = device.copy(mac = "8a:bb:a2:11:22:33", ip = "192.168.1.150")
-        link.entry = numberField(1, safe.id!!) + str(2, safe.mac) + str(3, safe.name)
-        // The fake router must report the same device identity for prepare to succeed.
-        val preview = control.prepare(safe)
+        val preview = control.prepare(device)
         assertEquals(0, link.writes)
         assertTrue(control.apply(preview).verified)
     }
