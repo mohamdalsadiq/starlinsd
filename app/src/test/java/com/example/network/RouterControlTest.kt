@@ -88,6 +88,31 @@ class RouterControlTest {
         rejected { control.prepare(device.copy(id = null)) }
         assertEquals(0, link.reads); assertEquals(0, link.writes)
     }
+    @Test fun `target matching the controller phone IP is rejected before any read or write`() {
+        // Phase 4 (a): even with a valid id/MAC, a target whose IP is the controller's is aborted.
+        val journal = Journal(); val link = Link(journal); val control = RouterControl({ link }, journal, { 0 }, {})
+        rejected { control.prepare(device.copy(ip = "192.168.1.20", mac = "8a:bb:a2:11:22:33")) }
+        assertEquals(0, link.reads); assertEquals(0, link.writes)
+    }
+    @Test fun `target with unverifiable identity is rejected fail-closed`() {
+        // Phase 4 (b): a fully masked/empty MAC cannot prove the device is NOT the
+        // management phone, so the mutation must abort before any network traffic.
+        val journal = Journal(); val link = Link(journal); val control = RouterControl({ link }, journal, { 0 }, {})
+        rejected { control.prepare(device.copy(mac = "XX:XX:XX:XX:XX:XX")) }
+        rejected { control.prepare(device.copy(mac = "")) }
+        rejected { control.prepare(device.copy(mac = "00:00:00:00:00:00")) }
+        assertEquals(0, link.reads); assertEquals(0, link.writes)
+    }
+    @Test fun `target with real distinct MAC and non-local IP is allowed`() = runBlocking {
+        // Phase 4 (c): a device proven different from the controller (real MAC, other IP) passes.
+        val journal = Journal(); val link = Link(journal); val control = RouterControl({ link }, journal, { 0 }, {})
+        val safe = device.copy(mac = "8a:bb:a2:11:22:33", ip = "192.168.1.150")
+        link.entry = numberField(1, safe.id!!) + str(2, safe.mac) + str(3, safe.name)
+        // The fake router must report the same device identity for prepare to succeed.
+        val preview = control.prepare(safe)
+        assertEquals(0, link.writes)
+        assertTrue(control.apply(preview).verified)
+    }
     @Test fun `duplicate client ids prevent confirmation`() {
         val journal = Journal(); val link = Link(journal); link.duplicate = true
         rejected { RouterControl({ link }, journal, { 0 }, {}).prepare(device) }
