@@ -92,7 +92,11 @@ internal class RouterControl(
         if (saved?.cloud ?: cloud) AuthenticatedRouterLink(AndroidRouterLink(context), StarlinkCloud(CloudSessionVault(context)))
         else AndroidRouterLink(context)
     }, FilePauseJournal(context.applicationContext))
-    companion object { private val operation = Mutex() }
+    companion object {
+        private val operation = Mutex()
+        private val MAC_OCTET = Regex("[0-9a-fA-F]{2}")
+        private val MASKED_OCTETS = setOf("xx", "XX", "00")
+    }
     fun pending(): PendingPause? = journal.read()
     private data class State(val router: String, val config: RouterControlProtocol.Config, val clients: List<StarlinkProtocol.Client>)
     private suspend fun read(link: RouterControlLink): State {
@@ -117,12 +121,23 @@ internal class RouterControl(
         }
         return current ?: expected
     }
+    // True when the MAC cannot prove the device is NOT the management phone (fail-closed).
+    private fun unverifiableMac(mac: String): Boolean {
+        val octets = mac.split(':')
+        if (octets.size != 6) return true
+        if (octets.any { it.isEmpty() }) return true
+        return octets.all { it in MASKED_OCTETS || !MAC_OCTET.matches(it) }
+    }
     private fun checkTarget(device: StarlinkProtocol.Client, link: RouterControlLink) {
         check(device.id != null && device.id in 1..0xffffffffL) { "missing_client_id" }
         check(device.role == null || device.role == 0L || device.role == 1L) { "infrastructure_device" }
         check(device.ip.matches(Regex("192\\.168\\.1\\.[0-9]{1,3}")) &&
             device.ip.substringAfterLast('.').toInt() in 2..254) { "invalid_client_ip" }
         check(device.ip !in link.localIps) { "management_phone" }
+        // Second line of defense: if the router cannot show a real MAC for this device,
+        // we cannot prove it is not the management phone (whose IP may have changed via
+        // DHCP), so the mutation must abort before anything is sent (fail-closed).
+        check(!unverifiableMac(device.mac)) { "management_phone_unverifiable" }
     }
     suspend fun prepare(device: StarlinkProtocol.Client): PausePreview = operation.withLock {
         check(journal.read() == null) { "pending_test_exists" }
@@ -236,6 +251,7 @@ internal fun controlError(e: Exception): String = when (errorCode(e)) {
     "cloud_session_storage" -> "تعذر فتح جلسة Starlink المحفوظة. افصل الربط ثم سجّل الدخول من جديد."
     "gRPC=12", "Starlink=12" -> "الراوتر لا يدعم هذا الطلب."
     "management_phone" -> "لا يمكن إيقاف الإنترنت عن هاتف الإدارة."
+    "management_phone_unverifiable" -> "تعذر إثبات أن هذا الجهاز ليس هاتف الإدارة (عنوان MAC غير مؤكد)؛ لن نرسل أمرًا."
     "infrastructure_device", "invalid_client_ip" -> "هذا الجهاز غير مناسب للاختبار؛ اختر هاتفًا آخر متصلًا مباشرة."
     "missing_client_id", "ambiguous_client_id", "client_identity_conflict" -> "هوية الجهاز غير كافية أو متعارضة؛ لن نرسل أمرًا لجهاز غير مؤكد."
     "client_identity_changed", "client_not_present", "config_changed", "expired_confirmation" -> "تغيرت البيانات أو انتهت صلاحية التأكيد؛ حدّث القراءة وافحص الجهاز مجددًا."
