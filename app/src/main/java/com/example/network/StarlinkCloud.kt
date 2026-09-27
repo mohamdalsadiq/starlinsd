@@ -146,6 +146,8 @@ internal class AccountHttp : CloudHttp {
                             if (continuation.isActive) continuation.resumeWithException(e)
                         }
                         override fun onResponse(call: Call, response: Response) {
+                            // Any HTTP status is a valid reply. Status handling (cloud_http_<code>)
+                            // belongs to the caller, not to the transport layer.
                             try {
                                 val result = response.use {
                                     val bodyBytes = it.body?.bytes() ?: byteArrayOf()
@@ -161,6 +163,9 @@ internal class AccountHttp : CloudHttp {
                     })
                 }
             } catch (e: IOException) {
+                // Response-shape failures are contract errors, not network errors:
+                // never retry them on another address and never rewrap them.
+                if (e.message == "cloud_response_invalid") throw e
                 lastFailure = e
             } finally {
                 client.dispatcher.cancelAll()
