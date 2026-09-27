@@ -34,6 +34,7 @@ class DeviceMonitorTest {
 
     private class FakeSessionControl(
         private val sessions: MutableList<Session>,
+        private val now: Long = 0L,
     ) : SessionControl {
         private val stateChanges = mutableListOf<Pair<String, String>>()
         val changes: List<Pair<String, String>> get() = stateChanges
