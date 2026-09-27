@@ -129,10 +129,13 @@ internal class AccountHttp : CloudHttp {
 
         var lastFailure: IOException? = null
         for (address in addresses.distinctBy { it.hostAddress }) {
+            // Explicit Dns implementation: Kotlin 2.2 fails to SAM-convert a lambda here.
+            val pinnedDns = object : Dns {
+                override fun lookup(hostname: String): List<InetAddress> =
+                    if (hostname == host) listOf(address) else Dns.SYSTEM.lookup(hostname)
+            }
             val client = OkHttpClient.Builder()
-                .dns { hostname ->
-                    if (hostname == host) listOf(address) else okhttp3.Dns.SYSTEM.lookup(hostname)
-                }
+                .dns(pinnedDns)
                 .followRedirects(false).followSslRedirects(false)
                 .retryOnConnectionFailure(false)
                 .connectTimeout(6, TimeUnit.SECONDS).readTimeout(6, TimeUnit.SECONDS)
