@@ -15,6 +15,7 @@ data class Session(
     val home: Boolean, val grace: Long, val recognized: Long = 0,
     val warned: Boolean = false, val notified: Boolean = false, val source: String = "manual",
     @ColumnInfo(defaultValue = "''") val reference: String = "",
+    @ColumnInfo(defaultValue = "NULL") val deviceClientId: String? = null,
 ) { fun clock() = Clock(duration, served, resumed, state == "ACTIVE") }
 
 @Entity(tableName = "settings")
@@ -47,6 +48,20 @@ data class DebtPayment(@PrimaryKey val id: String, val debtId: String, val at: L
 data class BalanceUpdate(@PrimaryKey(autoGenerate = true) val id: Long = 0, val at: Long,
     val cash: Long, val bank: Long, val cashReceived: Long, val bankReceived: Long,
     val premiumBps: Int, val reason: String, val expectedCash: Long = 0, val expectedBank: Long = 0)
+
+@Entity(tableName = "device_lists", indices = [Index(value = ["ip", "listType"], unique = true)])
+data class DeviceList(@PrimaryKey(autoGenerate = true) val id: Long = 0, val ip: String, val listType: String, val addedAt: Long)
+
+@Dao
+interface DeviceListDao {
+    @Query("SELECT * FROM device_lists WHERE listType = :type ORDER BY addedAt")
+    suspend fun byType(type: String): List<DeviceList>
+    @Query("SELECT * FROM device_lists WHERE listType = :type ORDER BY addedAt")
+    fun observeByType(type: String): Flow<List<DeviceList>>
+    @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun add(entry: DeviceList): Long
+    @Query("DELETE FROM device_lists WHERE ip = :ip AND listType = :type") suspend fun remove(ip: String, type: String)
+    @Query("SELECT EXISTS(SELECT 1 FROM device_lists WHERE ip = :ip AND listType = :type)") suspend fun contains(ip: String, type: String): Boolean
+}
 
 @Dao
 interface BusinessDao {

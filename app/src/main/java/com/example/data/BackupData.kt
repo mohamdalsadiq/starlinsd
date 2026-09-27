@@ -9,10 +9,10 @@ data class BackupData(val rows: Map<String, List<JSONObject>>, val apps: Set<Str
     val summary: String get() = "${rows.getValue("sessions").size} اشتراك · ${rows.getValue("manual_sales").size} قيد دخل · ${rows.getValue("shortcuts").size} اختصار"
     companion object {
         const val MAX_BYTES = 20 * 1024 * 1024
-        val tables = listOf("plans", "sessions", "settings", "shortcuts", "devices", "sequences", "manual_sales", "revenue_corrections", "billing_cycles", "debts", "debt_payments", "balance_updates")
+        val tables = listOf("plans", "sessions", "settings", "shortcuts", "devices", "sequences", "manual_sales", "revenue_corrections", "billing_cycles", "debts", "debt_payments", "balance_updates", "device_lists")
         private val fields = mapOf(
             "plans" to "id name minutes cash bank home enabled",
-            "sessions" to "id client plan started resumed duration served state amount cashEquivalent payment premiumBps home grace recognized warned notified source reference",
+            "sessions" to "id client plan started resumed duration served state amount cashEquivalent payment premiumBps home grace recognized warned notified source reference deviceClientId",
             "settings" to "id graceMinutes premiumBps usdCents bankRate cycleStart cycleEnd expenses maxSubscribers cycleId",
             "shortcuts" to "id keyword phrase planId payment enabled",
             "devices" to "id ip name endTime isPaused remainingWhenPaused",
@@ -22,8 +22,9 @@ data class BackupData(val rows: Map<String, List<JSONObject>>, val apps: Set<Str
             "billing_cycles" to "id start end cost",
             "debts" to "id name total start due",
             "debt_payments" to "id debtId at amount",
-            "balance_updates" to "id at cash bank cashReceived bankReceived premiumBps reason expectedCash expectedBank")
-        private val strings = setOf("name", "client", "plan", "state", "payment", "source", "reference", "keyword", "phrase", "ip", "cycleId", "debtId", "reason")
+            "balance_updates" to "id at cash bank cashReceived bankReceived premiumBps reason expectedCash expectedBank",
+            "device_lists" to "id ip listType addedAt")
+        private val strings = setOf("name", "client", "plan", "state", "payment", "source", "reference", "keyword", "phrase", "ip", "cycleId", "debtId", "reason", "deviceClientId", "listType")
         fun parse(text: String): BackupData {
             require(text.toByteArray(Charsets.UTF_8).size <= MAX_BYTES) { "النسخة أكبر من 20 ميجابايت" }
             val root = JSONObject(text)
