@@ -148,9 +148,9 @@ internal class AccountHttp : CloudHttp {
                         override fun onResponse(call: Call, response: Response) {
                             try {
                                 val result = response.use {
-                                    val source = it.body?.source() ?: error("cloud_missing_body")
-                                    require(!source.request((StarlinkProtocol.MAX_BYTES + 1).toLong())) { "response_too_large" }
-                                    CloudHttpReply(it.code, source.readByteArray(), it.header("Content-Type").orEmpty(),
+                                    val bodyBytes = it.body?.bytes() ?: byteArrayOf()
+                                    require(bodyBytes.size <= StarlinkProtocol.MAX_BYTES) { "response_too_large" }
+                                    CloudHttpReply(it.code, bodyBytes, it.header("Content-Type").orEmpty(),
                                         it.headers("Set-Cookie"), it.header("grpc-status"))
                                 }
                                 if (continuation.isActive) continuation.resume(result)
