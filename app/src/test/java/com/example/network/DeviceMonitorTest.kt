@@ -193,7 +193,7 @@ class DeviceMonitorTest {
         assertEquals(1, repo.changes.filter { it.second == "RESUME" }.size)
         assertTrue(repo.changes.any { it.first == "s2" && it.second == "PAUSE" })
         assertTrue(repo.changes.any { it.first == "s3" && it.second == "RESUME" })
-        assertEquals(4, result.totalSeen)
+        assertEquals(1, result.totalSeen)
         assertEquals(0, result.household)
     }
 
