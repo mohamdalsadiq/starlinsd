@@ -51,6 +51,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         .stateIn(viewModelScope, sharing, null)
 
     val devices = db.deviceDao().getAll().stateIn(viewModelScope, sharing, emptyList())
+    val householdIps = db.deviceListDao().observeByType("HOUSEHOLD").stateIn(viewModelScope, sharing, emptyList())
+    val watchlistIps = db.deviceListDao().observeByType("WATCHLIST").stateIn(viewModelScope, sharing, emptyList())
+    private var lastScan: List<com.example.network.StarlinkProtocol.Client>? = null
+    val scannedDevices = MutableStateFlow<List<com.example.network.StarlinkProtocol.Client>>(emptyList())
+    val scanning = MutableStateFlow(false)
     val message = MutableStateFlow<String?>(null)
     val busy = MutableStateFlow(false)
     private val commands = Mutex()
@@ -77,6 +82,45 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun create(client: String, plan: Long, payment: String) = work {
         repo.insert(repo.prepare(client, plan, payment, "manual"))
         message.value = "تم تسجيل الاشتراك"
+    }
+    fun createWithDevice(client: String, plan: Long, payment: String, deviceClientId: String) = work {
+        val session = repo.prepare(client, plan, payment, "manual").copy(deviceClientId = deviceClientId)
+        repo.insert(session)
+        message.value = "تم تسجيل الاشتراك وربطه بالجهاز"
+    }
+    fun linkDevice(sessionId: String, deviceClientId: String) = work {
+        val session = repo.dao.session(sessionId) ?: return@work
+        repo.dao.updateSession(session.copy(deviceClientId = deviceClientId))
+        message.value = "تم ربط الاشتراك بالجهاز"
+    }
+    fun scanDevices() {
+        if (scanning.value) return
+        viewModelScope.launch {
+            scanning.value = true
+            try {
+                withContext(Dispatchers.IO) {
+                    val probe = com.example.network.StarlinkProbe(getApplication())
+                    val report = probe.run { }
+                    lastScan = report.clients
+                    scannedDevices.value = report.clients ?: emptyList()
+                    if (report.clients == null) message.value = report.summary
+                }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { message.value = "تعذّر قراءة الأجهزة: ${e.message}" }
+            finally { scanning.value = false }
+        }
+    }
+    fun addToHousehold(ip: String) = work {
+        db.deviceListDao().add(com.example.db.DeviceList(ip = ip, listType = "HOUSEHOLD", addedAt = System.currentTimeMillis()))
+        message.value = "أُضيف لأهل البيت"
+    }
+    fun addToWatchlist(ip: String) = work {
+        db.deviceListDao().add(com.example.db.DeviceList(ip = ip, listType = "WATCHLIST", addedAt = System.currentTimeMillis()))
+        message.value = "أُضيف لقائمة المراقبة"
+    }
+    fun removeFromList(ip: String, type: String) = work {
+        db.deviceListDao().remove(ip, type)
+        message.value = "أُزيل من القائمة"
     }
     fun addSales(id: String, lines: List<Pair<Int, Long>>, payment: String) = work {
         repo.addSales(id, lines, payment); message.value = "تمت إضافة الدخل إلى حساب اليوم"
