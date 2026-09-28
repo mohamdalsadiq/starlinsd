@@ -58,6 +58,21 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
 
     suspend fun release(id: String) = dao.release(id)
 
+    /**
+     * Attach (or detach) the router client representing this session's actual device.
+     * clientId is the ONLY identity; ip/mac/name are stored as display/diagnostic
+     * snapshots and never used to re-identify the device later.
+     */
+    suspend fun bindDevice(id: String, device: TrackedDevice?) = db.withTransaction {
+        val s = dao.session(id) ?: return@withTransaction
+        dao.updateSession(if (device == null)
+            s.copy(deviceClientId = null, deviceIp = "", deviceName = "", deviceMac = "")
+        else {
+            require(device.clientId in 1..4294967295L) { "معرّف الجهاز غير صالح" }
+            s.copy(deviceClientId = device.clientId, deviceIp = device.ip, deviceName = device.name, deviceMac = device.mac)
+        })
+    }
+
     suspend fun insert(session: Session): Long = db.withTransaction {
         if (dao.session(session.id) != null) return@withTransaction -1L
         val reservation = dao.reservations().firstOrNull { it.sessionId == session.id }
@@ -234,7 +249,7 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
 
     suspend fun exportJson(): String = withContext(Dispatchers.IO) {
         db.withTransaction {
-            val root = org.json.JSONObject().put("version", 6).put("format", "slotra-backup").put("exportedAt", System.currentTimeMillis())
+            val root = org.json.JSONObject().put("version", 7).put("format", "slotra-backup").put("exportedAt", System.currentTimeMillis())
             fun rows(query: String): org.json.JSONArray {
                 val result = org.json.JSONArray()
                 db.openHelper.readableDatabase.query(query).use { c -> while (c.moveToNext()) {
