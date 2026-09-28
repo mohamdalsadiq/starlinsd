@@ -16,15 +16,21 @@ import com.example.ui.ManagerApp
 class MainActivity : ComponentActivity() {
     private val model: MainViewModel by viewModels()
     private var requestedSession by mutableStateOf<String?>(null)
+    private var requestedConfirmation by mutableStateOf<String?>(null)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         requestedSession = intent.getStringExtra("SESSION_ID")
+        requestedConfirmation = intent.getStringExtra("DEVICE_CONFIRMATION")
         setContent {
-            ManagerTheme { ManagerApp(model, requestedSession) }
+            ManagerTheme { ManagerApp(model, requestedSession, requestedConfirmation) }
         }
     }
     override fun onResume() { super.onResume(); model.refresh() }
-    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); requestedSession = intent.getStringExtra("SESSION_ID") }
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent); setIntent(intent)
+        requestedSession = intent.getStringExtra("SESSION_ID")
+        requestedConfirmation = intent.getStringExtra("DEVICE_CONFIRMATION")
+    }
 }
 
 
