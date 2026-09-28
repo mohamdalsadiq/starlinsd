@@ -42,6 +42,25 @@ internal data class ProbeReport(val steps: List<ProbeStep>, val clients: List<St
 
 internal class StarlinkProbe(context: Context) {
     private val connectivity = context.applicationContext.getSystemService(ConnectivityManager::class.java)
+
+    /**
+     * One bounded local CLIENTS read on [network] for device tracking. Never scans the
+     * subnet and never touches the cloud. Returns null when there is no Wi-Fi network or
+     * the router did not return a readable client list: a failed read is never presented
+     * as an empty list (a failed CLIENTS query must not pause sessions).
+     */
+    suspend fun clients(network: Network?): List<StarlinkProtocol.Client>? {
+        val wifi = network ?: connectivity.allNetworks.firstOrNull { n ->
+            connectivity.getNetworkCapabilities(n)?.let {
+                it.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) && !it.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+            } == true
+        } ?: return null
+        return try {
+            val reply = call(wifi, "192.168.1.1", 9000, false, StarlinkProtocol.Query.CLIENTS)
+            if (reply.kind == "CLIENTS") reply.clients else null
+        } catch (e: CancellationException) { throw e }
+        catch (_: Exception) { null }
+    }
     suspend fun run(progress: (String) -> Unit): ProbeReport {
         val steps = mutableListOf<ProbeStep>()
         val wifi = connectivity.allNetworks.firstOrNull { network ->
