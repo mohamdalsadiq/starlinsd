@@ -11,7 +11,12 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import com.example.MainActivity
+import com.example.data.ClientTracker
+import com.example.data.DeviceTracker
+import com.example.data.IpListStore
 import com.example.data.SubscriptionRepository
+import com.example.data.TrackedDevice
+import com.example.db.AppDatabase
 import com.example.db.Session
 import com.example.domain.Revenue
 import com.example.domain.Rules
@@ -68,6 +73,8 @@ object SubscriptionAlarms {
         // time, so a later same-day refresh (e.g. a fresh session started after closing time)
         // never re-triggers it, and the next day's occurrence is a strictly larger timestamp.
         val closeMinute = dailyCloseMinute(app)
+        // Phase 3 defaults are seeded once, on the existing refresh path (spec 7/15/36).
+        try { DeviceAlertsCoordinator.seedDefaults(app) } catch (e: CancellationException) { throw e } catch (_: Exception) { }
         val closePrefs = app.getSharedPreferences(DAILY_CLOSE_PREFS, 0)
         todayClose(now, closeMinute)?.let { close ->
             if (now >= close && closePrefs.getLong("applied", 0L) < close) {
@@ -101,7 +108,11 @@ object SubscriptionAlarms {
         // Midnight refresh keeps day totals correct even when no timer is active.
         val midnight = if (StatusPanel.enabled(app) && StatusPanel.allowed(app)) StatusPanel.nextMidnight(now) else null
         val dailyClose = nextDailyClose(now, closeMinute)
-        val next = listOfNotNull(deadline, midnight, dailyClose).minOrNull()
+        // Phase 3 device alerts ride the same single alarm: evaluate now, then merge
+        // their next wakeup into the one-schedule-for-everything mechanism (spec 5/39).
+        val deviceWakeups = try { DeviceAlertsCoordinator.onRefresh(app, now,
+            DeviceTrackerBridge.lastSnapshot(app), DeviceTrackerBridge.activeBindings(app)) } catch (e: CancellationException) { throw e } catch (_: Exception) { emptyList() }
+        val next = (listOfNotNull(deadline, midnight, dailyClose) + deviceWakeups).minOrNull()
         val manager = app.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         manager.cancel(pending(app))
         if (next != null) {
@@ -126,6 +137,47 @@ object SubscriptionAlarms {
             .setContentText("#${s.reference.ifBlank { s.id.take(8) }} · " + if (ending) "راجع اتصال المشترك يدويًا؛ التطبيق لا يفصل الإنترنت." else "تبقّت 10 دقائق أو أقل على ${s.plan}.")
             .setContentIntent(open).setAutoCancel(true).setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH).build()
+    }
+}
+
+/**
+ * Lazy bridges to the Phase 2 tracker singletons so refresh() never constructs a
+ * heavy pipeline on the schedule path; the ViewModel keeps the real instances.
+ */
+object DeviceTrackerBridge {
+    @Volatile private var snapshot: List<com.example.data.TrackedDevice>? = null
+    @Volatile private var homeIps: Set<String> = emptySet()
+
+    fun updateSnapshot(tracked: List<com.example.data.TrackedDevice>?, homeIps: Set<String>) {
+        snapshot = tracked; this.homeIps = homeIps
+    }
+
+    fun lastSnapshot(app: Context): List<com.example.data.TrackedDevice>? = snapshot
+
+    /** clientId -> session id for sessions currently ACTIVE/PAUSED with a bound device. */
+    fun activeBindings(app: Context): Map<Long, String> = try {
+        kotlinx.coroutines.runBlocking {
+            AppDatabase.getDatabase(app).businessDao().sessions()
+                .filter { !it.home && it.state in listOf("ACTIVE", "PAUSED") && it.deviceClientId != null }
+                .associate { it.deviceClientId!! to it.id }
+        }
+    } catch (e: CancellationException) { throw e } catch (_: Exception) { emptyMap() }
+
+    fun currentHomeIps(app: Context): Set<String> = try {
+        kotlinx.coroutines.runBlocking { AppDatabase.getDatabase(app).businessDao().homeIps().map { it.ip }.toSet() }
+    } catch (e: CancellationException) { throw e } catch (_: Exception) { emptySet() }
+
+    /** One Phase 2 monitoring cycle, shared with MainViewModel's code path. */
+    suspend fun poll(app: Context): DeviceTracker.Plan? = withContext(Dispatchers.IO) {
+        val repo = SubscriptionRepository(app)
+        val lists = IpListStore(app)
+        val probe = com.example.network.StarlinkProbe(app)
+        val tracker = ClientTracker(app, repo, lists) { network -> probe.clients(network) }
+        val plan = tracker.poll()
+        updateSnapshot(tracker.lastSnapshot, currentHomeIps(app))
+        DeviceAlertsCoordinator.recordSnapshot(app, System.currentTimeMillis(),
+            tracker.lastSnapshot.orEmpty(), currentHomeIps(app))
+        plan
     }
 }
 
