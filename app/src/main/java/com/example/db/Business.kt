@@ -15,6 +15,11 @@ data class Session(
     val home: Boolean, val grace: Long, val recognized: Long = 0,
     val warned: Boolean = false, val notified: Boolean = false, val source: String = "manual",
     @ColumnInfo(defaultValue = "''") val reference: String = "",
+    /** Router client id (StarlinkProtocol.Client.id) — the only device↔session identity. Null = unbound. */
+    @ColumnInfo(defaultValue = "NULL") val deviceClientId: Long? = null,
+    @ColumnInfo(defaultValue = "''") val deviceIp: String = "",
+    @ColumnInfo(defaultValue = "''") val deviceName: String = "",
+    @ColumnInfo(defaultValue = "''") val deviceMac: String = "",
 ) { fun clock() = Clock(duration, served, resumed, state == "ACTIVE") }
 
 @Entity(tableName = "settings")
@@ -25,6 +30,14 @@ data class BusinessSettings(@PrimaryKey val id: Int = 1, val graceMinutes: Int =
 
 @Entity(tableName = "sequences")
 data class Sequence(@PrimaryKey val name: String = "subscriber", val next: Long = 1)
+
+/** Home-network devices (keyed by IP, per owner's request). Never tracked for pause/resume. */
+@Entity(tableName = "home_ips")
+data class HomeIp(@PrimaryKey val ip: String, val label: String = "", val added: Long = 0)
+
+/** Watch-list devices (keyed by IP). Stored and classified now; notification logic comes later. */
+@Entity(tableName = "watch_ips")
+data class WatchIp(@PrimaryKey val ip: String, val label: String = "", val added: Long = 0)
 
 @Entity(tableName = "manual_sales")
 data class ManualSale(@PrimaryKey val id: String, val at: Long, val count: Int, val unitPrice: Long,
@@ -91,4 +104,14 @@ interface BusinessDao {
     @Query("SELECT * FROM settings WHERE id = 1") fun observeSettings(): Flow<BusinessSettings?>
     @Query("SELECT * FROM settings WHERE id = 1") suspend fun settings(): BusinessSettings?
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun settings(settings: BusinessSettings)
+
+    @Query("SELECT * FROM home_ips ORDER BY added, ip") fun observeHomeIps(): Flow<List<HomeIp>>
+    @Query("SELECT * FROM home_ips") suspend fun homeIps(): List<HomeIp>
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun homeIp(entry: HomeIp)
+    @Query("DELETE FROM home_ips WHERE ip = :ip") suspend fun deleteHomeIp(ip: String)
+
+    @Query("SELECT * FROM watch_ips ORDER BY added, ip") fun observeWatchIps(): Flow<List<WatchIp>>
+    @Query("SELECT * FROM watch_ips") suspend fun watchIps(): List<WatchIp>
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun watchIp(entry: WatchIp)
+    @Query("DELETE FROM watch_ips WHERE ip = :ip") suspend fun deleteWatchIp(ip: String)
 }

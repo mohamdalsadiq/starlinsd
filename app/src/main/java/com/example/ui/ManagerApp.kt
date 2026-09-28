@@ -40,6 +40,9 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import com.example.MainViewModel
+import com.example.data.DeviceSelection
+import com.example.data.IpListStore
+import com.example.data.TrackedDevice
 import com.example.db.*
 import com.example.domain.*
 import com.example.notifications.SubscriptionAlarms
@@ -110,6 +113,7 @@ internal fun amount(minor: Long): String {
                     stateHolder.SaveableStateProvider(if (detail.isNotBlank()) detail else "tab-$tab") {
                         when {
                             detail == "اختبار Starlink" -> StarlinkTestScreen()
+                            detail == "إدارة الأجهزة" -> DevicesScreen(vm)
                             detail == "الإعدادات" -> {
                                 val config by vm.settings.collectAsStateWithLifecycle()
                                 val now by vm.clock.collectAsStateWithLifecycle()
@@ -153,9 +157,66 @@ internal fun amount(minor: Long): String {
     if (bulk) BulkSalesForm({ bulk = false }) { id, lines, payment -> vm.addSales(id, lines, payment); bulk = false }
     if (newSession) {
         val plans by vm.plans.collectAsStateWithLifecycle()
-        SessionForm(plans.filter { it.enabled && !it.home }, { newSession = false }) { client, plan, payment ->
-            vm.create(client, plan, payment); newSession = false; tab = 1; detail = ""
+        NewSessionFlow(vm, plans.filter { it.enabled && !it.home }, { newSession = false }) { client, plan, payment, device ->
+            vm.createWithDevice(client, plan, payment, device); newSession = false; tab = 1; detail = ""
         }
+    }
+}
+
+/**
+ * Device binding: reads live devices once (on demand), then applies the spec's three
+ * cases without ever picking automatically: one free candidate = a suggestion the user
+ * confirms; several = a picker list; none or a failed read = creation proceeds unbound.
+ */
+@Composable private fun NewSessionFlow(vm: MainViewModel, plans: List<Plan>, dismiss: () -> Unit, save: (String, Long, String, TrackedDevice?) -> Unit) {
+    var stage by rememberSaveable { mutableIntStateOf(0) } // 0 = plan form, 1 = binding step
+    var client by rememberSaveable { mutableStateOf("") }
+    var planId by rememberSaveable { mutableStateOf(plans.firstOrNull()?.id) }
+    var payment by rememberSaveable { mutableStateOf("CASH") }
+    var device by remember { mutableStateOf<TrackedDevice?>(null) }
+    var choices by remember { mutableStateOf<DeviceSelection.Result?>(null) }
+    LaunchedEffect(stage) {
+        if (stage == 1 && choices == null) choices = vm.bindingChoices()
+    }
+    if (stage == 0) SessionForm(plans, dismiss) { c, p, pay -> client = c; planId = p; payment = pay; stage = 1 }
+    else Form("ربط الجهاز", dismiss, {
+        val id = planId ?: return@Form
+        save(client, id, payment, device)
+    }, planId != null) {
+        val result = choices
+        when {
+            result == null -> Text("تعذّر قراءة الأجهزة من الراوتر الآن؛ سيُنشأ الاشتراك بدون ربط جهاز.")
+            result.unbound -> Text("لا يوجد جهاز مناسب غير مرتبط باشتراك نشط. سيُنشأ الاشتراك بدون ربط جهاز.")
+            result.suggestion != null -> {
+                val d = result.suggestion!!
+                Text("يوجد جهاز واحد مناسب غير مرتبط باشتراك نشط:")
+                DeviceRow(d)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { save(client, planId ?: return@Button, payment, d) }) { Text("ربط بهذا الجهاز") }
+                    TextButton(onClick = { save(client, planId ?: return@TextButton, payment, null) }) { Text("بدون ربط") }
+                }
+            }
+            else -> {
+                Text("توجد عدة أجهزة مناسبة. اختر جهاز المشترك، أو احفظ بدون ربط:")
+                result.options.forEach { d -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    RadioButton(selected = device == d, onClick = { device = d })
+                    DeviceRow(d)
+                } }
+            }
+        }
+    }
+}
+
+@Composable internal fun DeviceRow(d: TrackedDevice) {
+    Column(Modifier.padding(vertical = 4.dp)) {
+        Text(d.name, fontWeight = FontWeight.Bold)
+        Text("${d.ip} · ${d.mac} · معرّف ${d.clientId}", style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(when (d.category) {
+            com.example.data.IpLists.Category.HOME -> "أهل البيت · غير متتبع"
+            com.example.data.IpLists.Category.WATCH -> "قائمة المراقبة"
+            com.example.data.IpLists.Category.UNKNOWN -> "غير مصنف"
+        }, style = MaterialTheme.typography.bodySmall)
     }
 }
 
@@ -182,9 +243,89 @@ internal fun amount(minor: Long): String {
         Text(label, style = MaterialTheme.typography.labelMedium)
     }
 }
+/**
+ * Live router clients + home/watch list management. Classification by IP; a HOME device
+ * is never suggested for binding and never paused or resumed. The lists exist now;
+ * watch-list notifications are a later feature by design.
+ */
+@Composable private fun DevicesScreen(vm: MainViewModel) {
+    val context = LocalContext.current
+    val homeIps by vm.homeIps.collectAsStateWithLifecycle()
+    val watchIps by vm.watchIps.collectAsStateWithLifecycle()
+    val scan by vm.deviceScanState.collectAsStateWithLifecycle()
+    val busy by vm.busy.collectAsStateWithLifecycle()
+    LaunchedEffect(Unit) { vm.refreshDevices() }
+    var newHome by rememberSaveable { mutableStateOf(false) }
+    var newWatch by rememberSaveable { mutableStateOf(false) }
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { Title("إدارة الأجهزة", "قراءة محلية من راوتر Starlink · بدون حساب سحابي") }
+        item {
+            Panel {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("الأجهزة المتصلة الآن", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Text(scan?.let {
+                            when {
+                                it.failed -> "تعذّر الوصول للراوتر؛ لا تُوقف الاشتراكات عند فشل القراءة."
+                                it.devices.isEmpty() -> "لا توجد سجلات أجهزة بمعرّف حاليًا."
+                                else -> "حُدّث ${stamp(it.at)} · ${it.devices.size} جهاز"
+                            }
+                        } ?: "جاري التحديث…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    TextButton(enabled = !busy, onClick = { vm.refreshDevices() }) { Text("تحديث") }
+                }
+            }
+        }
+        items(scan?.devices.orEmpty(), key = { it.clientId }) { d ->
+            Panel {
+                DeviceRow(d)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(enabled = !busy, onClick = { vm.addHomeIp(d.ip, d.name) }) { Text("إضافة لأهل البيت (IP)") }
+                    TextButton(enabled = !busy, onClick = { vm.addWatchIp(d.ip, d.name) }) { Text("إضافة للمراقبة") }
+                }
+            }
+        }
+        item { Panel {
+            SectionHeading(Icons.Default.Home, "أهل البيت (بالعناوين IP)", "مستبعد تمامًا من التتبع والإيقاف التلقائي")
+            homeIps.forEach { entry ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("${entry.ip}${if (entry.label.isBlank()) "" else " · ${entry.label}"}", Modifier.weight(1f))
+                    TextButton(enabled = !busy, onClick = { vm.removeHomeIp(entry.ip) }) { Text("حذف") }
+                }
+            }
+            if (homeIps.isEmpty()) Text("لا توجد عناوين محفوظة بعد.", style = MaterialTheme.typography.bodySmall)
+            TextButton(onClick = { newHome = true }) { Text("إضافة عنوان يدويًا") }
+        } }
+        item { Panel {
+            SectionHeading(Icons.Default.Visibility, "قائمة المراقبة (بالعناوين IP)", "تُصنَّف الآن؛ إشعاراتها لاحقًا")
+            watchIps.forEach { entry ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("${entry.ip}${if (entry.label.isBlank()) "" else " · ${entry.label}"}", Modifier.weight(1f))
+                    TextButton(enabled = !busy, onClick = { vm.removeWatchIp(entry.ip) }) { Text("حذف") }
+                }
+            }
+            if (watchIps.isEmpty()) Text("لا توجد عناوين محفوظة بعد.", style = MaterialTheme.typography.bodySmall)
+            TextButton(onClick = { newWatch = true }) { Text("إضافة عنوان يدويًا") }
+        } }
+    }
+    if (newHome) IpEntryForm("إضافة لأهل البيت", { newHome = false }) { ip, label -> vm.addHomeIp(ip, label); newHome = false }
+    if (newWatch) IpEntryForm("إضافة للمراقبة", { newWatch = false }) { ip, label -> vm.addWatchIp(ip, label); newWatch = false }
+}
+
+@Composable private fun IpEntryForm(title: String, dismiss: () -> Unit, save: (String, String) -> Unit) {
+    var ip by rememberSaveable { mutableStateOf("") }
+    var label by rememberSaveable { mutableStateOf("") }
+    Form(title, dismiss, { save(ip.trim(), label) }, IpListStore.validate(ip)) {
+        Field("العنوان · مثل 192.168.1.55", ip, { ip = it })
+        Field("وصف · اختياري", label, { label = it })
+        Text("الأولوية لأهل البيت؛ الجهاز المصنف أهل بيت لا يُتبع أبدًا حتى لو كان في القائمتين.")
+    }
+}
+
 @Composable private fun MoreScreen(open: (String) -> Unit) {
     LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Title("المزيد", "أدوات مشروعك وإعدادات التطبيق") }
+        item { Card(onClick = { open("إدارة الأجهزة") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.Devices, "إدارة الأجهزة", "الأجهزة الحية وقوائم أهل البيت والمراقبة") } } }
         item { Card(onClick = { open("اختبار Starlink") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.Router, "اختبار Starlink", "قراءة الأجهزة وتجربة الإيقاف · محليًا") } } }
         item { Card(onClick = { open("الباقات والأسعار") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.LocalOffer, "الباقات والأسعار", "إدارة المدة والسعر وأهل البيت") } } }
         item { Card(onClick = { open("التقارير") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.BarChart, "التقارير", "الدخل والتغطية وسجل الأيام") } } }
@@ -234,6 +375,8 @@ internal fun amount(minor: Long): String {
             Text("${s.plan} · ${labels.firstOrNull { it.first == s.state }?.second.orEmpty()}")
             var expanded by rememberSaveable(s.id) { mutableStateOf(false) }
             if (expanded) Text("البداية: ${stamp(s.started)}")
+            if (expanded && s.deviceClientId != null) Text("الجهاز: ${s.deviceName.ifBlank { "بدون اسم" }} · ${s.deviceIp.ifBlank { "IP غير معروف" }} · معرّف ${s.deviceClientId}",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (s.state in listOf("ACTIVE", "PAUSED")) {
                 // Tick only this timer, without rebuilding the financial history every second.
                 val timerNow by produceState(now, s, now) {

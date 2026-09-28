@@ -5,6 +5,7 @@ import android.database.sqlite.SQLiteDatabase
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.example.db.AppDatabase
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
@@ -27,7 +28,7 @@ class MigrationTest {
             old.execSQL("INSERT INTO shortcuts VALUES (9, 'قديم', 'الساعة %time+2h%')")
             old.version = 1
         }
-        val db = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_1_2, AppDatabase.MIGRATION_2_3, AppDatabase.MIGRATION_3_4, AppDatabase.MIGRATION_4_5, AppDatabase.MIGRATION_5_6).build()
+        val db = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_1_2, AppDatabase.MIGRATION_2_3, AppDatabase.MIGRATION_3_4, AppDatabase.MIGRATION_4_5, AppDatabase.MIGRATION_5_6, AppDatabase.MIGRATION_6_7).build()
         try {
             val device = db.deviceDao().getByIp("192.168.1.2")!!
             assertEquals(7, device.id); assertEquals("جهاز البيت", device.name)
@@ -56,7 +57,7 @@ class MigrationTest {
             old.execSQL("INSERT INTO sessions VALUES ('original', 'محمد', '3 ساعات', 1700000000000, 1700000000000, 10800000, 0, 'ACTIVE', 125000, 100000, 'BANK', 2500, 0, 1800000, 1700001800000, 0, 0, 'mm')")
             old.version = 2
         }
-        val db = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_2_3, AppDatabase.MIGRATION_3_4, AppDatabase.MIGRATION_4_5, AppDatabase.MIGRATION_5_6).build()
+        val db = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_2_3, AppDatabase.MIGRATION_3_4, AppDatabase.MIGRATION_4_5, AppDatabase.MIGRATION_5_6, AppDatabase.MIGRATION_6_7).build()
         try {
             val row = db.businessDao().session("original")!!
             assertEquals("محمد", row.client); assertEquals(125000L, row.amount)
@@ -81,7 +82,7 @@ class MigrationTest {
             old.execSQL("INSERT INTO sessions VALUES ('original', 'محمد', '3 ساعات', 1700000000000, 1700000000000, 10800000, 120000, 'PAUSED', 125000, 100000, 'BANK', 2500, 0, 1800000, 0, 0, 0, 'mm', '7')")
             old.version = 5
         }
-        val db = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_5_6).build()
+        val db = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_5_6, AppDatabase.MIGRATION_6_7).build()
         try {
             val repo = SubscriptionRepository(context, db); repo.initialize()
             val row = repo.dao.session("original")!!
@@ -91,6 +92,45 @@ class MigrationTest {
             assertTrue(repo.dao.balanceUpdates().isEmpty())
             repo.updateBalance(100000, 125000, "افتتاحي")
             assertEquals(1, repo.dao.balanceUpdates().size)
+        } finally { db.close(); context.deleteDatabase(name) }
+    }
+
+    @Test fun versionSixUpgradeAddsDeviceTrackingWithoutLosingData() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val name = "migration-v6-${System.nanoTime()}"
+        val path = context.getDatabasePath(name); path.parentFile!!.mkdirs()
+        val schema = org.json.JSONObject(java.io.File("schemas/com.example.db.AppDatabase/6.json").readText()).getJSONObject("database").getJSONArray("entities")
+        SQLiteDatabase.openOrCreateDatabase(path, null).use { old ->
+            for (index in 0 until schema.length()) {
+                val entity = schema.getJSONObject(index)
+                old.execSQL(entity.getString("createSql").replace("\${TABLE_NAME}", entity.getString("tableName")))
+            }
+            old.execSQL("INSERT INTO sessions VALUES ('original', 'محمد', '3 ساعات', 1700000000000, 1700000000000, 10800000, 120000, 'PAUSED', 125000, 100000, 'BANK', 2500, 0, 1800000, 0, 0, 0, 'mm', '7')")
+            old.execSQL("INSERT INTO devices VALUES (7, '192.168.1.2', 'جهاز البيت', 123456, 1, 60000)")
+            old.version = 6
+        }
+        val db = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_6_7).build()
+        try {
+            // Existing rows survive with their values; new device columns start empty/null.
+            val row = db.businessDao().session("original")!!
+            assertEquals("PAUSED", row.state); assertEquals(120000L, row.served)
+            assertEquals(125000L, row.amount); assertEquals("7", row.reference)
+            assertNull(row.deviceClientId); assertEquals("", row.deviceIp)
+            assertEquals(1, db.deviceDao().getAll().first().size)
+            // New tables are usable through the same database.
+            db.businessDao().homeIp(com.example.db.HomeIp("192.168.1.5", "تلفاز", 100))
+            db.businessDao().watchIp(com.example.db.WatchIp("192.168.1.9", "", 101))
+            assertEquals(listOf("192.168.1.5"), db.businessDao().homeIps().map { it.ip })
+            // Binding works after the migration and persists.
+            val repo = SubscriptionRepository(context, db); repo.initialize()
+            repo.bindDevice("original", TrackedDevice(102, "هاتف", "192.168.1.50", "aa:bb:cc:dd:ee:ff", IpLists.Category.UNKNOWN))
+            assertEquals(102L, repo.dao.session("original")!!.deviceClientId)
+            // Backup roundtrip keeps both legacy and new data.
+            val backup = repo.exportJson()
+            assertTrue(backup.contains("home_ips") && backup.contains("192.168.1.2"))
+            repo.restoreJson(backup)
+            assertEquals(102L, repo.dao.session("original")!!.deviceClientId)
+            assertEquals(1, repo.dao.homeIps().size)
         } finally { db.close(); context.deleteDatabase(name) }
     }
 

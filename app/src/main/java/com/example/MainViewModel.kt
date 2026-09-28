@@ -6,6 +6,11 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.SubscriptionRepository
 import com.example.data.BackupData
+import com.example.data.ClientTracker
+import com.example.data.DeviceSelection
+import com.example.data.IpListStore
+import com.example.data.TrackedDevice
+import com.example.network.StarlinkProbe
 import com.example.db.*
 import com.example.domain.*
 import com.example.notifications.SubscriptionAlarms
@@ -51,6 +56,51 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         .stateIn(viewModelScope, sharing, null)
 
     val devices = db.deviceDao().getAll().stateIn(viewModelScope, sharing, emptyList())
+    val homeIps = repo.dao.observeHomeIps().stateIn(viewModelScope, sharing, emptyList())
+    val watchIps = repo.dao.observeWatchIps().stateIn(viewModelScope, sharing, emptyList())
+
+    // Device tracking: one local CLIENTS read per refresh, bounded and cloud-free.
+    private val lists = IpListStore(application)
+    private val probe = StarlinkProbe(application)
+    private val tracker = ClientTracker(application, repo, lists) { network -> probe.clients(network) }
+    data class DeviceScan(val devices: List<TrackedDevice>, val at: Long, val failed: Boolean)
+    private val deviceScan = MutableStateFlow<DeviceScan?>(null)
+
+    /**
+     * One monitoring cycle: refresh live devices, then apply pause/resume for bound
+     * sessions. Sharing one code path with the devices screen keeps UI and tracking
+     * decisions identical. A failed read shows as failure and pauses nothing.
+     */
+    fun refreshDevices() {
+        viewModelScope.launch {
+            if (!commands.tryLock()) return@launch
+            busy.value = true
+            try { withContext(Dispatchers.IO) {
+                tracker.poll()
+                // lastSnapshot is null only when the local read failed; an empty snapshot
+                // is a successful router answer and shows as "no devices".
+                deviceScan.value = DeviceScan(tracker.lastSnapshot.orEmpty(), System.currentTimeMillis(), failed = tracker.lastSnapshot == null)
+                SubscriptionAlarms.refresh(getApplication())
+            } }
+            catch (e: CancellationException) { throw e }
+            catch (e: Exception) { message.value = e.message ?: "تعذّر تحديث الأجهزة؛ حاول مرة أخرى" }
+            finally { clock.value = System.currentTimeMillis(); busy.value = false; commands.unlock() }
+        }
+    }
+    val deviceScanState = deviceScan.asStateFlow()
+
+    fun addHomeIp(ip: String, label: String = "") = work { lists.addHome(ip, label); message.value = "تمت إضافة الجهاز لأهل البيت" }
+    fun removeHomeIp(ip: String) = work { lists.removeHome(ip) }
+    fun addWatchIp(ip: String, label: String = "") = work { lists.addWatch(ip, label); message.value = "تمت إضافة الجهاز لقائمة المراقبة" }
+    fun removeWatchIp(ip: String) = work { lists.removeWatch(ip) }
+
+    /** Live candidates for the binding flow; null when discovery is currently unavailable. */
+    suspend fun bindingChoices(): DeviceSelection.Result? {
+        val snapshot = tracker.snapshotBlocking() ?: return null
+        val taken = repo.dao.sessions().filter { it.state in listOf("ACTIVE", "PAUSED") && it.deviceClientId != null }.mapNotNull { it.deviceClientId }.toSet()
+        return DeviceSelection.choose(snapshot, taken)
+    }
+
     val message = MutableStateFlow<String?>(null)
     val busy = MutableStateFlow(false)
     private val commands = Mutex()
@@ -77,6 +127,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun create(client: String, plan: Long, payment: String) = work {
         repo.insert(repo.prepare(client, plan, payment, "manual"))
         message.value = "تم تسجيل الاشتراك"
+    }
+
+    /**
+     * Creates the session, then attaches the user-confirmed device. Creation itself never
+     * fails because of binding: a failed attach (device vanished between choice and save,
+     * or expired reservation) still leaves the session alive with no binding.
+     */
+    fun createWithDevice(client: String, plan: Long, payment: String, device: TrackedDevice?) = work {
+        val session = repo.prepare(client, plan, payment, "manual")
+        repo.insert(session)
+        if (device != null) runCatching { repo.bindDevice(session.id, device) }
+            .onFailure { message.value = "تم تسجيل الاشتراك دون ربط الجهاز" }
+        message.value = if (device != null && message.value == null) "تم تسجيل الاشتراك وربط الجهاز" else message.value ?: "تم تسجيل الاشتراك"
     }
     fun addSales(id: String, lines: List<Pair<Int, Long>>, payment: String) = work {
         repo.addSales(id, lines, payment); message.value = "تمت إضافة الدخل إلى حساب اليوم"
