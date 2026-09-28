@@ -36,12 +36,13 @@ class StarlinkControlUiTest {
             override fun clear() { pending = null }
         }
         val link = object : RouterControlLink {
+            override val cloud = true
             override val localIps = setOf("192.168.1.20")
             override suspend fun exchange(payload: ByteArray): ByteArray = when (StarlinkProtocol.fields(payload).single().number) {
                 1004 -> field(3004, field(3, str(1, "router-fixture")))
                 3009 -> field(3009, field(1, numberField(43, 5)))
                 3002 -> field(3002, field(1, str(1, device.name) + str(2, device.mac) + str(3, device.ip) + numberField(43, device.id!!) + numberField(14, 1)))
-                3017 -> { writes++; field(2, numberField(1, 7)) }
+                3001 -> { writes++; field(2, numberField(1, 7)) }
                 else -> error("unexpected_request")
             }
         }

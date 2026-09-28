@@ -20,7 +20,10 @@ class RouterControlTest {
         override fun clear() { pending = null }
     }
     private inner class Link(private val journal: Journal) : RouterControlLink {
+        override val cloud = true
         override var localIps = setOf("192.168.1.20")
+        var managementId: Long? = null
+        var managementMac: String? = null
         var entry = numberField(1, device.id!!) + str(2, device.mac) + str(3, device.name) + str(6, "original-group") + field(90, byteArrayOf(9, 8, 7))
         var blocked = false
         var revision = 20L
@@ -36,24 +39,38 @@ class RouterControlTest {
         override suspend fun exchange(payload: ByteArray): ByteArray {
             if (failAfterWrite && writes > 0) error("lost_reply")
             val request = fields(payload).single()
-            if (request.number != 3017) reads++
+            if (request.number != 3001 && request.number != 3017) reads++
             return when (request.number) {
                 1004 -> field(3004, field(3, str(1, router)))
                 3009 -> field(3009, field(1, numberField(43, revision) + field(74, entry) + str(999, "NEVER_COPY_NETWORK_SECRET")))
                 3002 -> {
                     val c = str(1, device.name) + str(2, device.mac) + str(3, device.ip) + numberField(43, device.id!!) + numberField(14, 1) +
                         (if (includeBlocked) numberField(42, if (blocked) 1 else 0) else byteArrayOf())
-                    field(3002, if (online) field(1, c) + (if (duplicate) field(1, c) else byteArrayOf()) else byteArrayOf())
+                    val mgmt = if (managementId != null || managementMac != null) {
+                        val mid = managementId ?: 999L
+                        val mmac = managementMac ?: "aa:bb:cc:dd:ee:ff"
+                        field(1, str(1, "Management") + str(2, mmac) + str(3, "192.168.1.20") + numberField(43, mid) + numberField(14, 1))
+                    } else byteArrayOf()
+                    field(3002, if (online) field(1, c) + mgmt + (if (duplicate) field(1, c) else byteArrayOf()) else byteArrayOf())
                 }
                 3017 -> {
+                    // LAN write path — now forbidden; kept for the rejection test.
+                    writes++
+                    byteArrayOf()
+                }
+                3001 -> {
                     assertNotNull("recovery must be durable before the network write", journal.pending)
                     writes++
                     assertFalse(payload.toString(Charsets.UTF_8).contains("NEVER_COPY_NETWORK_SECRET"))
                     if (deny) return field(2, numberField(1, 7))
-                    val body = fields(request.bytes!!)
-                    assertEquals(listOf(2), body.map { it.number })
+                    val config = fields(fields(request.bytes!!).singleBytes(1)!!)
+                    assertEquals(1L, config.singleNumber(1089))
+                    assertTrue(config.all { it.number in setOf(74, 1089) })
                     if (acceptWrites) {
-                        entry = body.singleBytes(2)!!
+                        entry = config.filter { it.number == 74 }
+                            .map { it.bytes!! }
+                            .singleOrNull { fields(it).singleNumber(1) == device.id }
+                            ?: entry
                         blocked = RouterControlProtocol.hasMarker(entry, journal.pending!!.marker)
                         revision++
                     }
@@ -87,6 +104,58 @@ class RouterControlTest {
         rejected { control.prepare(device.copy(role = 3)) }
         rejected { control.prepare(device.copy(id = null)) }
         assertEquals(0, link.reads); assertEquals(0, link.writes)
+    }
+    @Test fun `target matching the controller phone IP is rejected before any read or write`() {
+        // Phase 4 (a): even with a valid id/MAC, a target whose IP is the controller's is aborted.
+        val journal = Journal(); val link = Link(journal); val control = RouterControl({ link }, journal, { 0 }, {})
+        rejected { control.prepare(device.copy(ip = "192.168.1.20")) }
+        assertEquals(0, link.reads); assertEquals(0, link.writes)
+    }
+    @Test fun `target with unverifiable identity is rejected fail-closed`() {
+        // Phase 4 (b): a fully masked/empty MAC cannot prove the device is NOT the
+        // management phone, so the mutation must abort before any network traffic.
+        val journal = Journal(); val link = Link(journal); val control = RouterControl({ link }, journal, { 0 }, {})
+        rejected { control.prepare(device.copy(mac = "XX:XX:XX:XX:XX:XX")) }
+        rejected { control.prepare(device.copy(mac = "")) }
+        rejected { control.prepare(device.copy(mac = "00:00:00:00:00:00")) }
+        assertEquals(0, link.reads); assertEquals(0, link.writes)
+    }
+    @Test fun `target with real OUI and non-local IP is allowed`() = runBlocking {
+        // Phase 4 (c): a device with a real OUI (partially masked suffix is normal on
+        // Starlink) and a non-local IP passes the strengthened protection.
+        val journal = Journal(); val link = Link(journal); val control = RouterControl({ link }, journal, { 0 }, {})
+        val preview = control.prepare(device)
+        assertEquals(0, link.writes)
+        assertTrue(control.apply(preview).verified)
+    }
+    @Test fun `target matching the controller phone clientId is rejected even with different IP`() = runBlocking {
+        // Phase 4 (b): the management phone (192.168.1.20) is in the client list with
+        // clientId 555. A target at a different IP but same clientId must be rejected.
+        val journal = Journal(); val link = Link(journal); link.managementId = 555L
+        val control = RouterControl({ link }, journal, { 0 }, {})
+        val targetWithSameId = device.copy(id = 555L, ip = "192.168.1.50")
+        rejected { control.prepare(targetWithSameId) }
+    }
+    @Test fun `target matching the controller phone MAC is rejected even with different IP and clientId`() = runBlocking {
+        // Phase 4 (c): the management phone has full MAC ab:cd:ef:11:22:33. A target at
+        // a different IP and clientId but same full MAC must be rejected.
+        val journal = Journal(); val link = Link(journal); link.managementMac = "ab:cd:ef:11:22:33"
+        val control = RouterControl({ link }, journal, { 0 }, {})
+        val targetWithSameMac = device.copy(id = 777L, ip = "192.168.1.60", mac = "ab:cd:ef:11:22:33")
+        rejected { control.prepare(targetWithSameMac) }
+    }
+    @Test fun `LAN write is forbidden and prepare rejects before any network traffic`() {
+        // Phase 11: LAN mode links must not be able to prepare or apply any mutation.
+        val journal = Journal()
+        var exchangeCalled = false
+        val lanLink = object : RouterControlLink {
+            override val cloud = false
+            override val localIps = setOf("192.168.1.20")
+            override suspend fun exchange(payload: ByteArray): ByteArray = run { exchangeCalled = true; error("no_lan_exchange") }
+        }
+        val control = RouterControl({ lanLink }, journal, { 0 }, {})
+        rejected { control.prepare(device) }
+        assertFalse("LAN link exchange must never be called", exchangeCalled)
     }
     @Test fun `duplicate client ids prevent confirmation`() {
         val journal = Journal(); val link = Link(journal); link.duplicate = true

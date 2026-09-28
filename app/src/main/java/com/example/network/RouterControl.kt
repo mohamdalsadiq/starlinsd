@@ -92,9 +92,13 @@ internal class RouterControl(
         if (saved?.cloud ?: cloud) AuthenticatedRouterLink(AndroidRouterLink(context), StarlinkCloud(CloudSessionVault(context)))
         else AndroidRouterLink(context)
     }, FilePauseJournal(context.applicationContext))
-    companion object { private val operation = Mutex() }
+    companion object {
+        private val operation = Mutex()
+        private val MAC_OCTET = Regex("[0-9a-fA-F]{2}")
+        private val MASKED_OCTETS = setOf("xx", "XX", "00")
+    }
     fun pending(): PendingPause? = journal.read()
-    private data class State(val router: String, val config: RouterControlProtocol.Config, val clients: List<StarlinkProtocol.Client>)
+    private data class State(val router: String, val config: RouterControlProtocol.Config, val clients: List<StarlinkProtocol.Client>, val managementDevice: StarlinkProtocol.Client?)
     private suspend fun read(link: RouterControlLink): State {
         val status = StarlinkProtocol.decode(link.exchange(StarlinkProtocol.request(StarlinkProtocol.Query.STATUS)))
         check(status.kind == "ROUTER") { "not_router" }
@@ -103,7 +107,8 @@ internal class RouterControl(
         check(router.isNotBlank()) { "unknown_router_identity" }
         val clients = StarlinkProtocol.decode(link.exchange(StarlinkProtocol.request(StarlinkProtocol.Query.CLIENTS)))
         check(clients.kind == "CLIENTS" && clients.clients != null) { "missing_clients" }
-        return State(router, config, clients.clients)
+        val managementDevice = clients.clients.firstOrNull { it.ip in link.localIps && it.id != null }
+        return State(router, config, clients.clients, managementDevice)
     }
     private fun target(state: State, expected: StarlinkProtocol.Client, required: Boolean): StarlinkProtocol.Client {
         check(expected.id != null) { "missing_client_id" }
@@ -117,20 +122,39 @@ internal class RouterControl(
         }
         return current ?: expected
     }
-    private fun checkTarget(device: StarlinkProtocol.Client, link: RouterControlLink) {
+    // True when the MAC cannot prove the device is NOT the management phone (fail-closed).
+    private fun unverifiableMac(mac: String): Boolean {
+        val octets = mac.split(':')
+        if (octets.size != 6) return true
+        if (octets.any { it.isEmpty() }) return true
+        return octets.all { it in MASKED_OCTETS || !MAC_OCTET.matches(it) }
+    }
+    private fun checkTarget(device: StarlinkProtocol.Client, link: RouterControlLink, managementDevice: StarlinkProtocol.Client? = null) {
         check(device.id != null && device.id in 1..0xffffffffL) { "missing_client_id" }
         check(device.role == null || device.role == 0L || device.role == 1L) { "infrastructure_device" }
         check(device.ip.matches(Regex("192\\.168\\.1\\.[0-9]{1,3}")) &&
             device.ip.substringAfterLast('.').toInt() in 2..254) { "invalid_client_ip" }
+        // Layer 1: IP check — reject any target whose IP matches the management phone.
         check(device.ip !in link.localIps) { "management_phone" }
+        // Layer 2: clientId check — reject if the target's clientId matches the management device.
+        if (managementDevice?.id != null && device.id == managementDevice.id) error("management_phone")
+        // Layer 3: MAC check — reject if both have full MACs and they match.
+        if (managementDevice != null && RouterControlProtocol.fullMac(managementDevice.mac) &&
+            RouterControlProtocol.fullMac(device.mac) &&
+            managementDevice.mac.equals(device.mac, true)) error("management_phone")
+        // Layer 3b: fail-closed — if the router cannot show a real MAC for this device,
+        // we cannot prove it is not the management phone (whose IP may have changed via
+        // DHCP), so the mutation must abort before anything is sent.
+        check(!unverifiableMac(device.mac)) { "management_phone_unverifiable" }
     }
     suspend fun prepare(device: StarlinkProtocol.Client): PausePreview = operation.withLock {
         check(journal.read() == null) { "pending_test_exists" }
         val link = openLink()
+        check(link.cloud) { "lan_write_forbidden" }
         checkTarget(device, link)
         val state = read(link)
         val current = target(state, device, true)
-        checkTarget(current, link)
+        checkTarget(current, link, state.managementDevice)
         check(current.ip == device.ip) { "client_identity_changed" }
         val entry = RouterControlProtocol.entry(state.config, current)
         check(current.blocked != true && !RouterControlProtocol.hasSchedules(entry)) { "existing_block_schedule" }
@@ -151,6 +175,7 @@ internal class RouterControl(
     }
     suspend fun apply(preview: PausePreview): PauseResult = operation.withLock {
         check(!preview.used && clock() - preview.createdAt in 0..60000) { "expired_confirmation" }
+        check(preview.link.cloud) { "lan_write_forbidden" }
         preview.used = true
         val p = preview.pending
         var sent = false
@@ -236,6 +261,8 @@ internal fun controlError(e: Exception): String = when (errorCode(e)) {
     "cloud_session_storage" -> "تعذر فتح جلسة Starlink المحفوظة. افصل الربط ثم سجّل الدخول من جديد."
     "gRPC=12", "Starlink=12" -> "الراوتر لا يدعم هذا الطلب."
     "management_phone" -> "لا يمكن إيقاف الإنترنت عن هاتف الإدارة."
+    "management_phone_unverifiable" -> "تعذر إثبات أن هذا الجهاز ليس هاتف الإدارة (عنوان MAC غير مؤكد)؛ لن نرسل أمرًا."
+    "lan_write_forbidden" -> "الكتابة عبر الشبكة المحلية ممنوعة. استخدم التحكم عبر الحساب."
     "infrastructure_device", "invalid_client_ip" -> "هذا الجهاز غير مناسب للاختبار؛ اختر هاتفًا آخر متصلًا مباشرة."
     "missing_client_id", "ambiguous_client_id", "client_identity_conflict" -> "هوية الجهاز غير كافية أو متعارضة؛ لن نرسل أمرًا لجهاز غير مؤكد."
     "client_identity_changed", "client_not_present", "config_changed", "expired_confirmation" -> "تغيرت البيانات أو انتهت صلاحية التأكيد؛ حدّث القراءة وافحص الجهاز مجددًا."

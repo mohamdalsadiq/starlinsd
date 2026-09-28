@@ -69,6 +69,8 @@ internal object RouterControlProtocol {
         val schedule = field(1, range) + field(2, marker.toByteArray())
         return base + field(5, schedule)
     }
+    // LAN write path (field 3017). Forbidden since Phase 11 — LAN writes return PERMISSION_DENIED
+    // and cloud authenticated writes are the only supported mutation route. Kept for documentation only.
     fun setClientRequest(entry: ByteArray): ByteArray {
         require(entry.size <= 16384)
         return field(3017, field(2, entry))

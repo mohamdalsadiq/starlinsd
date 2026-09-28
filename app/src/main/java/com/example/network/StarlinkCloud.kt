@@ -12,6 +12,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.File
 import java.io.IOException
+import java.net.InetAddress
 import java.net.URI
 import java.security.KeyStore
 import java.util.concurrent.TimeUnit
@@ -109,40 +110,73 @@ internal fun interface CloudHttp {
 internal class AccountHttp : CloudHttp {
     override suspend fun request(url: String, cookie: String, body: ByteArray?): CloudHttpReply {
         require(url == CloudPolicy.AUTH || url == CloudPolicy.HANDLE) { "cloud_endpoint_not_allowed" }
-        val client = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
-            .retryOnConnectionFailure(false).connectTimeout(10, TimeUnit.SECONDS).readTimeout(15, TimeUnit.SECONDS)
-            .callTimeout(20, TimeUnit.SECONDS).build()
         val request = Request.Builder().url(url).header("Cookie", CloudPolicy.cookies(cookie))
-            .header("Accept-Encoding", "identity").apply {
+            .header("Accept-Encoding", "identity")
+            .header("Origin", "https://www.starlink.com")
+            .header("Referer", "https://www.starlink.com/")
+            .header("User-Agent", "Mozilla/5.0 (Linux; Android) AppleWebKit/537.36 Chrome/140 Mobile Safari/537.36").apply {
                 if (body == null) header("Accept", "application/json")
-                else header("x-grpc-web", "1").post(StarlinkProtocol.frame(body).toRequestBody("application/grpc-web+proto".toMediaType()))
+                else header("Accept", "application/grpc-web+proto")
+                    .header("x-grpc-web", "1")
+                    .header("Connect-Protocol-Version", "1")
+                    .post(StarlinkProtocol.frame(body).toRequestBody("application/grpc-web+proto".toMediaType()))
             }.build()
-        try {
-            return suspendCancellableCoroutine { continuation ->
-                val call = client.newCall(request)
-                continuation.invokeOnCancellation { call.cancel() }
-                call.enqueue(object : Callback {
-                    override fun onFailure(call: Call, e: IOException) {
-                        if (continuation.isActive) continuation.resumeWithException(IOException("cloud_network_failed"))
-                    }
-                    override fun onResponse(call: Call, response: Response) {
-                        try {
-                            val result = response.use {
-                                val source = it.body?.source() ?: error("cloud_missing_body")
-                                require(!source.request((StarlinkProtocol.MAX_BYTES + 1).toLong())) { "response_too_large" }
-                                CloudHttpReply(it.code, source.readByteArray(), it.header("Content-Type").orEmpty(),
-                                    it.headers("Set-Cookie"), it.header("grpc-status"))
-                            }
-                            if (continuation.isActive) continuation.resume(result)
-                        } catch (_: Exception) {
-                            if (continuation.isActive) continuation.resumeWithException(IOException("cloud_response_invalid"))
-                        }
-                    }
-                })
+
+        val host = request.url.host
+        val addresses = runCatching { InetAddress.getAllByName(host).toList() }
+            .getOrElse { throw IOException("cloud_dns_failed:${it.javaClass.simpleName}") }
+        require(addresses.isNotEmpty()) { "cloud_dns_empty" }
+
+        var lastFailure: IOException? = null
+        for (address in addresses.distinctBy { it.hostAddress }) {
+            // Explicit Dns implementation: Kotlin 2.2 fails to SAM-convert a lambda here.
+            val pinnedDns = object : Dns {
+                override fun lookup(hostname: String): List<InetAddress> =
+                    if (hostname == host) listOf(address) else Dns.SYSTEM.lookup(hostname)
             }
-        } finally {
-            client.dispatcher.cancelAll(); client.connectionPool.evictAll(); client.dispatcher.executorService.shutdown()
+            val client = OkHttpClient.Builder()
+                .dns(pinnedDns)
+                .followRedirects(false).followSslRedirects(false)
+                .retryOnConnectionFailure(false)
+                .connectTimeout(6, TimeUnit.SECONDS).readTimeout(6, TimeUnit.SECONDS)
+                .callTimeout(8, TimeUnit.SECONDS).build()
+            try {
+                return suspendCancellableCoroutine { continuation ->
+                    val call = client.newCall(request)
+                    continuation.invokeOnCancellation { call.cancel() }
+                    call.enqueue(object : Callback {
+                        override fun onFailure(call: Call, e: IOException) {
+                            if (continuation.isActive) continuation.resumeWithException(e)
+                        }
+                        override fun onResponse(call: Call, response: Response) {
+                            // Any HTTP status is a valid reply. Status handling (cloud_http_<code>)
+                            // belongs to the caller, not to the transport layer.
+                            try {
+                                val result = response.use {
+                                    val bodyBytes = it.body?.bytes() ?: byteArrayOf()
+                                    require(bodyBytes.size <= StarlinkProtocol.MAX_BYTES) { "response_too_large" }
+                                    CloudHttpReply(it.code, bodyBytes, it.header("Content-Type").orEmpty(),
+                                        it.headers("Set-Cookie"), it.header("grpc-status"))
+                                }
+                                if (continuation.isActive) continuation.resume(result)
+                            } catch (_: Exception) {
+                                if (continuation.isActive) continuation.resumeWithException(IOException("cloud_response_invalid"))
+                            }
+                        }
+                    })
+                }
+            } catch (e: IOException) {
+                // Response-shape failures are contract errors, not network errors:
+                // never retry them on another address and never rewrap them.
+                if (e.message == "cloud_response_invalid") throw e
+                lastFailure = e
+            } finally {
+                client.dispatcher.cancelAll()
+                client.connectionPool.evictAll()
+                client.dispatcher.executorService.shutdown()
+            }
         }
+        throw IOException("cloud_network_failed:${lastFailure?.javaClass?.simpleName ?: "Unknown"}")
     }
 }
 
