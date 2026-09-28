@@ -13,6 +13,8 @@ import com.example.data.TrackedDevice
 import com.example.network.StarlinkProbe
 import com.example.db.*
 import com.example.domain.*
+import com.example.notifications.DeviceAlertsCoordinator
+import com.example.notifications.DeviceTrackerBridge
 import com.example.notifications.SubscriptionAlarms
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -70,6 +72,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * One monitoring cycle: refresh live devices, then apply pause/resume for bound
      * sessions. Sharing one code path with the devices screen keeps UI and tracking
      * decisions identical. A failed read shows as failure and pauses nothing.
+     * On success, the snapshot also feeds the Phase 3 daily device history.
      */
     fun refreshDevices() {
         viewModelScope.launch {
@@ -80,6 +83,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // lastSnapshot is null only when the local read failed; an empty snapshot
                 // is a successful router answer and shows as "no devices".
                 deviceScan.value = DeviceScan(tracker.lastSnapshot.orEmpty(), System.currentTimeMillis(), failed = tracker.lastSnapshot == null)
+                // Discovery-failure protection (spec 32): history only advances on success.
+                if (tracker.lastSnapshot != null) {
+                    DeviceAlertsCoordinator.recordSnapshot(
+                        getApplication(), System.currentTimeMillis(), tracker.lastSnapshot.orEmpty(), lists.snapshot().home)
+                    DeviceTrackerBridge.updateSnapshot(tracker.lastSnapshot, lists.snapshot().home)
+                }
                 SubscriptionAlarms.refresh(getApplication())
             } }
             catch (e: CancellationException) { throw e }
@@ -165,6 +174,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         SubscriptionAlarms.setDailyCloseMinute(getApplication(), minute)
         message.value = if (minute < 0) "أُلغي إغلاق الشبكة اليومي"
             else "سيُنهي التطبيق كل الاشتراكات النشطة تلقائيًا الساعة ${String.format("%02d:%02d", minute / 60, minute % 60)}"
+    }
+    /** Unknown-device alert delay (1/3/5 minutes); work{} re-schedules via refresh(). */
+    fun setDeviceAlertDelay(minutes: Int) = work {
+        DeviceAlertsCoordinator.setDelayMinutes(getApplication(), minutes)
+        message.value = "سيتم تنبيهك بعد $minutes دقيقة من ظهور جهاز غير مرتبط"
+    }
+    /** Daily device confirmation time; work{} re-schedules via refresh() (spec 44). */
+    fun setDeviceSummaryTime(minute: Int) = work {
+        DeviceAlertsCoordinator.setSummaryMinute(getApplication(), minute)
+        message.value = "سيصلك ملخص تأكيد الأجهزة يوميًا الساعة ${String.format("%02d:%02d", minute / 60, minute % 60)}"
     }
     fun dismissRestore() { pendingRestore.value = null; restoreText = null }
     fun previewRestore(uri: Uri) = work {

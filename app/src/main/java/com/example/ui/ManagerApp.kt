@@ -40,11 +40,13 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import com.example.MainViewModel
+import com.example.data.DeviceAlerts
 import com.example.data.DeviceSelection
 import com.example.data.IpListStore
 import com.example.data.TrackedDevice
 import com.example.db.*
 import com.example.domain.*
+import com.example.notifications.DeviceAlertsCoordinator
 import com.example.notifications.SubscriptionAlarms
 import com.example.service.ExpanderHealth
 import com.example.service.TextExpanderService
@@ -80,7 +82,7 @@ internal fun amount(minor: Long): String {
     }, confirmButton = { Button(onClick = save, enabled = valid) { Text("حفظ") } }, dismissButton = { TextButton(onClick = dismiss) { Text("إلغاء") } })
 }
 
-@Composable fun ManagerApp(vm: MainViewModel, requestedSession: String?) {
+@Composable fun ManagerApp(vm: MainViewModel, requestedSession: String?, requestedConfirmation: String? = null) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var detail by rememberSaveable { mutableStateOf("") }
     var newSession by rememberSaveable { mutableStateOf(false) }
@@ -94,6 +96,8 @@ internal fun amount(minor: Long): String {
         while (true) { vm.refresh(); delay(15000) }
     } }
     LaunchedEffect(requestedSession) { if (requestedSession != null) { tab = 1; detail = "" } }
+    // Phase 3 confirmation tap-in (spec 21): opens the temporary confirmation detail.
+    LaunchedEffect(requestedConfirmation) { if (requestedConfirmation != null) { tab = 4; detail = "تأكيد الأجهزة اليومية" } }
     LaunchedEffect(message) { message?.let { host.showSnackbar(it); vm.message.value = null } }
     BackHandler(detail.isNotBlank() || tab != 0) { if (detail.isNotBlank()) detail = "" else tab = 0 }
     val labels = listOf("الرئيسية", "المشتركون", "الديون", "الاختصارات", "المزيد")
@@ -114,6 +118,7 @@ internal fun amount(minor: Long): String {
                         when {
                             detail == "اختبار Starlink" -> StarlinkTestScreen()
                             detail == "إدارة الأجهزة" -> DevicesScreen(vm)
+                            detail == "تأكيد الأجهزة اليومية" -> DeviceConfirmationScreen(vm)
                             detail == "الإعدادات" -> {
                                 val config by vm.settings.collectAsStateWithLifecycle()
                                 val now by vm.clock.collectAsStateWithLifecycle()
@@ -326,6 +331,7 @@ internal fun amount(minor: Long): String {
     LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Title("المزيد", "أدوات مشروعك وإعدادات التطبيق") }
         item { Card(onClick = { open("إدارة الأجهزة") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.Devices, "إدارة الأجهزة", "الأجهزة الحية وقوائم أهل البيت والمراقبة") } } }
+        item { Card(onClick = { open("تأكيد الأجهزة اليومية") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.FactCheck, "تأكيد الأجهزة اليومية", "أجهزة اليوم المرتبطة وغير المرتبطة") } } }
         item { Card(onClick = { open("اختبار Starlink") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.Router, "اختبار Starlink", "قراءة الأجهزة وتجربة الإيقاف · محليًا") } } }
         item { Card(onClick = { open("الباقات والأسعار") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.LocalOffer, "الباقات والأسعار", "إدارة المدة والسعر وأهل البيت") } } }
         item { Card(onClick = { open("التقارير") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.BarChart, "التقارير", "الدخل والتغطية وسجل الأيام") } } }
@@ -446,9 +452,43 @@ internal fun amount(minor: Long): String {
             Field("السعر بالجنيه السوداني", cash, { cash = it }, numeric = true)
         }
     }
+}/**
+ * Phase 3 placeholder for the Phase 4 confirmation screen (spec 21): shows today's
+ * history split into subscribed/unconfirmed devices. Deliberately replaceable.
+ */
+@Composable
+private fun DeviceConfirmationScreen(vm: MainViewModel) {
+    val context = LocalContext.current
+    val now by vm.clock.collectAsStateWithLifecycle()
+    var devices by remember { mutableStateOf<List<DeviceAlerts.DayDevice>>(emptyList()) }
+    var bindings by remember { mutableStateOf<Map<Long, String>>(emptyMap()) }
+    LaunchedEffect(now) {
+        kotlinx.coroutines.withContext(Dispatchers.IO) {
+            devices = DeviceAlertsCoordinator.historyFor(context, now)
+            bindings = DeviceAlertsCoordinator.activeBindingsFor(context)
+        }
+    }
+    val summary = remember(devices, bindings) { DeviceAlerts.summary(devices, bindings) }
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { Panel {
+            SectionHeading(Icons.Default.FactCheck, "\u062a\u0623\u0643\u064a\u062f \u0627\u0644\u0623\u062c\u0647\u0632\u0629 \u0627\u0644\u064a\u0648\u0645\u064a\u0629", "\u0623\u062c\u0647\u0632\u0629 \u0627\u0644\u064a\u0648\u0645 \u062e\u0627\u0631\u062c \u0623\u0647\u0644 \u0627\u0644\u0628\u064a\u062a")
+            Text("\u0634\u0627\u0634\u0629 \u0623\u0648\u0644\u064a\u0629 \u0644\u0644\u0645\u0631\u0627\u062c\u0639\u0629\u061b \u0633\u064a\u062a\u0645 \u0628\u0646\u0627\u0621 \u0627\u0644\u062a\u0623\u0643\u064a\u062f \u0627\u0644\u0643\u0627\u0645\u0644 \u0644\u0627\u062d\u0642\u064b\u0627.", style = MaterialTheme.typography.bodySmall)
+        } }
+        item { Panel {
+            SectionHeading(Icons.Default.CheckCircle, "\u0623\u062c\u0647\u0632\u0629 \u0645\u0631\u062a\u0628\u0637\u0629 \u0628\u0627\u0634\u062a\u0631\u0627\u0643 \u0645\u0633\u062c\u0644")
+            if (summary.subscribed.isEmpty()) Text("\u0644\u0627 \u064a\u0648\u062c\u062f")
+            summary.subscribed.forEach { Text("\u00b7 ${it.name.ifBlank { "\u062c\u0647\u0627\u0632 ${it.clientId}" }} (${it.ip})") }
+        } }
+        item { Panel {
+            SectionHeading(Icons.Default.HelpOutline, "\u0623\u062c\u0647\u0632\u0629 \u0628\u062f\u0648\u0646 \u0627\u0634\u062a\u0631\u0627\u0643 \u0645\u0633\u062c\u0644", "\u062a\u062d\u062a\u0627\u062c \u0645\u0631\u0627\u062c\u0639\u0629 \u064a\u062f\u0648\u064a\u0629")
+            if (summary.unconfirmed.isEmpty()) Text("\u0644\u0627 \u064a\u0648\u062c\u062f")
+            summary.unconfirmed.forEach { Text("\u00b7 ${it.name.ifBlank { "\u062c\u0647\u0627\u0632 ${it.clientId}" }} (${it.ip})") }
+        } }
+    }
 }
 
-@Composable private fun SettingsScreen(vm: MainViewModel, config: BusinessSettings?, now: Long) {
+@Composable
+private fun SettingsScreen(vm: MainViewModel, config: BusinessSettings?, now: Long) {
     val context = LocalContext.current
     val bound by ExpanderHealth.connected.collectAsStateWithLifecycle()
     val selectedApps = remember(now) { ExpanderHealth.allowed(context) }
@@ -542,6 +582,25 @@ internal fun amount(minor: Long): String {
             Button(enabled = !busy && validClose, onClick = { vm.setDailyClose(if (closeTime.isBlank()) -1 else parsedMinute!!) }) { Text("حفظ وقت الإغلاق") }
             if (!validClose) Text("اكتب الوقت بصيغة HH:mm، مثل 18:00", color = MaterialTheme.colorScheme.error)
             Text("عند هذا الوقت تُنهى كل الاشتراكات النشطة والمتوقفة مؤقتًا فورًا، ويُحتسب إيرادها كاملًا حتى لو لم تكتمل مهلة التثبيت (${Rules.RECOGNITION_MINUTES} دقائق). أرقام اليوم لا تتاح لغيرها حتى بعد الإغلاق.", style = MaterialTheme.typography.bodySmall)
+        } }
+        item { Panel {
+            SectionHeading(Icons.Default.DevicesOther, "تنبيهات الأجهزة", "تنبيه عند ظهور جهاز غير مرتبط، وملخص يومي")
+            val delay = remember(now) { DeviceAlertsCoordinator.knownDelayMinutes(context) }
+            val summaryMin = remember(now) { DeviceAlertsCoordinator.knownSummaryMinute(context) }
+            Text("تنبيه جهاز غير معروف: بعد $delay دقيقة من ظهوره")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(1, 3, 5).forEach { option ->
+                    Choice("$option دقائق", delay == option) { if (delay != option) vm.setDeviceAlertDelay(option) }
+                }
+            }
+            Text("ملخص تأكيد الأجهزة اليومي: ${String.format(Locale.ROOT, "%02d:%02d", summaryMin / 60, summaryMin % 60)}")
+            var summaryTime by rememberSaveable(summaryMin) { mutableStateOf(String.format(Locale.ROOT, "%02d:%02d", summaryMin / 60, summaryMin % 60)) }
+            Field("وقت الملخص اليومي · HH:mm", summaryTime, { summaryTime = it })
+            val parsedSummary = Regex("^([01]?[0-9]|2[0-3]):([0-5][0-9])$").matchEntire(Money.normalize(summaryTime))
+                ?.let { m -> m.groupValues[1].toInt() * 60 + m.groupValues[2].toInt() }
+            Button(enabled = !busy && parsedSummary != null, onClick = { vm.setDeviceSummaryTime(parsedSummary!!) }) { Text("حفظ وقت الملخص") }
+            if (parsedSummary == null) Text("اكتب الوقت بصيغة HH:mm، مثل 22:00", color = MaterialTheme.colorScheme.error)
+            Text("التنبيهات محلية داخل الهاتف: لا يُرسل أي بيانات جهاز إلى أي خدمة خارجية.", style = MaterialTheme.typography.bodySmall)
         } }
         item { Panel {
             SectionHeading(Icons.Default.CloudDone, "النسخ الاحتياطي والاستعادة")
