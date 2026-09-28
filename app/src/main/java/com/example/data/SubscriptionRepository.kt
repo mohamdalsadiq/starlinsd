@@ -13,6 +13,7 @@ import java.util.UUID
 class SubscriptionRepository(private val context: Context, private val db: AppDatabase = AppDatabase.getDatabase(context),
     private val time: () -> Long = { System.currentTimeMillis() }) {
     val dao = db.businessDao()
+    val devices = db.deviceIdentityDao()
 
     suspend fun initialize() = db.withTransaction {
         if (dao.settings() == null) dao.settings(BusinessSettings())
@@ -131,6 +132,25 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
         dao.session(id)?.let { dao.updateSession(it.copy(client = name.trim())) }
     }
 
+    /** Links an ACTIVE/PAUSED session to a known router client by its router id (never the MAC). */
+    suspend fun linkDevice(id: String, clientId: String) = db.withTransaction {
+        val session = dao.session(id) ?: return@withTransaction
+        require(session.state in listOf("ACTIVE", "PAUSED")) { "الربط متاح للاشتراك النشط أو المتوقف فقط" }
+        require(devices.byClient(clientId) != null) { "اختر جهازًا من القائمة" }
+        require(dao.linkedSessions().none { it.id != id && it.deviceClientId == clientId }) { "هذا الجهاز مرتبط باشتراك آخر" }
+        dao.updateSession(session.copy(deviceClientId = clientId, linkedAt = time()))
+    }
+
+    suspend fun unlinkDevice(id: String) = db.withTransaction { dao.clearDeviceLink(id) }
+
+    /** Device lists are administrative; classification compares against the IP each client was last seen on. */
+    suspend fun setDeviceList(clientId: String, list: String) = db.withTransaction {
+        require(list in listOf(DeviceIdentity.LIST_NONE, DeviceIdentity.LIST_FAMILY, DeviceIdentity.LIST_WATCH)) { "قائمة غير معروفة" }
+        devices.setList(clientId, list)
+    }
+
+    suspend fun deleteDevice(clientId: String) = db.withTransaction { devices.delete(clientId) }
+
     suspend fun markNotified(id: String, ending: Boolean) = db.withTransaction {
         dao.session(id)?.let { dao.updateSession(if (ending) it.copy(notified = true) else it.copy(warned = true)) }
     }
@@ -234,7 +254,7 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
 
     suspend fun exportJson(): String = withContext(Dispatchers.IO) {
         db.withTransaction {
-            val root = org.json.JSONObject().put("version", 6).put("format", "slotra-backup").put("exportedAt", System.currentTimeMillis())
+            val root = org.json.JSONObject().put("version", 7).put("format", "slotra-backup").put("exportedAt", System.currentTimeMillis())
             fun rows(query: String): org.json.JSONArray {
                 val result = org.json.JSONArray()
                 db.openHelper.readableDatabase.query(query).use { c -> while (c.moveToNext()) {

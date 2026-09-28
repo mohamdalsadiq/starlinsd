@@ -9,10 +9,10 @@ data class BackupData(val rows: Map<String, List<JSONObject>>, val apps: Set<Str
     val summary: String get() = "${rows.getValue("sessions").size} اشتراك · ${rows.getValue("manual_sales").size} قيد دخل · ${rows.getValue("shortcuts").size} اختصار"
     companion object {
         const val MAX_BYTES = 20 * 1024 * 1024
-        val tables = listOf("plans", "sessions", "settings", "shortcuts", "devices", "sequences", "manual_sales", "revenue_corrections", "billing_cycles", "debts", "debt_payments", "balance_updates")
+        val tables = listOf("plans", "sessions", "settings", "shortcuts", "devices", "sequences", "manual_sales", "revenue_corrections", "billing_cycles", "debts", "debt_payments", "balance_updates", "device_lists")
         private val fields = mapOf(
             "plans" to "id name minutes cash bank home enabled",
-            "sessions" to "id client plan started resumed duration served state amount cashEquivalent payment premiumBps home grace recognized warned notified source reference",
+            "sessions" to "id client plan started resumed duration served state amount cashEquivalent payment premiumBps home grace recognized warned notified source reference deviceClientId",
             "settings" to "id graceMinutes premiumBps usdCents bankRate cycleStart cycleEnd expenses maxSubscribers cycleId",
             "shortcuts" to "id keyword phrase planId payment enabled",
             "devices" to "id ip name endTime isPaused remainingWhenPaused",
@@ -22,15 +22,16 @@ data class BackupData(val rows: Map<String, List<JSONObject>>, val apps: Set<Str
             "billing_cycles" to "id start end cost",
             "debts" to "id name total start due",
             "debt_payments" to "id debtId at amount",
-            "balance_updates" to "id at cash bank cashReceived bankReceived premiumBps reason expectedCash expectedBank")
-        private val strings = setOf("name", "client", "plan", "state", "payment", "source", "reference", "keyword", "phrase", "ip", "cycleId", "debtId", "reason")
+            "balance_updates" to "id at cash bank cashReceived bankReceived premiumBps reason expectedCash expectedBank",
+            "device_lists" to "id ip listType addedAt")
+        private val strings = setOf("name", "client", "plan", "state", "payment", "source", "reference", "keyword", "phrase", "ip", "cycleId", "debtId", "reason", "deviceClientId", "listType")
         fun parse(text: String): BackupData {
             require(text.toByteArray(Charsets.UTF_8).size <= MAX_BYTES) { "النسخة أكبر من 20 ميجابايت" }
             val root = JSONObject(text)
             val version = root.getInt("version")
-            require(version in 2..6) { "إصدار النسخة الاحتياطية غير مدعوم" }
+            require(version in 2..7) { "إصدار النسخة الاحتياطية غير مدعوم" }
             val rows = tables.associateWith { table ->
-                val array = if (table == "balance_updates" && version < 6 || table == "manual_sales" && version < 4 || table == "sequences" && version < 3 || table in listOf("revenue_corrections", "billing_cycles", "debts", "debt_payments") && version < 5)
+                val array = if (table == "balance_updates" && version < 6 || table == "manual_sales" && version < 4 || table == "sequences" && version < 3 || table in listOf("revenue_corrections", "billing_cycles", "debts", "debt_payments") && version < 5 || table == "device_lists" && version < 7)
                     org.json.JSONArray() else root.getJSONArray(table)
                 require(array.length() <= 100000) { "عدد السجلات يتجاوز الحد" }
                 val keys = fields.getValue(table).split(' ').toSet()
@@ -38,10 +39,11 @@ data class BackupData(val rows: Map<String, List<JSONObject>>, val apps: Set<Str
                     if (table == "settings" && version < 5) row.put("cycleId", "")
                     if (table == "settings" && version < 4) row.put("maxSubscribers", 50)
                     if (table == "sessions" && version < 3) row.put("reference", "")
+                    if (table == "sessions" && version < 7) row.put("deviceClientId", org.json.JSONObject.NULL)
                     require(row.keys().asSequence().toSet() == keys) { "حقول غير صالحة في $table" }
                     keys.forEach { key ->
                         val isString = key in strings || key == "id" && table in listOf("sessions", "manual_sales", "billing_cycles", "debts", "debt_payments")
-                        if (row.isNull(key)) require(table == "shortcuts" && key == "planId")
+                        if (row.isNull(key)) require((table == "shortcuts" && key == "planId") || (table == "sessions" && key == "deviceClientId"))
                         else if (isString) require(row.get(key) is String && row.getString(key).length <= if (key == "phrase") 10000 else 200) { "نص غير صالح" }
                         else require(row.get(key) is Number && Regex("[0-9]+").matches(row.get(key).toString()) && row.get(key).toString().toLongOrNull() != null) { "رقم غير صالح" }
                     }

@@ -42,6 +42,7 @@ import androidx.lifecycle.repeatOnLifecycle
 import com.example.MainViewModel
 import com.example.db.*
 import com.example.domain.*
+import com.example.network.StarlinkProtocol
 import com.example.notifications.SubscriptionAlarms
 import com.example.service.ExpanderHealth
 import com.example.service.TextExpanderService
@@ -110,6 +111,7 @@ internal fun amount(minor: Long): String {
                     stateHolder.SaveableStateProvider(if (detail.isNotBlank()) detail else "tab-$tab") {
                         when {
                             detail == "اختبار Starlink" -> StarlinkTestScreen()
+                            detail == "تتبع الأجهزة" -> DeviceTrackingScreen(vm)
                             detail == "الإعدادات" -> {
                                 val config by vm.settings.collectAsStateWithLifecycle()
                                 val now by vm.clock.collectAsStateWithLifecycle()
@@ -153,9 +155,13 @@ internal fun amount(minor: Long): String {
     if (bulk) BulkSalesForm({ bulk = false }) { id, lines, payment -> vm.addSales(id, lines, payment); bulk = false }
     if (newSession) {
         val plans by vm.plans.collectAsStateWithLifecycle()
-        SessionForm(plans.filter { it.enabled && !it.home }, { newSession = false }) { client, plan, payment ->
-            vm.create(client, plan, payment); newSession = false; tab = 1; detail = ""
-        }
+        val scanned by vm.scannedDevices.collectAsStateWithLifecycle()
+        val scanning by vm.scanning.collectAsStateWithLifecycle()
+        SessionForm(plans.filter { it.enabled && !it.home }, scanned, scanning, { newSession = false }, { client, plan, payment, deviceClientId ->
+            if (deviceClientId != null) vm.createWithDevice(client, plan, payment, deviceClientId)
+            else vm.create(client, plan, payment)
+            newSession = false; tab = 1; detail = ""
+        }, { vm.scanDevices() })
     }
 }
 
@@ -186,23 +192,68 @@ internal fun amount(minor: Long): String {
     LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Title("المزيد", "أدوات مشروعك وإعدادات التطبيق") }
         item { Card(onClick = { open("اختبار Starlink") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.Router, "اختبار Starlink", "قراءة الأجهزة وتجربة الإيقاف · محليًا") } } }
+        item { Card(onClick = { open("تتبع الأجهزة") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.Devices, "تتبع الأجهزة", "اقرأ الأجهزة المتصلة واربطها بالاشتراكات") } } }
         item { Card(onClick = { open("الباقات والأسعار") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.LocalOffer, "الباقات والأسعار", "إدارة المدة والسعر وأهل البيت") } } }
         item { Card(onClick = { open("التقارير") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.BarChart, "التقارير", "الدخل والتغطية وسجل الأيام") } } }
         item { Card(onClick = { open("الإعدادات") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.Settings, "الإعدادات", "النسخ الاحتياطي والصلاحيات والدورة") } } }
     }
 }
 
-@Composable private fun SessionForm(plans: List<Plan>, dismiss: () -> Unit, save: (String, Long, String) -> Unit) {
+@Composable private fun SessionForm(plans: List<Plan>, scanned: List<StarlinkProtocol.Client>, scanning: Boolean, dismiss: () -> Unit, save: (String, Long, String, String?) -> Unit, scan: () -> Unit) {
     var client by rememberSaveable { mutableStateOf("") }
     var planId by rememberSaveable { mutableStateOf(plans.firstOrNull()?.id) }
+    var selectedDevice by rememberSaveable { mutableStateOf<String?>(null) }
     LaunchedEffect(plans) { if (plans.none { it.id == planId }) planId = plans.firstOrNull()?.id }
     val plan = plans.find { it.id == planId }
-    Form("تسجيل اشتراك", dismiss, { plan?.let { save(client.trim(), it.id, "CASH") } }, client.length <= 80 && plan != null) {
+    val devicesWithId = scanned.filter { it.id != null }
+    Form("تسجيل اشتراك", dismiss, { plan?.let { save(client.trim(), it.id, "CASH", selectedDevice) } }, client.length <= 80 && plan != null) {
         Field("اسم المشترك · اختياري", client, { client = it })
         Text("إن تركته فارغًا سيُنشأ اسم برقم مميز، ويمكنك تسميته لاحقًا.")
         if (plans.isEmpty()) Text("أضف باقة أو فعّل باقة من المزيد ← الباقات والأسعار أولًا.")
         plans.forEach { p -> Choice("${if (p.home) "✅ " else ""}${p.name} · ${p.minutes} دقيقة", p.id == planId) { planId = p.id } }
         plan?.let { Text(if (it.home) "لأهل البيت · دون إيراد" else "سعر الاشتراك: ${amount(it.cash)}") }
+
+        HorizontalDivider(Modifier.padding(vertical = 4.dp))
+        Text("ربط الجهاز · اختياري", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+        Text("اختر جهازًا من الأجهزة المتصلة بالراوتر. عند انفصاله يُوقف الاشتراك تلقائيًا، وعند عودته يُستأنف.", style = MaterialTheme.typography.bodySmall)
+
+        if (scanning) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                Spacer(Modifier.width(8.dp))
+                Text("جاري البحث عن الأجهزة…", style = MaterialTheme.typography.bodySmall)
+            }
+        } else {
+            Button(onClick = scan, enabled = !scanning, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Default.Wifi, null); Spacer(Modifier.width(8.dp)); Text("قراءة الأجهزة من الراوتر")
+            }
+        }
+
+        if (devicesWithId.isNotEmpty()) {
+            Text("${devicesWithId.size} جهاز بمعرّف:", style = MaterialTheme.typography.bodySmall)
+            devicesWithId.forEach { device ->
+                val isSelected = selectedDevice == device.id.toString()
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    RadioButton(selected = isSelected, onClick = {
+                        selectedDevice = if (isSelected) null else device.id.toString()
+                    })
+                    Column(Modifier.weight(1f)) {
+                        Text(device.name, fontWeight = FontWeight.Medium)
+                        Text("${device.ip} · ${if (device.active) "متصل" else "غير متصل"}", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+        } else if (!scanning && scanned.isNotEmpty()) {
+            Text("لا توجد أجهزة بمعرّف clientId. حاول مرة أخرى.", style = MaterialTheme.typography.bodySmall)
+        }
+
+        if (selectedDevice != null) {
+            Text("سيتم ربط الاشتراك بالجهاز المحدد. عند انفصاله يُوقف تلقائيًا.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+        }
+
         Text("يبدأ الوقت عند الحفظ. ستتلقى تنبيهًا لتراجع الاتصال وتفصله يدويًا.")
     }
 }
