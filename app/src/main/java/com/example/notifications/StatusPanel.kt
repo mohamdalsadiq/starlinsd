@@ -23,7 +23,8 @@ import java.util.*
 
 /** Reuses the dashboard ledger; no separate financial totals are stored. */
 data class PanelSnapshot(val active: Int, val soon: Int, val ended: Int, val paused: Int,
-    val income: Long, val remainingBill: Long?, val available: Long?, val cycleProfit: Long?, val coveredPercent: Int?) {
+    val income: Long, val remainingBill: Long?, val available: Long?, val cycleProfit: Long?, val coveredPercent: Int?,
+    val dailyTarget: Long?, val dailyShortfall: Long?) {
     companion object {
         fun calculate(sessions: List<Session>, sales: List<ManualSale>, corrections: List<RevenueCorrection>,
             config: BusinessSettings, cycles: List<BillingCycle>, debts: List<Debt>, payments: List<DebtPayment>, now: Long): PanelSnapshot {
@@ -35,9 +36,10 @@ data class PanelSnapshot(val active: Int, val soon: Int, val ended: Int, val pau
             val cycle = snapshot.revenue
             return PanelSnapshot(active.size, active.count { Rules.remaining(it.clock(), now) <= 10 * Rules.MINUTE },
                 paid.count { it.state == "ENDED" || it.state == "ACTIVE" && Rules.remaining(it.clock(), now) == 0L },
-                paid.count { it.state == "PAUSED" }, snapshot.today.revenue, cycle.remainingCost,
+                paid.count { it.state == "PAUSED" }, snapshot.today.revenue, snapshot.remainingForBill,
                 snapshot.budget.day(now).available, cycle.cycleProfit,
-                cycle.cost?.let { if (it == 0L) 100 else ((cycle.covered.toDouble() / it) * 100).toInt().coerceIn(0, 100) })
+                cycle.cost?.let { if (it == 0L) 100 else ((snapshot.coveredForBill.toDouble() / it) * 100).toInt().coerceIn(0, 100) },
+                snapshot.budget.day(now).billTarget, snapshot.budget.day(now).let { if (it.billTarget == null) null else it.shortfall })
         }
     }
 }
@@ -72,7 +74,7 @@ object StatusPanel {
         val db = AppDatabase.getDatabase(context)
         val data = db.withTransaction {
             val dao = db.businessDao()
-            FinancialData(dao.sessions(), dao.manualSales(), dao.corrections(), dao.settings() ?: BusinessSettings(), dao.cycles(), dao.debts(), dao.debtPayments())
+            FinancialData(dao.sessions(), dao.manualSales(), dao.corrections(), dao.settings() ?: BusinessSettings(), dao.cycles(), dao.debts(), dao.debtPayments(), dao.balanceUpdates())
         }
         // Release the Room transaction before aggregating the financial history.
         val snapshot = withContext(Dispatchers.Default) { PanelSnapshot.from(reportCache.get(data, now), now) }
@@ -86,14 +88,14 @@ object StatusPanel {
             .setAction("REFRESH_PANEL").setData(Uri.parse("slotra://panel/refresh")), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val formatter = NumberFormat.getNumberInstance(Locale.US).apply { maximumFractionDigits = 2 }
         fun money(value: Long?) = value?.let { "\u2066${formatter.format(java.math.BigDecimal.valueOf(it, 2))}\u2069 ج.س" } ?: "اضبط دورة الفاتورة"
-        val summary = "قارب الانتهاء ${data.soon} · منتهون بالسجل ${data.ended}"
+        val summary = "دخل اليوم ${money(data.income)} · ناقص الهدف ${money(data.dailyShortfall)}"
         val lines = listOf(
-            "نشط ${data.active}  ·  خلال 10 دقائق ${data.soon}  ·  متوقف ${data.paused}",
-            "منتهون بالسجل ${data.ended} · أهل البيت خارج العدّ",
             "دخل اليوم: ${money(data.income)}",
-            "ربح الدورة قبل الديون: ${money(data.cycleProfit)}",
-            "متبقي تغطية التكلفة: ${money(data.remainingBill)}",
-            "فائض توزيع اليوم بعد الديون: ${money(data.available)}")
+            "المطلوب اليوم: ${money(data.dailyTarget)}",
+            "الناقص من هدف اليوم: ${money(data.dailyShortfall)}",
+            "متبقي تكلفة الدورة: ${money(data.remainingBill)}",
+            "ربح الدورة بعد كامل التكلفة: ${money(data.cycleProfit)}",
+            "نشط ${data.active} · قارب الانتهاء ${data.soon} · متوقف ${data.paused}")
         val public = NotificationCompat.Builder(context, CHANNEL).setSmallIcon(R.drawable.ic_status_panel)
             .setContentTitle("Slotra · لوحة المتابعة").setContentText("افتح قفل الهاتف لعرض التفاصيل").build()
         return NotificationCompat.Builder(context, CHANNEL).setSmallIcon(R.drawable.ic_status_panel)

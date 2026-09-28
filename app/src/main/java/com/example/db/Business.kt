@@ -15,16 +15,29 @@ data class Session(
     val home: Boolean, val grace: Long, val recognized: Long = 0,
     val warned: Boolean = false, val notified: Boolean = false, val source: String = "manual",
     @ColumnInfo(defaultValue = "''") val reference: String = "",
+    /** Router client id (StarlinkProtocol.Client.id) — the only device↔session identity. Null = unbound. */
+    @ColumnInfo(defaultValue = "NULL") val deviceClientId: Long? = null,
+    @ColumnInfo(defaultValue = "''") val deviceIp: String = "",
+    @ColumnInfo(defaultValue = "''") val deviceName: String = "",
+    @ColumnInfo(defaultValue = "''") val deviceMac: String = "",
 ) { fun clock() = Clock(duration, served, resumed, state == "ACTIVE") }
 
 @Entity(tableName = "settings")
-data class BusinessSettings(@PrimaryKey val id: Int = 1, val graceMinutes: Int = 30, val premiumBps: Int = 2500,
+data class BusinessSettings(@PrimaryKey val id: Int = 1, val graceMinutes: Int = com.example.domain.Rules.RECOGNITION_MINUTES, val premiumBps: Int = 2500,
     val usdCents: Long = 0, val bankRate: Long = 0, val cycleStart: Long = 0, val cycleEnd: Long = 0, val expenses: Long = 0,
     @ColumnInfo(defaultValue = "50") val maxSubscribers: Int = 50,
     @ColumnInfo(defaultValue = "''") val cycleId: String = "")
 
 @Entity(tableName = "sequences")
 data class Sequence(@PrimaryKey val name: String = "subscriber", val next: Long = 1)
+
+/** Home-network devices (keyed by IP, per owner's request). Never tracked for pause/resume. */
+@Entity(tableName = "home_ips")
+data class HomeIp(@PrimaryKey val ip: String, val label: String = "", val added: Long = 0)
+
+/** Watch-list devices (keyed by IP). Stored and classified now; notification logic comes later. */
+@Entity(tableName = "watch_ips")
+data class WatchIp(@PrimaryKey val ip: String, val label: String = "", val added: Long = 0)
 
 @Entity(tableName = "manual_sales")
 data class ManualSale(@PrimaryKey val id: String, val at: Long, val count: Int, val unitPrice: Long,
@@ -43,8 +56,17 @@ data class Debt(@PrimaryKey val id: String, val name: String, val total: Long, v
 @Entity(tableName = "debt_payments")
 data class DebtPayment(@PrimaryKey val id: String, val debtId: String, val at: Long, val amount: Long)
 
+@Entity(tableName = "balance_updates")
+data class BalanceUpdate(@PrimaryKey(autoGenerate = true) val id: Long = 0, val at: Long,
+    val cash: Long, val bank: Long, val cashReceived: Long, val bankReceived: Long,
+    val premiumBps: Int, val reason: String, val expectedCash: Long = 0, val expectedBank: Long = 0)
+
 @Dao
 interface BusinessDao {
+    @Query("SELECT * FROM balance_updates ORDER BY at, id") fun observeBalanceUpdates(): Flow<List<BalanceUpdate>>
+    @Query("SELECT * FROM balance_updates ORDER BY at, id") suspend fun balanceUpdates(): List<BalanceUpdate>
+    @Insert suspend fun balanceUpdate(update: BalanceUpdate): Long
+
     @Query("SELECT * FROM revenue_corrections ORDER BY id") fun observeCorrections(): Flow<List<RevenueCorrection>>
     @Query("SELECT * FROM revenue_corrections ORDER BY id") suspend fun corrections(): List<RevenueCorrection>
     @Insert suspend fun correct(correction: RevenueCorrection)
@@ -82,4 +104,14 @@ interface BusinessDao {
     @Query("SELECT * FROM settings WHERE id = 1") fun observeSettings(): Flow<BusinessSettings?>
     @Query("SELECT * FROM settings WHERE id = 1") suspend fun settings(): BusinessSettings?
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun settings(settings: BusinessSettings)
+
+    @Query("SELECT * FROM home_ips ORDER BY added, ip") fun observeHomeIps(): Flow<List<HomeIp>>
+    @Query("SELECT * FROM home_ips") suspend fun homeIps(): List<HomeIp>
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun homeIp(entry: HomeIp)
+    @Query("DELETE FROM home_ips WHERE ip = :ip") suspend fun deleteHomeIp(ip: String)
+
+    @Query("SELECT * FROM watch_ips ORDER BY added, ip") fun observeWatchIps(): Flow<List<WatchIp>>
+    @Query("SELECT * FROM watch_ips") suspend fun watchIps(): List<WatchIp>
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun watchIp(entry: WatchIp)
+    @Query("DELETE FROM watch_ips WHERE ip = :ip") suspend fun deleteWatchIp(ip: String)
 }

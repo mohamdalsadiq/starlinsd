@@ -40,6 +40,9 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import com.example.MainViewModel
+import com.example.data.DeviceSelection
+import com.example.data.IpListStore
+import com.example.data.TrackedDevice
 import com.example.db.*
 import com.example.domain.*
 import com.example.notifications.SubscriptionAlarms
@@ -51,8 +54,8 @@ import java.util.*
 
 internal fun stamp(at: Long): String = SimpleDateFormat("dd/MM · hh:mm a", Locale.forLanguageTag("ar")).format(Date(at))
 internal fun remaining(ms: Long): String {
-    val minutes = (ms.coerceAtLeast(0) + 59999) / 60000
-    return "${minutes / 60} س ${minutes % 60} د"
+    val seconds = (ms.coerceAtLeast(0) + 999) / 1000
+    return String.format(Locale.ROOT, "%02d:%02d:%02d", seconds / 3600, seconds % 3600 / 60, seconds % 60)
 }
 internal fun amount(minor: Long): String {
     val number = java.text.NumberFormat.getNumberInstance(Locale.US).apply { maximumFractionDigits = 2 }
@@ -109,6 +112,8 @@ internal fun amount(minor: Long): String {
                 Box(Modifier.widthIn(max = 720.dp).fillMaxSize()) {
                     stateHolder.SaveableStateProvider(if (detail.isNotBlank()) detail else "tab-$tab") {
                         when {
+                            detail == "اختبار Starlink" -> StarlinkTestScreen()
+                            detail == "إدارة الأجهزة" -> DevicesScreen(vm)
                             detail == "الإعدادات" -> {
                                 val config by vm.settings.collectAsStateWithLifecycle()
                                 val now by vm.clock.collectAsStateWithLifecycle()
@@ -152,9 +157,66 @@ internal fun amount(minor: Long): String {
     if (bulk) BulkSalesForm({ bulk = false }) { id, lines, payment -> vm.addSales(id, lines, payment); bulk = false }
     if (newSession) {
         val plans by vm.plans.collectAsStateWithLifecycle()
-        SessionForm(plans.filter { it.enabled && !it.home }, { newSession = false }) { client, plan, payment ->
-            vm.create(client, plan, payment); newSession = false; tab = 1; detail = ""
+        NewSessionFlow(vm, plans.filter { it.enabled && !it.home }, { newSession = false }) { client, plan, payment, device ->
+            vm.createWithDevice(client, plan, payment, device); newSession = false; tab = 1; detail = ""
         }
+    }
+}
+
+/**
+ * Device binding: reads live devices once (on demand), then applies the spec's three
+ * cases without ever picking automatically: one free candidate = a suggestion the user
+ * confirms; several = a picker list; none or a failed read = creation proceeds unbound.
+ */
+@Composable private fun NewSessionFlow(vm: MainViewModel, plans: List<Plan>, dismiss: () -> Unit, save: (String, Long, String, TrackedDevice?) -> Unit) {
+    var stage by rememberSaveable { mutableIntStateOf(0) } // 0 = plan form, 1 = binding step
+    var client by rememberSaveable { mutableStateOf("") }
+    var planId by rememberSaveable { mutableStateOf(plans.firstOrNull()?.id) }
+    var payment by rememberSaveable { mutableStateOf("CASH") }
+    var device by remember { mutableStateOf<TrackedDevice?>(null) }
+    var choices by remember { mutableStateOf<DeviceSelection.Result?>(null) }
+    LaunchedEffect(stage) {
+        if (stage == 1 && choices == null) choices = vm.bindingChoices()
+    }
+    if (stage == 0) SessionForm(plans, dismiss) { c, p, pay -> client = c; planId = p; payment = pay; stage = 1 }
+    else Form("ربط الجهاز", dismiss, {
+        val id = planId ?: return@Form
+        save(client, id, payment, device)
+    }, planId != null) {
+        val result = choices
+        when {
+            result == null -> Text("تعذّر قراءة الأجهزة من الراوتر الآن؛ سيُنشأ الاشتراك بدون ربط جهاز.")
+            result.unbound -> Text("لا يوجد جهاز مناسب غير مرتبط باشتراك نشط. سيُنشأ الاشتراك بدون ربط جهاز.")
+            result.suggestion != null -> {
+                val d = result.suggestion!!
+                Text("يوجد جهاز واحد مناسب غير مرتبط باشتراك نشط:")
+                DeviceRow(d)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { save(client, planId ?: return@Button, payment, d) }) { Text("ربط بهذا الجهاز") }
+                    TextButton(onClick = { save(client, planId ?: return@TextButton, payment, null) }) { Text("بدون ربط") }
+                }
+            }
+            else -> {
+                Text("توجد عدة أجهزة مناسبة. اختر جهاز المشترك، أو احفظ بدون ربط:")
+                result.options.forEach { d -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    RadioButton(selected = device == d, onClick = { device = d })
+                    DeviceRow(d)
+                } }
+            }
+        }
+    }
+}
+
+@Composable internal fun DeviceRow(d: TrackedDevice) {
+    Column(Modifier.padding(vertical = 4.dp)) {
+        Text(d.name, fontWeight = FontWeight.Bold)
+        Text("${d.ip} · ${d.mac} · معرّف ${d.clientId}", style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(when (d.category) {
+            com.example.data.IpLists.Category.HOME -> "أهل البيت · غير متتبع"
+            com.example.data.IpLists.Category.WATCH -> "قائمة المراقبة"
+            com.example.data.IpLists.Category.UNKNOWN -> "غير مصنف"
+        }, style = MaterialTheme.typography.bodySmall)
     }
 }
 
@@ -165,7 +227,7 @@ internal fun amount(minor: Long): String {
     val soon = active.count { Rules.remaining(it.clock(), now) <= 10 * Rules.MINUTE }
     Panel {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("المتابعة الآن", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text("المتابعة الآن · توقيت يدوي", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             TextButton(onClick = open) { Text("المشتركون") }
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -181,9 +243,90 @@ internal fun amount(minor: Long): String {
         Text(label, style = MaterialTheme.typography.labelMedium)
     }
 }
+/**
+ * Live router clients + home/watch list management. Classification by IP; a HOME device
+ * is never suggested for binding and never paused or resumed. The lists exist now;
+ * watch-list notifications are a later feature by design.
+ */
+@Composable private fun DevicesScreen(vm: MainViewModel) {
+    val context = LocalContext.current
+    val homeIps by vm.homeIps.collectAsStateWithLifecycle()
+    val watchIps by vm.watchIps.collectAsStateWithLifecycle()
+    val scan by vm.deviceScanState.collectAsStateWithLifecycle()
+    val busy by vm.busy.collectAsStateWithLifecycle()
+    LaunchedEffect(Unit) { vm.refreshDevices() }
+    var newHome by rememberSaveable { mutableStateOf(false) }
+    var newWatch by rememberSaveable { mutableStateOf(false) }
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { Title("إدارة الأجهزة", "قراءة محلية من راوتر Starlink · بدون حساب سحابي") }
+        item {
+            Panel {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("الأجهزة المتصلة الآن", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Text(scan?.let {
+                            when {
+                                it.failed -> "تعذّر الوصول للراوتر؛ لا تُوقف الاشتراكات عند فشل القراءة."
+                                it.devices.isEmpty() -> "لا توجد سجلات أجهزة بمعرّف حاليًا."
+                                else -> "حُدّث ${stamp(it.at)} · ${it.devices.size} جهاز"
+                            }
+                        } ?: "جاري التحديث…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    TextButton(enabled = !busy, onClick = { vm.refreshDevices() }) { Text("تحديث") }
+                }
+            }
+        }
+        items(scan?.devices.orEmpty(), key = { it.clientId }) { d ->
+            Panel {
+                DeviceRow(d)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(enabled = !busy, onClick = { vm.addHomeIp(d.ip, d.name) }) { Text("إضافة لأهل البيت (IP)") }
+                    TextButton(enabled = !busy, onClick = { vm.addWatchIp(d.ip, d.name) }) { Text("إضافة للمراقبة") }
+                }
+            }
+        }
+        item { Panel {
+            SectionHeading(Icons.Default.Home, "أهل البيت (بالعناوين IP)", "مستبعد تمامًا من التتبع والإيقاف التلقائي")
+            homeIps.forEach { entry ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("${entry.ip}${if (entry.label.isBlank()) "" else " · ${entry.label}"}", Modifier.weight(1f))
+                    TextButton(enabled = !busy, onClick = { vm.removeHomeIp(entry.ip) }) { Text("حذف") }
+                }
+            }
+            if (homeIps.isEmpty()) Text("لا توجد عناوين محفوظة بعد.", style = MaterialTheme.typography.bodySmall)
+            TextButton(onClick = { newHome = true }) { Text("إضافة عنوان يدويًا") }
+        } }
+        item { Panel {
+            SectionHeading(Icons.Default.Visibility, "قائمة المراقبة (بالعناوين IP)", "تُصنَّف الآن؛ إشعاراتها لاحقًا")
+            watchIps.forEach { entry ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("${entry.ip}${if (entry.label.isBlank()) "" else " · ${entry.label}"}", Modifier.weight(1f))
+                    TextButton(enabled = !busy, onClick = { vm.removeWatchIp(entry.ip) }) { Text("حذف") }
+                }
+            }
+            if (watchIps.isEmpty()) Text("لا توجد عناوين محفوظة بعد.", style = MaterialTheme.typography.bodySmall)
+            TextButton(onClick = { newWatch = true }) { Text("إضافة عنوان يدويًا") }
+        } }
+    }
+    if (newHome) IpEntryForm("إضافة لأهل البيت", { newHome = false }) { ip, label -> vm.addHomeIp(ip, label); newHome = false }
+    if (newWatch) IpEntryForm("إضافة للمراقبة", { newWatch = false }) { ip, label -> vm.addWatchIp(ip, label); newWatch = false }
+}
+
+@Composable private fun IpEntryForm(title: String, dismiss: () -> Unit, save: (String, String) -> Unit) {
+    var ip by rememberSaveable { mutableStateOf("") }
+    var label by rememberSaveable { mutableStateOf("") }
+    Form(title, dismiss, { save(ip.trim(), label) }, IpListStore.validate(ip)) {
+        Field("العنوان · مثل 192.168.1.55", ip, { ip = it })
+        Field("وصف · اختياري", label, { label = it })
+        Text("الأولوية لأهل البيت؛ الجهاز المصنف أهل بيت لا يُتبع أبدًا حتى لو كان في القائمتين.")
+    }
+}
+
 @Composable private fun MoreScreen(open: (String) -> Unit) {
     LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Title("المزيد", "أدوات مشروعك وإعدادات التطبيق") }
+        item { Card(onClick = { open("إدارة الأجهزة") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.Devices, "إدارة الأجهزة", "الأجهزة الحية وقوائم أهل البيت والمراقبة") } } }
+        item { Card(onClick = { open("اختبار Starlink") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.Router, "اختبار Starlink", "قراءة الأجهزة وتجربة الإيقاف · محليًا") } } }
         item { Card(onClick = { open("الباقات والأسعار") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.LocalOffer, "الباقات والأسعار", "إدارة المدة والسعر وأهل البيت") } } }
         item { Card(onClick = { open("التقارير") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.BarChart, "التقارير", "الدخل والتغطية وسجل الأيام") } } }
         item { Card(onClick = { open("الإعدادات") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.Settings, "الإعدادات", "النسخ الاحتياطي والصلاحيات والدورة") } } }
@@ -217,7 +360,7 @@ internal fun amount(minor: Long): String {
         SessionSearch.filter(sessions, search, filter, requested, now)
     }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { Title("المشتركون", "كل اشتراك يحتفظ بسعره وشروطه وقت التسجيل") }
+        item { Title("المشتركون", "توقيت يدوي · أوقف الوقت عند المغادرة واستأنفه عند العودة") }
         item { Button(onClick = add, enabled = !busy) { Text("اشتراك جديد") } }
         item { Field("ابحث بالاسم أو الرقم أو الباقة", search, { search = it }) }
         item { Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) { labels.forEach { (id, title) -> Choice(title, filter == id) { filter = id } } } }
@@ -232,7 +375,18 @@ internal fun amount(minor: Long): String {
             Text("${s.plan} · ${labels.firstOrNull { it.first == s.state }?.second.orEmpty()}")
             var expanded by rememberSaveable(s.id) { mutableStateOf(false) }
             if (expanded) Text("البداية: ${stamp(s.started)}")
-            if (s.state in listOf("ACTIVE", "PAUSED")) Text("المتبقّي ${remaining(Rules.remaining(s.clock(), now))}", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.primary)
+            if (expanded && s.deviceClientId != null) Text("الجهاز: ${s.deviceName.ifBlank { "بدون اسم" }} · ${s.deviceIp.ifBlank { "IP غير معروف" }} · معرّف ${s.deviceClientId}",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (s.state in listOf("ACTIVE", "PAUSED")) {
+                // Tick only this timer, without rebuilding the financial history every second.
+                val timerNow by produceState(now, s, now) {
+                    if (s.state == "ACTIVE") while (true) { value = System.currentTimeMillis(); delay(1000) }
+                }
+                Text("الوقت المتبقي", style = MaterialTheme.typography.labelLarge)
+                Text(remaining(Rules.remaining(s.clock(), timerNow)), Modifier.testTag("timer-${s.id}"),
+                    style = MaterialTheme.typography.headlineLarge.copy(textDirection = androidx.compose.ui.text.style.TextDirection.Ltr),
+                    fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+            }
             if (expanded && s.state == "ACTIVE") Text("النهاية: ${stamp(s.resumed + s.duration - s.served)}")
             val financial = ledger["session:${s.id}"]
             Text(when {
@@ -240,10 +394,13 @@ internal fun amount(minor: Long): String {
                 s.home -> "مجاني · لا يدخل في الإيراد"
                 s.recognized > 0 -> "مثبّت: ${amount(financial?.value ?: s.cashEquivalent)}"
                 s.state == "CANCELLED" -> "ألغي قبل التثبيت · دون إيراد"
-                else -> "قيد التثبيت: ${amount(s.cashEquivalent)} · بعد ${s.grace / 60000} دقيقة استخدام"
+                else -> "مدفوع · قيد الاعتماد: ${amount(s.cashEquivalent)} · بعد ${s.grace / 60000} دقائق محتسبة"
             })
             if (s.state in listOf("ACTIVE", "PAUSED")) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(enabled = !busy, onClick = { change(s.id, if (s.state == "ACTIVE") "PAUSE" else "RESUME") }) { Text(if (s.state == "ACTIVE") "إيقاف الوقت" else "استئناف") }
+                Button(enabled = !busy, modifier = Modifier.heightIn(min = 48.dp), onClick = { change(s.id, if (s.state == "ACTIVE") "PAUSE" else "RESUME") }) {
+                    Icon(if (s.state == "ACTIVE") Icons.Default.Pause else Icons.Default.PlayArrow, null)
+                    Spacer(Modifier.width(8.dp)); Text(if (s.state == "ACTIVE") "إيقاف الوقت" else "استئناف")
+                }
                 TextButton(enabled = !busy, onClick = { cancel = s }) { Text("إنهاء مبكر") }
             }
             TextButton(onClick = { expanded = !expanded }) { Text(if (expanded) "إخفاء التفاصيل" else "تفاصيل الاشتراك") }
@@ -305,11 +462,29 @@ internal fun amount(minor: Long): String {
     val importing = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { it?.let(vm::previewRestore) }
     val pendingRestore by vm.pendingRestore.collectAsStateWithLifecycle()
     val backupStatus by vm.backupStatus.collectAsStateWithLifecycle()
+    val finance by vm.financial.collectAsStateWithLifecycle()
+    var balanceForm by rememberSaveable { mutableStateOf(false) }
     val component = ComponentName(context, TextExpanderService::class.java)
     val enabled = remember(now, bound) { Settings.Secure.getString(context.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES).orEmpty().split(':').any { ComponentName.unflattenFromString(it) == component } }
     fun open(intent: Intent) { try { context.startActivity(intent) } catch (_: Exception) { vm.message.value = "هذا الإعداد غير متاح هنا؛ افتحه من إعدادات الهاتف." } }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item { Title("الإعدادات", "تحكّم في الحساب والتنبيهات واستمرارية الاختصارات") }
+        item { Panel {
+            SectionHeading(Icons.Default.AccountBalanceWallet, "الرصيد الموجود", "مطابقة الكاش وبنكك وإعادة حساب خطة الفاتورة")
+            finance?.balance?.let { balance ->
+                MoneyLine("الكاش الموجود حسب آخر تحديث والتحصيلات", balance.funds.cash)
+                MoneyLine("رصيد بنكك", balance.funds.bank)
+                finance?.availableBalanceSurplus?.let { MoneyLine("فائض الرصيد بعد تكلفة الدورة", it) }
+                Text("آخر مطابقة: ${stamp(balance.update.at)} · ${balance.update.reason}", style = MaterialTheme.typography.bodySmall)
+                Text(balanceDifference("الكاش عند آخر تحديث", balance.update.cash - balance.update.expectedCash), style = MaterialTheme.typography.bodySmall)
+                Text(balanceDifference("بنكك عند آخر تحديث", balance.update.bank - balance.update.expectedBank), style = MaterialTheme.typography.bodySmall)
+            } ?: Text("أدخل إجمالي الموجود من حصيلة الشهر ليحل محل الرصيد المحسوب ويعيد حساب المطلوب يوميًا.")
+            Button(enabled = !busy && finance != null, onClick = { balanceForm = true }, modifier = Modifier.testTag("update-balance")) { Text("تحديث الكاش وبنكك") }
+            Text("بعد أي سحب أو مصروف أو ردّ مبلغ، حدّث الموجود هنا. التحصيلات الجديدة تضاف مرة واحدة؛ تصحيح الإيراد أو إلغاؤه لا يسجّل حركة نقدية.", style = MaterialTheme.typography.bodySmall)
+            finance?.data?.balanceUpdates?.takeLast(3)?.asReversed()?.forEach {
+                Text("${stamp(it.at)} · ${it.reason} · كاش ${amount(it.cash)} · بنكك ${amount(it.bank)}", style = MaterialTheme.typography.bodySmall)
+            }
+        } }
         item { Panel {
             SectionHeading(Icons.Default.VerifiedUser, "جاهزية التطبيق")
             Text("الاختصارات: ${if (bound) "الخدمة متصلة" else if (enabled) "مفعّلة؛ النظام لم يربط الخدمة حاليًا" else "تحتاج تفعيل إمكانية الوصول"}")
@@ -350,9 +525,23 @@ internal fun amount(minor: Long): String {
         } }
         item { Panel {
             SectionHeading(Icons.Default.Calculate, "الحساب ودورة الاشتراك")
-            Text("مهلة التثبيت: ${config?.graceMinutes ?: 30} دقيقة")
+            Text("مهلة التثبيت: ${Rules.RECOGNITION_MINUTES} دقيقة")
             TextButton(enabled = !busy && config != null, onClick = { edit = true }) { Text("تعديل إعدادات الحساب") }
             Text("تغيير الأسعار أو النسبة لا يعيد تسعير السجلات السابقة. سجّل المصروفات بالقيمة المكافئة للكاش.")
+        } }
+        item { Panel {
+            SectionHeading(Icons.Default.Lock, "إغلاق الشبكة اليومي", "ينهي كل الاشتراكات النشطة تلقائيًا في وقت محدد")
+            // Re-reads on every clock tick (and right after a save, since work{} bumps `now`
+            // immediately) so the field reflects what's actually saved, not just local typing.
+            val savedMinute = remember(now) { SubscriptionAlarms.dailyCloseMinute(context) }
+            var closeTime by rememberSaveable(savedMinute) { mutableStateOf(if (savedMinute < 0) "" else String.format(Locale.ROOT, "%02d:%02d", savedMinute / 60, savedMinute % 60)) }
+            Field("وقت الإغلاق · HH:mm · اتركه فارغًا للإلغاء", closeTime, { closeTime = it })
+            val parsedMinute = Regex("^([01]?[0-9]|2[0-3]):([0-5][0-9])$").matchEntire(Money.normalize(closeTime))
+                ?.let { m -> m.groupValues[1].toInt() * 60 + m.groupValues[2].toInt() }
+            val validClose = closeTime.isBlank() || parsedMinute != null
+            Button(enabled = !busy && validClose, onClick = { vm.setDailyClose(if (closeTime.isBlank()) -1 else parsedMinute!!) }) { Text("حفظ وقت الإغلاق") }
+            if (!validClose) Text("اكتب الوقت بصيغة HH:mm، مثل 18:00", color = MaterialTheme.colorScheme.error)
+            Text("عند هذا الوقت تُنهى كل الاشتراكات النشطة والمتوقفة مؤقتًا فورًا، ويُحتسب إيرادها كاملًا حتى لو لم تكتمل مهلة التثبيت (${Rules.RECOGNITION_MINUTES} دقائق). أرقام اليوم لا تتاح لغيرها حتى بعد الإغلاق.", style = MaterialTheme.typography.bodySmall)
         } }
         item { Panel {
             SectionHeading(Icons.Default.CloudDone, "النسخ الاحتياطي والاستعادة")
@@ -368,6 +557,9 @@ internal fun amount(minor: Long): String {
         title = { Text("استعادة هذه النسخة؟") }, text = { Text("${preview.summary}\nحُفظت: ${stamp(preview.exportedAt)}\nستستبدل السجل الحالي بالكامل. احفظ نسخة منه أولًا إن أردت الاحتفاظ به.") },
         confirmButton = { Button(enabled = !busy, onClick = vm::confirmRestore) { Text("استبدال واستعادة") } },
         dismissButton = { TextButton(onClick = vm::dismissRestore) { Text("إلغاء") } }) }
+    if (balanceForm) finance?.let { snapshot ->
+        BalanceForm(snapshot, { balanceForm = false }) { cash, bank, reason -> vm.updateBalance(cash, bank, reason); balanceForm = false }
+    }
     if (edit && config != null) AccountingForm(config, { edit = false }) { vm.saveSettings(it); edit = false }
     if (appsDialog) AppsForm({ appsDialog = false; vm.refresh() })
 }
@@ -407,7 +599,6 @@ internal fun amount(minor: Long): String {
     val format = remember { SimpleDateFormat("yyyy-MM-dd", Locale.ROOT).apply { isLenient = false } }
     var maximum by rememberSaveable { mutableStateOf(s.maxSubscribers.toString()) }
     val maxNumber = Money.normalize(maximum).toIntOrNull()
-    var grace by rememberSaveable { mutableStateOf(s.graceMinutes.toString()) }
     var premium by rememberSaveable { mutableStateOf(Money.show(s.premiumBps.toLong())) }
     var usd by rememberSaveable { mutableStateOf(Money.show(s.usdCents)) }
     var rate by rememberSaveable { mutableStateOf(Money.show(s.bankRate)) }
@@ -417,16 +608,16 @@ internal fun amount(minor: Long): String {
     fun date(value: String): Long? = try { val v = Money.normalize(value); if (!Regex("\\d{4}-\\d{2}-\\d{2}").matches(v)) null else format.parse(v)?.time } catch (_: Exception) { null }
     val begin = date(start); val last = date(end)
     val endExclusive = last?.let { Calendar.getInstance().apply { timeInMillis = it; add(Calendar.DAY_OF_MONTH, 1) }.timeInMillis }
-    val g = Money.normalize(grace).toIntOrNull(); val p = Money.parse(premium)
+    val p = Money.parse(premium)
     val u = Money.parse(usd); val r = Money.parse(rate); val e = Money.parse(expenses)
-    val valid = maxNumber != null && maxNumber in 1..10000 && g != null && g in 0..1440 && p != null && p in 0..100000 && u != null && r != null && e != null &&
+    val valid = maxNumber != null && maxNumber in 1..10000 && p != null && p in 0..100000 && u != null && r != null && e != null &&
         (start.isBlank() && end.isBlank() || begin != null && begin > 0 && endExclusive != null && endExclusive > begin)
     Form("إعدادات الحساب", dismiss, {
-        save(s.copy(maxSubscribers = maxNumber!!, graceMinutes = g!!, premiumBps = p!!.toInt(), usdCents = u!!, bankRate = r!!, expenses = e!!, cycleStart = begin ?: 0, cycleEnd = endExclusive ?: 0))
+        save(s.copy(maxSubscribers = maxNumber!!, graceMinutes = Rules.RECOGNITION_MINUTES, premiumBps = p!!.toInt(), usdCents = u!!, bankRate = r!!, expenses = e!!, cycleStart = begin ?: 0, cycleEnd = endExclusive ?: 0))
     }, valid) {
         Field("أرقام المشتركين من 1 إلى", maximum, { maximum = it })
         Text("الافتراضي 50. يُضاف [الرقم] تلقائيًا بعد نص اختصار الاشتراك، ولا يتكرر بين الاشتراكات النشطة أو المتوقفة مؤقتًا.")
-        Field("تثبيت سعر الباقة بعد كم دقيقة؟", grace, { grace = it })
+        Text("استخدام اختصار الاشتراك يؤكد الدفع. يُعتمد الإيراد مرة واحدة بعد 5 دقائق محتسبة، ويُنسب ليوم اكتمالها.")
         Field("نسبة تحويل تكلفة الفاتورة ٪", premium, { premium = it })
         Field("اشتراك Starlink بالدولار", usd, { usd = it })
         Field("سعر دولار الفاتورة قبل التحويل", rate, { rate = it })
@@ -434,8 +625,8 @@ internal fun amount(minor: Long): String {
         Field("أول يوم · yyyy-MM-dd", start, { start = it })
         Field("آخر يوم شاملًا · yyyy-MM-dd", end, { end = it })
         Text("تكلفة الفاتورة بالجنيه = الدولار × سعر الصرف ÷ (1 + نسبة التحويل)، ثم تضاف المصروفات. إعداداتك السابقة محفوظة؛ النسبة لا تضيف سعرًا ثانيًا للاشتراكات.")
-        Text("اترك التاريخين فارغين إن لم تبدأ دورة. مهلة التثبيت والنسبة يطبّقان على الاشتراكات الجديدة؛ بيانات الدورة تستخدم للتقرير الحالي.")
-        if (!valid) Text("راجع المبالغ والتواريخ. المهلة 0–1440 دقيقة والنسبة 0–1000٪.", color = MaterialTheme.colorScheme.error)
+        Text("اترك التاريخين فارغين إن لم تبدأ دورة. الاشتراكات السابقة تحتفظ بشروطها. تعديل الدورة يعيد حساب هدف اليوم والسجل المالي.")
+        if (!valid) Text("راجع المبالغ والتواريخ. النسبة 0–1000٪.", color = MaterialTheme.colorScheme.error)
     }
 }
 

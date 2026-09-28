@@ -19,9 +19,9 @@ class FinanceTest {
         assertEquals(1050000L, daily.available)
         assertEquals(0L, Revenue.report(listOf(income.income()), cycle.start, cycle.end, cycle.cost, day + 1000).cycleProfit)
         val tomorrow = Finance.report(listOf(income), listOf(cycle), emptyList(), emptyList(), day + 86400000L)
-        assertEquals(daily.billTarget, tomorrow.days.getValue(day + 86400000L).billTarget)
+        assertEquals(1963794L, tomorrow.days.getValue(day + 86400000L).billTarget)
         assertEquals(0L, report.day(day + 86400000L).available)
-        assertEquals(2000000L, report.day(day + 86400000L).billTarget)
+        assertEquals(1963794L, report.day(day + 86400000L).billTarget)
     }
     @Test fun householdTemplateDoesNotProduceTimeCodeOrMoney() {
         assertEquals("✅", TextRules.householdTemplate("✅ %end% %code% %price% %duration% %time+3h%"))

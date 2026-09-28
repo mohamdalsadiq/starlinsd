@@ -58,7 +58,7 @@ interface ShortcutDao {
     @Query("SELECT * FROM shortcuts") suspend fun list(): List<Shortcut>
 }
 
-@Database(entities = [Device::class, Shortcut::class, Plan::class, Session::class, BusinessSettings::class, Sequence::class, ManualSale::class, SlotReservation::class, RevenueCorrection::class, BillingCycle::class, Debt::class, DebtPayment::class], version = 5, exportSchema = true)
+@Database(entities = [Device::class, Shortcut::class, Plan::class, Session::class, BusinessSettings::class, Sequence::class, HomeIp::class, WatchIp::class, ManualSale::class, SlotReservation::class, RevenueCorrection::class, BillingCycle::class, Debt::class, DebtPayment::class, BalanceUpdate::class], version = 7, exportSchema = true)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun deviceDao(): DeviceDao
     abstract fun shortcutDao(): ShortcutDao
@@ -100,10 +100,27 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL("DELETE FROM slot_reservations WHERE sessionId IN (SELECT id FROM sessions WHERE home = 1)")
             }
         }
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS balance_updates (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, at INTEGER NOT NULL, cash INTEGER NOT NULL, bank INTEGER NOT NULL, cashReceived INTEGER NOT NULL, bankReceived INTEGER NOT NULL, premiumBps INTEGER NOT NULL, reason TEXT NOT NULL, expectedCash INTEGER NOT NULL, expectedBank INTEGER NOT NULL)")
+            }
+        }
+        // Device tracking v1: purely additive. Sessions gain four display/diagnostic columns and
+        // two IP-keyed management lists are created; no row is touched or dropped.
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE sessions ADD COLUMN deviceClientId INTEGER DEFAULT NULL")
+                db.execSQL("ALTER TABLE sessions ADD COLUMN deviceIp TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE sessions ADD COLUMN deviceName TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE sessions ADD COLUMN deviceMac TEXT NOT NULL DEFAULT ''")
+                db.execSQL("CREATE TABLE IF NOT EXISTS home_ips (ip TEXT NOT NULL PRIMARY KEY, label TEXT NOT NULL, added INTEGER NOT NULL)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS watch_ips (ip TEXT NOT NULL PRIMARY KEY, label TEXT NOT NULL, added INTEGER NOT NULL)")
+            }
+        }
         fun getDatabase(context: Context): AppDatabase =
             instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, "app_db")
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
                     .build().also { instance = it }
             }
     }

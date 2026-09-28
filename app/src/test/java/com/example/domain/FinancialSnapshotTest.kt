@@ -22,7 +22,7 @@ class FinancialSnapshotTest {
         assertEquals(0L, result.revenue.cycleProfit)
         val cycles = listOf(BillingCycle("current", input.config.cycleStart, input.config.cycleEnd, 47140000))
         assertEquals(Finance.report(result.ledger, cycles, input.debts, input.payments, now), result.budget)
-        assertTrue(result.budget.day(now).billReserved < result.revenue.covered)
+        assertEquals(result.budget.day(now).billReserved, result.revenue.covered)
     }
 
     @Test fun twoThousandRecordsAndRepeatedClockTicksReuseOneReport() {

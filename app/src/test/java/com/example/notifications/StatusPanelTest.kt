@@ -29,6 +29,7 @@ class StatusPanelTest {
         val value = snapshot()
         assertEquals(2, value.active); assertEquals(1, value.soon); assertEquals(1, value.ended); assertEquals(1, value.paused)
         assertEquals(3050000L, value.income); assertEquals(0L, value.remainingBill); assertEquals(1050000L, value.available)
+        assertEquals(2000000L, value.dailyTarget); assertEquals(0L, value.dailyShortfall)
         assertEquals(1050000L, value.cycleProfit); assertEquals(100, value.coveredPercent)
         val corrected = snapshot(listOf(RevenueCorrection(1, "manual:sale", 1000000, 1000000, 10, false, now, "تصحيح")))
         assertEquals(1000000L, corrected.income); assertEquals(1000000L, corrected.remainingBill); assertEquals(0L, corrected.available)
@@ -44,7 +45,12 @@ class StatusPanelTest {
         assertNotNull(notification.publicVersion)
         assertFalse(notification.publicVersion.extras.toString().contains("30,500"))
         assertEquals(2, notification.actions.size)
-        assertEquals(6, notification.extras.getCharSequenceArray(Notification.EXTRA_TEXT_LINES)!!.size)
+        val lines = notification.extras.getCharSequenceArray(Notification.EXTRA_TEXT_LINES)!!
+        assertEquals(6, lines.size)
+        assertTrue(lines[0].startsWith("دخل اليوم:"))
+        assertTrue(lines[1].startsWith("المطلوب اليوم:"))
+        assertTrue(lines[2].startsWith("الناقص من هدف اليوم:"))
+        assertTrue(notification.extras.getCharSequence(Notification.EXTRA_TEXT).toString().contains("ناقص الهدف"))
         StatusPanel.setEnabled(context, false); assertFalse(StatusPanel.enabled(context))
         StatusPanel.setEnabled(context, true); assertTrue(StatusPanel.enabled(context))
     }
@@ -61,6 +67,25 @@ class StatusPanelTest {
         val notification = StatusPanel.build(context, snapshot(), now)
         assertTrue(notification.flags and Notification.FLAG_ONGOING_EVENT != 0)
         assertEquals(2, notification.actions.size)
+    }
+
+    @Test fun panelAndDashboardShareTargetAcrossMidnightAndCorrections() {
+        val settings = config.copy(cycleEnd = start + 5 * 86400000L, bankRate = 12500000)
+        val data = FinancialData(emptyList(), listOf(ManualSale("sale", start + 1000, 1, 1500000, 1500000, 1500000, "CASH", 2500)),
+            emptyList(), settings, emptyList(), emptyList(), emptyList())
+        val cache = FinancialReportCache()
+        for (at in listOf(now, start + 86400000L)) {
+            val report = cache.get(data, at)
+            val panel = PanelSnapshot.from(report, at)
+            assertEquals(report.today.revenue, panel.income)
+            assertEquals(report.budget.day(at).billTarget, panel.dailyTarget)
+            assertEquals(report.budget.day(at).shortfall, panel.dailyShortfall)
+            assertEquals(report.revenue.remainingCost, panel.remainingBill)
+            assertEquals(report.revenue.cycleProfit, panel.cycleProfit)
+        }
+        val tomorrow = start + 86400000L
+        val corrected = data.copy(corrections = listOf(RevenueCorrection(1, "manual:sale", 2500000, 2500000, 1, false, tomorrow, "تصحيح")))
+        assertEquals(1875000L, PanelSnapshot.from(cache.get(corrected, tomorrow), tomorrow).dailyTarget)
     }
 
 }
