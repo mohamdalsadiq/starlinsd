@@ -77,4 +77,43 @@ class DeviceAlertsCoordinatorTest {
         DeviceAlertsCoordinator.recordSnapshot(context, now + 60_000, emptyList(), homeIps = emptySet())
         assertEquals(listOf(1L), DeviceAlertsCoordinator.historyFor(context, now).map { it.clientId })
     }
+
+    private fun writeHistoryDay(dayKey: String, clientId: Long) {
+        context.getSharedPreferences("device_alerts", 0).edit()
+            .putString("history_$dayKey",
+                """[{"clientId":$clientId,"name":"d$clientId","ip":"192.168.1.9","mac":"mac$clientId","category":"UNKNOWN","firstSeen":1,"lastSeen":2}]""")
+            .apply()
+    }
+
+    /** Phase 4 (spec 13): a later day must never wipe earlier days — they stay reviewable. */
+    @Test fun laterSnapshotsKeepPastDaysReviewable() {
+        DeviceAlertsCoordinator.resetForTest(context)
+        val todayKey = DeviceAlerts.dayKey(now)
+        DeviceAlertsCoordinator.recordSnapshot(context, now,
+            listOf(device(1, "192.168.1.10", IpLists.Category.UNKNOWN)), homeIps = emptySet())
+        val tomorrow = now + 24 * 60 * 60_000L
+        DeviceAlertsCoordinator.recordSnapshot(context, tomorrow,
+            listOf(device(2, "192.168.1.12", IpLists.Category.UNKNOWN)), homeIps = emptySet())
+        // Today's record survived the next day's write and still reads back.
+        assertEquals(listOf(1L), DeviceAlertsCoordinator.historyFor(context, todayKey).map { it.clientId })
+        assertEquals(listOf(2L), DeviceAlertsCoordinator.historyFor(context, tomorrow).map { it.clientId })
+    }
+
+    /** Pruning is a bounded retention window: only days older than the window are removed. */
+    @Test fun historyPruneKeepsRetentionWindowAndDropsOnlyOlderDays() {
+        DeviceAlertsCoordinator.resetForTest(context)
+        val day = 24 * 60 * 60_000L
+        val keptKey = DeviceAlerts.dayKey(now - 10 * day)
+        val staleKey = DeviceAlerts.dayKey(now - 100 * day)
+        writeHistoryDay(keptKey, 7)
+        writeHistoryDay(staleKey, 8)
+        DeviceAlertsCoordinator.recordSnapshot(context, now,
+            listOf(device(1, "192.168.1.10", IpLists.Category.UNKNOWN)), homeIps = emptySet())
+        val prefs = context.getSharedPreferences("device_alerts", 0)
+        assertTrue(prefs.contains("history_$keptKey"))
+        assertTrue(prefs.contains("history_${DeviceAlerts.dayKey(now)}"))
+        assertFalse(prefs.contains("history_$staleKey"))
+        // Exactly the window survivors remain: the kept past day and today.
+        assertEquals(2, prefs.all.keys.count { it.startsWith("history_") })
+    }
 }

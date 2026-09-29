@@ -40,6 +40,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import com.example.MainViewModel
+import com.example.data.DailyReconciliation
 import com.example.data.DeviceAlerts
 import com.example.data.DeviceSelection
 import com.example.data.IpListStore
@@ -70,8 +71,8 @@ internal fun amount(minor: Long): String {
 @Composable internal fun Panel(content: @Composable ColumnScope.() -> Unit) {
     Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp), content = content) }
 }
-@Composable internal fun Field(label: String, value: String, onChange: (String) -> Unit, single: Boolean = true, numeric: Boolean = false) {
-    OutlinedTextField(value, onChange, label = { Text(label) }, modifier = Modifier.fillMaxWidth(), singleLine = single, minLines = if (single) 1 else 3, keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = if (numeric) androidx.compose.ui.text.input.KeyboardType.Decimal else androidx.compose.ui.text.input.KeyboardType.Text))
+@Composable internal fun Field(label: String, value: String, onChange: (String) -> Unit, single: Boolean = true, numeric: Boolean = false, modifier: Modifier = Modifier.fillMaxWidth()) {
+    OutlinedTextField(value, onChange, label = { Text(label) }, modifier = modifier, singleLine = single, minLines = if (single) 1 else 3, keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = if (numeric) androidx.compose.ui.text.input.KeyboardType.Decimal else androidx.compose.ui.text.input.KeyboardType.Text))
 }
 @Composable internal fun Choice(label: String, selected: Boolean, onClick: () -> Unit) {
     FilterChip(selected, onClick, label = { Text(label) })
@@ -453,8 +454,12 @@ internal fun amount(minor: Long): String {
         }
     }
 }/**
- * Phase 3 placeholder for the Phase 4 confirmation screen (spec 21): shows today's
- * history split into subscribed/unconfirmed devices. Deliberately replaceable.
+ * Phase 4 daily device review (replaces the Phase 3 placeholder). The operator
+ * picks one event day, sees registered vs unregistered devices for it, records
+ * grouped manual amounts (500×1 + 1000×2), and confirms — money lands in the
+ * existing manual_sales table as DailyReconciliation rows attributed to the
+ * event day, idempotently (§40 report point H). HOME never reaches the history;
+ * WATCH counts as unregistered unless bound.
  */
 @Composable
 private fun DeviceConfirmationScreen(vm: MainViewModel) {
@@ -462,28 +467,93 @@ private fun DeviceConfirmationScreen(vm: MainViewModel) {
     val now by vm.clock.collectAsStateWithLifecycle()
     var devices by remember { mutableStateOf<List<DeviceAlerts.DayDevice>>(emptyList()) }
     var bindings by remember { mutableStateOf<Map<Long, String>>(emptyMap()) }
-    LaunchedEffect(now) {
+    var dayKey by rememberSaveable { mutableStateOf(DeviceAlerts.dayKey(System.currentTimeMillis())) }
+    var draft by remember(dayKey) { mutableStateOf(DailyDraft(dayKey, DeviceAlertsCoordinator.reviewState(context, dayKey).groups)) }
+    var showPicker by rememberSaveable { mutableStateOf(false) }
+
+    LaunchedEffect(now, dayKey) {
         kotlinx.coroutines.withContext(Dispatchers.IO) {
-            devices = DeviceAlertsCoordinator.historyFor(context, now)
+            devices = DeviceAlertsCoordinator.historyFor(context, dayKey)
             bindings = DeviceAlertsCoordinator.activeBindingsFor(context)
         }
     }
     val summary = remember(devices, bindings) { DeviceAlerts.summary(devices, bindings) }
-    LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    val sales by vm.manualSales.collectAsStateWithLifecycle()
+    val confirmed = remember(sales, dayKey) { DailyReconciliation.rowsFor(sales, dayKey) }
+    val confirmedTotal = remember(confirmed) { confirmed.sumOf { it.amount } }
+    val busy by vm.busy.collectAsStateWithLifecycle()
+
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { Title("تأكيد الأجهزة اليومية", "أجهزة اليوم المرتبطة وغير المرتبطة · الإيراد يُنسب ليوم الأحداث") }
         item { Panel {
-            SectionHeading(Icons.Default.FactCheck, "\u062a\u0623\u0643\u064a\u062f \u0627\u0644\u0623\u062c\u0647\u0632\u0629 \u0627\u0644\u064a\u0648\u0645\u064a\u0629", "\u0623\u062c\u0647\u0632\u0629 \u0627\u0644\u064a\u0648\u0645 \u062e\u0627\u0631\u062c \u0623\u0647\u0644 \u0627\u0644\u0628\u064a\u062a")
-            Text("\u0634\u0627\u0634\u0629 \u0623\u0648\u0644\u064a\u0629 \u0644\u0644\u0645\u0631\u0627\u062c\u0639\u0629\u061b \u0633\u064a\u062a\u0645 \u0628\u0646\u0627\u0621 \u0627\u0644\u062a\u0623\u0643\u064a\u062f \u0627\u0644\u0643\u0627\u0645\u0644 \u0644\u0627\u062d\u0642\u064b\u0627.", style = MaterialTheme.typography.bodySmall)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("يوم المراجعة", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(dayLabel(dayKey), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                }
+                TextButton(onClick = { showPicker = true }) { Text("اختيار يوم") }
+            }
+            Text("الأجهزة المسجلة (اشتراك نشط): ${summary.subscribed.size}", color = MaterialTheme.colorScheme.primary)
+            Text("الأجهزة غير المسجلة: ${summary.unconfirmed.size}", color = if (summary.unconfirmed.isEmpty()) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error)
         } }
         item { Panel {
-            SectionHeading(Icons.Default.CheckCircle, "\u0623\u062c\u0647\u0632\u0629 \u0645\u0631\u062a\u0628\u0637\u0629 \u0628\u0627\u0634\u062a\u0631\u0627\u0643 \u0645\u0633\u062c\u0644")
-            if (summary.subscribed.isEmpty()) Text("\u0644\u0627 \u064a\u0648\u062c\u062f")
-            summary.subscribed.forEach { Text("\u00b7 ${it.name.ifBlank { "\u062c\u0647\u0627\u0632 ${it.clientId}" }} (${it.ip})") }
+            SectionHeading(Icons.Default.CheckCircle, "أجهزة مرتبطة باشتراك مسجل", "إيرادها معروف من الاختصارات؛ لا تُدخل هنا مرة ثانية")
+            if (summary.subscribed.isEmpty()) Text("لا يوجد")
+            summary.subscribed.forEach { Text("· ${it.name.ifBlank { "جهاز ${it.clientId}" }} (${it.ip})") }
         } }
         item { Panel {
-            SectionHeading(Icons.Default.HelpOutline, "\u0623\u062c\u0647\u0632\u0629 \u0628\u062f\u0648\u0646 \u0627\u0634\u062a\u0631\u0627\u0643 \u0645\u0633\u062c\u0644", "\u062a\u062d\u062a\u0627\u062c \u0645\u0631\u0627\u062c\u0639\u0629 \u064a\u062f\u0648\u064a\u0629")
-            if (summary.unconfirmed.isEmpty()) Text("\u0644\u0627 \u064a\u0648\u062c\u062f")
-            summary.unconfirmed.forEach { Text("\u00b7 ${it.name.ifBlank { "\u062c\u0647\u0627\u0632 ${it.clientId}" }} (${it.ip})") }
+            SectionHeading(Icons.Default.HelpOutline, "أجهزة بدون اشتراك مسجل", "راجعها وأدخل المبالغ مجمعة بعدد الأجهزة")
+            if (summary.unconfirmed.isEmpty()) Text("لا توجد أجهزة غير مسجلة في هذا اليوم.")
+            summary.unconfirmed.forEach { Text("· ${it.name.ifBlank { "جهاز ${it.clientId}" }} (${it.ip})") }
         } }
+        item { Panel {
+            SectionHeading(Icons.Default.Payments, "الإيراد الإضافي المؤكد", "قيود يوم الأحداث نفسه في المالية الحالية")
+            if (confirmed.isEmpty()) Text("لم يتم تأكيد مبالغ لهذا اليوم بعد.")
+            confirmed.forEach { row -> Text("· ${Money.show(row.unitPrice)} × ${row.count} = ${amount(row.amount)}") }
+            if (confirmed.isNotEmpty()) MoneyLine("إجمالي الإيراد الإضافي", confirmedTotal)
+        } }
+        item { Panel {
+            SectionHeading(Icons.Default.Calculate, "تسجيل مبالغ مجمعة", "مثال: 500 × 1 + 1000 × 2 = 2500 ج.س")
+            draft.groups.forEachIndexed { index, group ->
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Field("المبلغ (${index + 1})", Money.show(group.unitPrice), { value ->
+                        val price = Money.parse(value) ?: 0L
+                        draft = draft.copy(groups = draft.groups.mapIndexed { i, g -> if (i == index) g.copy(unitPrice = price) else g })
+                    }, numeric = true, modifier = Modifier.weight(1f))
+                    Field("عدد الأجهزة", group.count.toString(), { value ->
+                        draft = draft.copy(groups = draft.groups.mapIndexed { i, g -> if (i == index) g.copy(count = value.toIntOrNull() ?: 0) else g })
+                    }, numeric = true, modifier = Modifier.weight(1f))
+                    IconButton(onClick = { draft = draft.copy(groups = draft.groups.filterIndexed { i, _ -> i != index }) }) { Icon(Icons.Default.Close, "حذف") }
+                }
+            }
+            TextButton(enabled = draft.groups.size < DailyReconciliation.MAX_GROUPS, onClick = { draft = draft.copy(groups = draft.groups + DailyReconciliation.Group(1, 0)) }) { Text("إضافة مبلغ") }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Choice("كاش", draft.payment == "CASH") { draft = draft.copy(payment = "CASH") }
+                Choice("بنكك", draft.payment == "BANK") { draft = draft.copy(payment = "BANK") }
+            }
+            Button(enabled = !busy && summary.unconfirmed.isNotEmpty() && draft.groups.isNotEmpty(), onClick = {
+                vm.confirmDailyDevices(dayKey, summary.unconfirmed.size, draft.groups, draft.payment)
+            }) { Text("تأكيد الدخل الإضافي") }
+            Text("التأكيد يستبدل قيود هذا اليوم (لا يضيف مرتين)، والتعديل يحدث المبالغ مكانها.", style = MaterialTheme.typography.bodySmall)
+        } }
+    }
+    if (showPicker) DayPickerDialog(dayKey) { picked -> dayKey = picked; showPicker = false }
+}
+
+/** Screen-local grouped-amount draft (payment is a per-confirm choice, not persisted). */
+internal data class DailyDraft(val dayKey: String, val groups: List<DailyReconciliation.Group>, val payment: String = "CASH")
+
+private fun dayLabel(dayKey: String): String = try {
+    SimpleDateFormat("EEEE، d MMMM yyyy", Locale.forLanguageTag("ar")).format(SimpleDateFormat("yyyy-MM-dd", Locale.US).parse(dayKey)!!)
+} catch (_: Exception) { dayKey }
+
+@Composable
+private fun DayPickerDialog(current: String, onPick: (String) -> Unit) {
+    var value by rememberSaveable { mutableStateOf(current) }
+    val valid = Regex("\\d{4}-\\d{2}-\\d{2}").matches(value)
+    Form("اختيار يوم المراجعة", { onPick(current) }, { onPick(value) }, valid) {
+        Field("اليوم · yyyy-MM-dd", value, { value = it })
+        Text("الافتراضي اليوم. الأيام السابقة تبقى قابلة للتأكيد ضمن نافذة الاحتفاظ.", style = MaterialTheme.typography.bodySmall)
     }
 }
 

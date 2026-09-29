@@ -11,12 +11,14 @@ import android.net.Uri
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import com.example.MainActivity
+import com.example.data.DailyReconciliation
 import com.example.data.DeviceAlerts
 import com.example.data.DeviceAlertsClock
 import com.example.data.DeviceTracker
 import com.example.data.TrackedDevice
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.Calendar
 
 /**
  * Phase 3 device alerts: storage, channels, notifications, and schedule
@@ -130,10 +132,21 @@ object DeviceAlertsCoordinator {
 
     // ---- Daily history (spec 17: lightweight per-day JSON, no Room migration) ----
 
-    private fun historyKey(now: Long) = "history_${DeviceAlerts.dayKey(now)}"
+    /** Days of per-day device history retained for review (Phase 4 spec 13: past days stay confirmable). */
+    internal const val MAX_DAY_HISTORY = 64
 
-    internal fun history(context: Context, now: Long): List<DeviceAlerts.DayDevice> {
-        val raw = context.getSharedPreferences(PREFS, 0).getString(historyKey(now), null) ?: return emptyList()
+    /** Oldest day key still inside the retention window ending today (dayKey compares chronologically). */
+    internal fun windowStartKey(now: Long): String {
+        val cutoff = Calendar.getInstance().apply {
+            timeInMillis = DeviceAlerts.dayStart(now); add(Calendar.DAY_OF_MONTH, -(MAX_DAY_HISTORY - 1))
+        }.timeInMillis
+        return DeviceAlerts.dayKey(cutoff)
+    }
+
+    private fun historyKey(dayKey: String) = "history_$dayKey"
+
+    internal fun history(context: Context, dayKey: String): List<DeviceAlerts.DayDevice> {
+        val raw = context.getSharedPreferences(PREFS, 0).getString(historyKey(dayKey), null) ?: return emptyList()
         val array = JSONArray(raw)
         return (0 until array.length()).map { i ->
             val item = array.getJSONObject(i)
@@ -141,6 +154,8 @@ object DeviceAlertsCoordinator {
                 com.example.data.IpLists.Category.valueOf(item.getString("category")), item.getLong("firstSeen"), item.getLong("lastSeen"))
         }
     }
+
+    internal fun history(context: Context, now: Long): List<DeviceAlerts.DayDevice> = history(context, DeviceAlerts.dayKey(now))
 
     private fun saveHistory(context: Context, now: Long, devices: List<DeviceAlerts.DayDevice>) {
         val array = JSONArray()
@@ -151,10 +166,15 @@ object DeviceAlertsCoordinator {
         }
         val prefs = context.getSharedPreferences(PREFS, 0)
         val editor = prefs.edit()
-        editor.putString(historyKey(now), array.toString())
-        // Midnight cleanup (spec 30): only the newest few day keys are ever kept.
-        val stale = prefs.all.keys.filter { it.startsWith("history_") && it != historyKey(now) }
-        stale.forEach { editor.remove(it) }
+        editor.putString(historyKey(DeviceAlerts.dayKey(now)), array.toString())
+        // Phase 4 (spec 13): past days must stay reviewable, so pruning keeps a bounded
+        // window of MAX_DAY_HISTORY days ending today instead of wiping every archived
+        // day. Only keys strictly older than the window are removed; today and previous
+        // days within it always survive. dayKey is fixed-width yyyy-MM-dd, so string
+        // comparison is chronological.
+        val oldest = windowStartKey(now)
+        prefs.all.keys.filter { it.startsWith("history_") && it.removePrefix("history_") < oldest }
+            .forEach { editor.remove(it) }
         editor.apply()
     }
 
@@ -256,8 +276,54 @@ object DeviceAlertsCoordinator {
         context.getSharedPreferences(PREFS, 0).edit().clear().apply()
     }
 
-    /** Read-only views for the confirmation placeholder screen. */
+    /** Read-only views for the confirmation screen: today, or any retained past day. */
     fun historyFor(context: Context, now: Long): List<DeviceAlerts.DayDevice> = history(context, now)
+
+    fun historyFor(context: Context, dayKey: String): List<DeviceAlerts.DayDevice> = history(context, dayKey)
+
+    // ---- Phase 4 daily review state (SharedPreferences JSON, no Room migration) ----
+
+    /** Persisted selected event day for the review screen; null = follow today. */
+    fun selectedDayKey(context: Context): String? = context.getSharedPreferences(PREFS, 0).getString(KEY_REVIEW_DAY, null)
+
+    /** Persists the review screen's event day; null clears it back to follow-today. */
+    fun setSelectedDayKey(context: Context, dayKey: String?) {
+        require(dayKey == null || Regex("\\d{4}-\\d{2}-\\d{2}").matches(dayKey)) { "يوم غير صالح" }
+        context.getSharedPreferences(PREFS, 0).edit().putString(KEY_REVIEW_DAY, dayKey).apply()
+    }
+
+    private const val KEY_REVIEW_DAY = "review_day"
+
+    /** The current review state for one event day, parsed from storage. */
+    fun reviewState(context: Context, dayKey: String): ReviewState {
+        val raw = context.getSharedPreferences(PREFS, 0).getString("review_$dayKey", null)
+        val groups = if (raw == null) emptyList() else runCatching {
+            val array = JSONArray(raw)
+            (0 until array.length()).map { i ->
+                val item = array.getJSONObject(i)
+                DailyReconciliation.Group(item.getInt("count"), item.getLong("unitPrice"))
+            }
+        }.getOrDefault(emptyList())
+        return ReviewState(dayKey, groups, context.getSharedPreferences(PREFS, 0).getBoolean("review_done_$dayKey", false))
+    }
+
+    /** Writes (or removes when [groups] is empty) the day's draft groups; draft only — money stays manual_sales. */
+    fun saveReviewDraft(context: Context, state: ReviewState) {
+        require(state.dayKey.matches(Regex("\\d{4}-\\d{2}-\\d{2}"))) { "يوم غير صالح" }
+        val prefs = context.getSharedPreferences(PREFS, 0)
+        val editor = prefs.edit()
+        if (state.groups.isEmpty()) editor.remove("review_${state.dayKey}")
+        else {
+            val array = JSONArray()
+            state.groups.forEach { group -> array.put(JSONObject().put("count", group.count).put("unitPrice", group.unitPrice)) }
+            editor.putString("review_${state.dayKey}", array.toString())
+        }
+        editor.putBoolean("review_done_${state.dayKey}", state.confirmed)
+        editor.apply()
+    }
+
+    /** In-memory + persisted review state for one event day. */
+    data class ReviewState(val dayKey: String, val groups: List<DailyReconciliation.Group>, val confirmed: Boolean)
 
     fun activeBindingsFor(context: Context): Map<Long, String> = try {
         kotlinx.coroutines.runBlocking {

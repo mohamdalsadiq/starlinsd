@@ -84,6 +84,8 @@ interface BusinessDao {
     @Query("SELECT * FROM manual_sales ORDER BY at DESC") fun observeManualSales(): Flow<List<ManualSale>>
     @Query("SELECT * FROM manual_sales ORDER BY at DESC") suspend fun manualSales(): List<ManualSale>
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertManualSale(sale: ManualSale): Long
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun upsertManualSale(sale: ManualSale)
+    @Delete suspend fun deleteManualSale(sale: ManualSale)
     @Query("SELECT * FROM slot_reservations") suspend fun reservations(): List<SlotReservation>
     @Insert suspend fun reserve(reservation: SlotReservation)
     @Query("DELETE FROM slot_reservations WHERE sessionId = :id") suspend fun release(id: String)

@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.data.SubscriptionRepository
 import com.example.data.BackupData
 import com.example.data.ClientTracker
+import com.example.data.DailyReconciliation
 import com.example.data.DeviceSelection
 import com.example.data.IpListStore
 import com.example.data.TrackedDevice
@@ -152,6 +153,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
     fun addSales(id: String, lines: List<Pair<Int, Long>>, payment: String) = work {
         repo.addSales(id, lines, payment); message.value = "تمت إضافة الدخل إلى حساب اليوم"
+    }
+
+    /**
+     * Phase 4 daily device confirmation: upserts this event day's grouped review
+     * amounts as DailyReconciliation rows in manual_sales (idempotent per day,
+     * event-day attribution). work{} refreshes alarms/panel/finance flows after.
+     */
+    fun confirmDailyDevices(dayKey: String, unregisteredCount: Int, groups: List<DailyReconciliation.Group>, payment: String) = work {
+        repo.confirmDailyRevenue(dayKey, unregisteredCount, groups.map { it.count to it.unitPrice }, payment)
+        DeviceAlertsCoordinator.saveReviewDraft(getApplication(), DeviceAlertsCoordinator.ReviewState(dayKey, groups, confirmed = true))
+        message.value = "تم تأكيد الإيراد الإضافي ليوم $dayKey وإضافته إلى المالية"
     }
     fun change(id: String, action: String) = work {
         repo.changeState(id, action)

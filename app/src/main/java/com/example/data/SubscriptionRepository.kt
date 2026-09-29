@@ -96,6 +96,26 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
         }
     }
 
+    /**
+     * Phase 4 daily device confirmation (§40 report point H): replaces this event
+     * day's review rows wholesale. Rows carry deterministic ids "rev-<dayKey>:<index>"
+     * (DailyReconciliation.upsertId), so confirming twice stores once, editing
+     * 2500→3000 rewrites in place, and a shorter group list deletes the superseded
+     * rows — never a second copy of the money. The rows' `at` is pinned inside the
+     * EVENT day, so Finance/Revenue bucket the revenue into that day regardless of
+     * when the operator confirms. [unregisteredCount] is enforced here too (spec 21),
+     * not only in the UI.
+     */
+    suspend fun confirmDailyRevenue(dayKey: String, unregisteredCount: Int, groups: List<Pair<Int, Long>>, payment: String) = db.withTransaction {
+        val parsed = groups.map { (count, price) -> DailyReconciliation.Group(count, price) }
+        DailyReconciliation.validate(parsed, unregisteredCount, payment)
+        val settings = dao.settings() ?: BusinessSettings()
+        val rows = DailyReconciliation.plan(dayKey, time(), parsed, payment, settings.premiumBps)
+        val existing = DailyReconciliation.rowsFor(dao.manualSales(), dayKey)
+        existing.filter { row -> rows.none { it.id == row.id } }.forEach { dao.deleteManualSale(it) }
+        rows.forEach { dao.upsertManualSale(it) }
+    }
+
     suspend fun expansionPlan(id: Long): Plan = requireNotNull(dao.plan(id)).also { require(it.enabled) { "هذه الباقة متوقفة" } }
 
     private fun advance(s: Session, now: Long): Session {
