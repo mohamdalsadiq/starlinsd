@@ -201,6 +201,9 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
         require(TextRules.validKeyword(key)) { "الاختصار دون مسافات أو / وبحد أقصى 40 حرفًا" }
         require(shortcut.phrase.isNotBlank() && shortcut.phrase.length <= 10000) { "اكتب نصًا لا يتجاوز 10000 حرف" }
         require(db.shortcutDao().list().none { it.id != shortcut.id && it.keyword == key }) { "هذا الاختصار موجود؛ عدّل الاختصار الحالي" }
+        // Phase 4: subscription shortcuts must not shadow the recovery keyword — the
+        // service checks recovery first, so such a shortcut could never fire.
+        require(key != com.example.service.ExpanderHealth.recoveryKeyword(context)) { "هذه الكلمة محفوظة لاستعادة الاشتراكات؛ اختر غيرها" }
         require(shortcut.planId == null || dao.plan(shortcut.planId) != null) { "اختر باقة موجودة" }
         db.shortcutDao().insert(shortcut.copy(keyword = key))
     }

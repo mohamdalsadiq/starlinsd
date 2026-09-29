@@ -149,4 +149,15 @@ class DeviceRecoveryTest {
             fail("ended sessions must not be relinked")
         } catch (expected: IllegalArgumentException) { }
     }
+
+    /** A subscription shortcut must never shadow the recovery keyword (bidirectional guard). */
+    @Test fun subscriptionShortcutCannotShadowRecoveryKeyword() = runBlocking {
+        val plan = repo.dao.plans().first { it.minutes == 60 && !it.home }
+        val count = db.shortcutDao().list().size
+        try {
+            repo.saveShortcut(com.example.db.Shortcut(keyword = com.example.MainViewModel.DEFAULT_RECOVERY_KEYWORD, phrase = "x", planId = plan.id))
+            fail("recovery keyword must be reserved")
+        } catch (expected: IllegalArgumentException) { }
+        assertEquals(count, db.shortcutDao().list().size)
+    }
 }
