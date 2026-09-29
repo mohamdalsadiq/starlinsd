@@ -73,6 +73,23 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
         })
     }
 
+    /**
+     * Phase 4 password-change recovery (§40 report point J): re-links an EXISTING
+     * active/paused subscription to a re-discovered device. No new session, no new
+     * amount, no revenue, no added time — only the four display/diagnostic columns
+     * and the clientId binding change; duration/started/reserved/served/amount are
+     * carried untouched, so remaining time and the projected end time survive.
+     * When [deviceIsLive], a PAUSED session is resumed right away via the existing
+     * changeState path so the tracker continues it from the remaining time.
+     */
+    suspend fun relinkDevice(id: String, device: TrackedDevice, deviceIsLive: Boolean) = db.withTransaction {
+        val s = dao.session(id) ?: throw IllegalArgumentException("الاشتراك غير موجود")
+        require(!s.home && s.state in listOf("ACTIVE", "PAUSED")) { "يمكن استعادة الاشتراكات النشطة أو المتوقفة فقط" }
+        require(device.clientId in 1..4294967295L) { "معرّف الجهاز غير صالح" }
+        dao.updateSession(s.copy(deviceClientId = device.clientId, deviceIp = device.ip, deviceName = device.name, deviceMac = device.mac))
+        if (deviceIsLive && s.state == "PAUSED") changeState(id, "RESUME")
+    }
+
     suspend fun insert(session: Session): Long = db.withTransaction {
         if (dao.session(session.id) != null) return@withTransaction -1L
         val reservation = dao.reservations().firstOrNull { it.sessionId == session.id }

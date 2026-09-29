@@ -1,8 +1,11 @@
 package com.example.service
 
 import android.accessibilityservice.AccessibilityService
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
+import android.net.Uri
 import android.os.Bundle
 import android.text.InputType
 import android.view.accessibility.AccessibilityEvent
@@ -15,13 +18,38 @@ import com.example.domain.Money
 import com.example.domain.TextRules
 import com.example.notifications.SubscriptionAlarms
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.MutableStateFlow
 
 object ExpanderHealth {
     val connected = MutableStateFlow(false)
     fun preferences(context: Context): SharedPreferences = context.getSharedPreferences("expander", Context.MODE_PRIVATE)
     fun allowed(context: Context): Set<String> = preferences(context).getStringSet("apps", emptySet())?.toSet().orEmpty()
+
+    /** Phase 4: the recovery shortcut keyword; empty default falls back to MainViewModel's default. */
+    fun recoveryKeyword(context: Context): String =
+        preferences(context).getString("recovery_keyword", null)?.takeIf { it.isNotBlank() }
+            ?: com.example.MainViewModel.DEFAULT_RECOVERY_KEYWORD
+
+    /** Cold Flow of the recovery keyword (current value, then changes) for the settings UI. */
+    fun recoveryKeywordFlow(preferences: SharedPreferences): kotlinx.coroutines.flow.Flow<String> =
+        kotlinx.coroutines.flow.callbackFlow {
+            val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+                if (key == "recovery_keyword") trySend(preferences.getString("recovery_keyword", null).orEmpty())
+            }
+            preferences.registerOnSharedPreferenceChangeListener(listener)
+            trySend(preferences.getString("recovery_keyword", null).orEmpty())
+            awaitClose { preferences.unregisterOnSharedPreferenceChangeListener(listener) }
+        }
 }
+
+/**
+ * Recovery keyword handling for the Phase 4 password-change flow: when the typed
+ * keyword matches the configured recovery keyword (default "استعادة"), the service
+ * opens the recovery screen instead of creating a subscription — Recovery never
+ * registers subscriptions, so it must never ride the subscription path.
+ */
+internal fun isRecoveryKeyword(keyword: String, context: Context): Boolean = keyword == ExpanderHealth.recoveryKeyword(context)
 
 /** Edits only the focused, non-password field in apps the operator explicitly selects. */
 class TextExpanderService : AccessibilityService() {
@@ -61,6 +89,18 @@ class TextExpanderService : AccessibilityService() {
         if (lastApplied == (node.windowId to text)) return
         val start = node.textSelectionStart
         val match = TextRules.match(text, start, node.textSelectionEnd, shortcuts.map { it.keyword }.toSet()) ?: return
+        // Recovery keyword: open the recovery screen instead of any subscription flow.
+        if (isRecoveryKeyword(match.keyword, this@TextExpanderService)) {
+            processing = true
+            val open = PendingIntent.getActivity(this@TextExpanderService, 2103,
+                Intent(this@TextExpanderService, com.example.MainActivity::class.java).putExtra("DEVICE_RECOVERY", "1")
+                    .setData(Uri.parse("slotra://recovery")), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+            try { open.send() } catch (_: PendingIntent.CanceledException) { }
+            Toast.makeText(this@TextExpanderService, "افتح شاشة استعادة الاشتراكات", Toast.LENGTH_SHORT).show()
+            lastApplied = node.windowId to text
+            processing = false
+            return
+        }
         val shortcut = shortcuts.first { it.keyword == match.keyword }
         processing = true
         scope.launch {

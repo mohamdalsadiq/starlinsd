@@ -17,12 +17,14 @@ class MainActivity : ComponentActivity() {
     private val model: MainViewModel by viewModels()
     private var requestedSession by mutableStateOf<String?>(null)
     private var requestedConfirmation by mutableStateOf<String?>(null)
+    private var requestedRecovery by mutableStateOf<String?>(null)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         requestedSession = intent.getStringExtra("SESSION_ID")
         requestedConfirmation = intent.getStringExtra("DEVICE_CONFIRMATION")
+        requestedRecovery = intent.getStringExtra("DEVICE_RECOVERY")
         setContent {
-            ManagerTheme { ManagerApp(model, requestedSession, requestedConfirmation) }
+            ManagerTheme { ManagerApp(model, requestedSession, requestedConfirmation, requestedRecovery) }
         }
     }
     override fun onResume() { super.onResume(); model.refresh() }
@@ -30,6 +32,7 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent); setIntent(intent)
         requestedSession = intent.getStringExtra("SESSION_ID")
         requestedConfirmation = intent.getStringExtra("DEVICE_CONFIRMATION")
+        requestedRecovery = intent.getStringExtra("DEVICE_RECOVERY")
     }
 }
 

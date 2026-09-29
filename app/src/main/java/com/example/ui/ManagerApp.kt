@@ -12,6 +12,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -42,6 +43,7 @@ import androidx.lifecycle.repeatOnLifecycle
 import com.example.MainViewModel
 import com.example.data.DailyReconciliation
 import com.example.data.DeviceAlerts
+import com.example.data.DeviceRecovery
 import com.example.data.DeviceSelection
 import com.example.data.IpListStore
 import com.example.data.TrackedDevice
@@ -83,7 +85,7 @@ internal fun amount(minor: Long): String {
     }, confirmButton = { Button(onClick = save, enabled = valid) { Text("حفظ") } }, dismissButton = { TextButton(onClick = dismiss) { Text("إلغاء") } })
 }
 
-@Composable fun ManagerApp(vm: MainViewModel, requestedSession: String?, requestedConfirmation: String? = null) {
+@Composable fun ManagerApp(vm: MainViewModel, requestedSession: String?, requestedConfirmation: String? = null, requestedRecovery: String? = null) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var detail by rememberSaveable { mutableStateOf("") }
     var newSession by rememberSaveable { mutableStateOf(false) }
@@ -99,6 +101,8 @@ internal fun amount(minor: Long): String {
     LaunchedEffect(requestedSession) { if (requestedSession != null) { tab = 1; detail = "" } }
     // Phase 3 confirmation tap-in (spec 21): opens the temporary confirmation detail.
     LaunchedEffect(requestedConfirmation) { if (requestedConfirmation != null) { tab = 4; detail = "تأكيد الأجهزة اليومية" } }
+    LaunchedEffect(requestedRecovery) { if (requestedRecovery != null) { tab = 4; detail = "استعادة الاشتراكات" } }
+    var requestedRecoveryState by remember { mutableStateOf(requestedRecovery) }
     LaunchedEffect(message) { message?.let { host.showSnackbar(it); vm.message.value = null } }
     BackHandler(detail.isNotBlank() || tab != 0) { if (detail.isNotBlank()) detail = "" else tab = 0 }
     val labels = listOf("الرئيسية", "المشتركون", "الديون", "الاختصارات", "المزيد")
@@ -120,6 +124,7 @@ internal fun amount(minor: Long): String {
                             detail == "اختبار Starlink" -> StarlinkTestScreen()
                             detail == "إدارة الأجهزة" -> DevicesScreen(vm)
                             detail == "تأكيد الأجهزة اليومية" -> DeviceConfirmationScreen(vm)
+                            detail == "استعادة الاشتراكات" -> RecoveryScreen(vm)
                             detail == "الإعدادات" -> {
                                 val config by vm.settings.collectAsStateWithLifecycle()
                                 val now by vm.clock.collectAsStateWithLifecycle()
@@ -332,6 +337,7 @@ internal fun amount(minor: Long): String {
     LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Title("المزيد", "أدوات مشروعك وإعدادات التطبيق") }
         item { Card(onClick = { open("إدارة الأجهزة") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.Devices, "إدارة الأجهزة", "الأجهزة الحية وقوائم أهل البيت والمراقبة") } } }
+        item { Card(onClick = { open("استعادة الاشتراكات") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.Restore, "استعادة الاشتراكات", "إعادة ربط اشتراك قائم بجهازه بعد تغيير كلمة مرور الشبكة") } } }
         item { Card(onClick = { open("تأكيد الأجهزة اليومية") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.FactCheck, "تأكيد الأجهزة اليومية", "أجهزة اليوم المرتبطة وغير المرتبطة") } } }
         item { Card(onClick = { open("اختبار Starlink") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.Router, "اختبار Starlink", "قراءة الأجهزة وتجربة الإيقاف · محليًا") } } }
         item { Card(onClick = { open("الباقات والأسعار") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.LocalOffer, "الباقات والأسعار", "إدارة المدة والسعر وأهل البيت") } } }
@@ -393,6 +399,10 @@ internal fun amount(minor: Long): String {
                 Text(remaining(Rules.remaining(s.clock(), timerNow)), Modifier.testTag("timer-${s.id}"),
                     style = MaterialTheme.typography.headlineLarge.copy(textDirection = androidx.compose.ui.text.style.TextDirection.Ltr),
                     fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                // Phase 4 (spec 6): END TIME is the primary value the operator sees,
+                // always reflecting the real clock (a pause shifts it; resume re-extends).
+                Text("النهاية: ${stamp(s.resumed + s.duration - s.served)}", Modifier.testTag("endtime-${s.id}"),
+                    style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             }
             if (expanded && s.state == "ACTIVE") Text("النهاية: ${stamp(s.resumed + s.duration - s.served)}")
             val financial = ledger["session:${s.id}"]
@@ -540,6 +550,79 @@ private fun DeviceConfirmationScreen(vm: MainViewModel) {
     if (showPicker) DayPickerDialog(dayKey) { picked -> dayKey = picked; showPicker = false }
 }
 
+/**
+ * Phase 4 password-change recovery screen (§40 report point J): a short list of
+ * active/paused subscriptions whose device disappeared, each showing name +
+ * "...<last octets>" + actual end time; the operator picks a live device from
+ * the last successful snapshot. No auto-pick by IP (spec 28); relink keeps the
+ * remaining time and never creates a subscription, time, or revenue.
+ */
+@Composable
+private fun RecoveryScreen(vm: MainViewModel) {
+    val scope = rememberCoroutineScope()
+    val busy by vm.busy.collectAsStateWithLifecycle()
+    var board by remember { mutableStateOf<DeviceRecovery.Board?>(null) }
+    var loading by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var pairing by remember { mutableStateOf<DeviceRecovery.Candidate?>(null) }
+    var options by remember { mutableStateOf<List<DeviceRecovery.Option>>(emptyList()) }
+    var selectedOption by remember { mutableStateOf<DeviceRecovery.Option?>(null) }
+
+    suspend fun load() {
+        loading = true; error = null
+        try { board = vm.recoveryBoard() } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (e: Exception) { error = e.message ?: "تعذّر قراءة الأجهزة"; board = null }
+        finally { loading = false }
+    }
+    LaunchedEffect(Unit) { load() }
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { Title("استعادة الاشتراكات", "بعد تغيير كلمة مرور الشبكة: أعد ربط الاشتراك القائم بجهازه دون إنشاء اشتراك جديد") }
+        item { Panel {
+            when {
+                loading -> Text("جاري قراءة الأجهزة من الراوتر…")
+                error != null -> Text(error!!, color = MaterialTheme.colorScheme.error)
+                board != null && !board!!.snapshotOk -> Text("تعذّر الوصول للراوتر؛ لا تُقترح أي استعادة قبل نجاح القراءة.", color = MaterialTheme.colorScheme.error)
+                board != null && board!!.candidates.isEmpty() -> Text("لا توجد اشتراكات بحاجة لاستعادة: كل الأجهزة المرتبطة ظاهرة في آخر قراءة.")
+                board != null -> Text("اشتراكات أجهزتها غير ظاهرة بعد تغيير كلمة المرور: ${board!!.candidates.size}")
+            }
+            TextButton(enabled = !loading && !busy, onClick = { scope.launch { load() } }) { Text("تحديث") }
+        } }
+        val current = board
+        if (current != null) items(current.candidates, key = { it.sessionId }) { c ->
+            Panel {
+                Text(c.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text("…${DeviceRecovery.ipTail(c.ip)} · ${if (c.state == "PAUSED") "موقوف مؤقتًا" else "نشط"}",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("ينتهي: ${stamp(c.endAt)} · متبقٍ ${remaining(c.remaining)}", style = MaterialTheme.typography.bodyMedium)
+                TextButton(enabled = !busy && current.options.isNotEmpty(), onClick = {
+                    pairing = c; options = current.options
+                }) { Text("إعادة الربط بجهاز") }
+            }
+        }
+        if (current != null && current.candidates.isNotEmpty() && current.options.isEmpty() && !loading) {
+            item { Panel { Text("لا توجد أجهزة حية مرشحة الآن. تأكد أن الأجهزة أعادت الاتصال بالشبكة ثم اضغط تحديث.", color = MaterialTheme.colorScheme.error) } } }
+    }
+    pairing?.let { candidate ->
+        AlertDialog(onDismissRequest = { pairing = null; selectedOption = null }, title = { Text("اختر جهاز ${candidate.name}") }, text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("الأجهزة الحية المتاحة (الاسم · آخر مقاطع العنوان):", style = MaterialTheme.typography.bodySmall)
+                options.forEach { option ->
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(selected = selectedOption == option, onClick = { selectedOption = option })
+                        Text("${option.name.ifBlank { "جهاز ${option.clientId}" }} · …${DeviceRecovery.ipTail(option.ip)}")
+                    }
+                }
+                Text("الاستعادة تحافظ على الوقت المتبقي والسعر ولا تنشئ اشتراكًا أو إيرادًا جديدًا.", style = MaterialTheme.typography.bodySmall)
+            }
+        }, confirmButton = { Button(enabled = selectedOption != null && !busy, onClick = {
+            val option = selectedOption!!
+            val device = TrackedDevice(option.clientId, "", option.ip, option.mac, com.example.data.IpLists.Category.UNKNOWN, null)
+            vm.relinkDevice(candidate.sessionId, device, deviceIsLive = true)
+            pairing = null; selectedOption = null
+        }) { Text("تأكيد الاستعادة") } }, dismissButton = { TextButton(onClick = { pairing = null; selectedOption = null }) { Text("إلغاء") } })
+    }
+}
+
 /** Screen-local grouped-amount draft (payment is a per-confirm choice, not persisted). */
 internal data class DailyDraft(val dayKey: String, val groups: List<DailyReconciliation.Group>, val payment: String = "CASH")
 
@@ -671,6 +754,17 @@ private fun SettingsScreen(vm: MainViewModel, config: BusinessSettings?, now: Lo
             Button(enabled = !busy && parsedSummary != null, onClick = { vm.setDeviceSummaryTime(parsedSummary!!) }) { Text("حفظ وقت الملخص") }
             if (parsedSummary == null) Text("اكتب الوقت بصيغة HH:mm، مثل 22:00", color = MaterialTheme.colorScheme.error)
             Text("التنبيهات محلية داخل الهاتف: لا يُرسل أي بيانات جهاز إلى أي خدمة خارجية.", style = MaterialTheme.typography.bodySmall)
+            val recoveryKeyword by vm.recoveryKeyword.collectAsStateWithLifecycle()
+            var recoveryField by remember(recoveryKeyword) { mutableStateOf(recoveryKeyword) }
+            Text("اختصار استعادة الاشتراكات (بعد تغيير كلمة المرور): $recoveryKeyword")
+            Field("كلمة استعادة الاشتراكات", recoveryField, { recoveryField = it })
+            Button(enabled = !busy && recoveryField.trim() != recoveryKeyword && recoveryField.isNotBlank(), onClick = { vm.setRecoveryKeyword(recoveryField) }) { Text("حفظ كلمة الاستعادة") }
+            Text("اكتبها ثم مسافة في أي تطبيق مسموح لفتح شاشة الاستعادة. الاستعادة تعيد ربط اشتراك قائم بجهازه ولا تنشئ اشتراكًا جديدًا.", style = MaterialTheme.typography.bodySmall)
+            val signing = remember(now) { vm.debugSigningInfo() }
+            signing?.let { info ->
+                Text("بصمة توقيع النسخة الحالية: ${info.take(16)}…", style = MaterialTheme.typography.bodySmall)
+                Text("تثبيت نسخة أعلى القديمة يتطلب نفس البصمة؛ التغيير يفرض حذف التطبيق وفقدان البيانات.", style = MaterialTheme.typography.bodySmall)
+            }
         } }
         item { Panel {
             SectionHeading(Icons.Default.CloudDone, "النسخ الاحتياطي والاستعادة")
