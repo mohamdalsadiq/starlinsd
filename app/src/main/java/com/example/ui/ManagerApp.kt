@@ -12,6 +12,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -40,11 +41,15 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import com.example.MainViewModel
+import com.example.data.DailyReconciliation
+import com.example.data.DeviceAlerts
+import com.example.data.DeviceRecovery
 import com.example.data.DeviceSelection
 import com.example.data.IpListStore
 import com.example.data.TrackedDevice
 import com.example.db.*
 import com.example.domain.*
+import com.example.notifications.DeviceAlertsCoordinator
 import com.example.notifications.SubscriptionAlarms
 import com.example.service.ExpanderHealth
 import com.example.service.TextExpanderService
@@ -68,8 +73,8 @@ internal fun amount(minor: Long): String {
 @Composable internal fun Panel(content: @Composable ColumnScope.() -> Unit) {
     Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp), content = content) }
 }
-@Composable internal fun Field(label: String, value: String, onChange: (String) -> Unit, single: Boolean = true, numeric: Boolean = false) {
-    OutlinedTextField(value, onChange, label = { Text(label) }, modifier = Modifier.fillMaxWidth(), singleLine = single, minLines = if (single) 1 else 3, keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = if (numeric) androidx.compose.ui.text.input.KeyboardType.Decimal else androidx.compose.ui.text.input.KeyboardType.Text))
+@Composable internal fun Field(label: String, value: String, onChange: (String) -> Unit, single: Boolean = true, numeric: Boolean = false, modifier: Modifier = Modifier.fillMaxWidth()) {
+    OutlinedTextField(value, onChange, label = { Text(label) }, modifier = modifier, singleLine = single, minLines = if (single) 1 else 3, keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = if (numeric) androidx.compose.ui.text.input.KeyboardType.Decimal else androidx.compose.ui.text.input.KeyboardType.Text))
 }
 @Composable internal fun Choice(label: String, selected: Boolean, onClick: () -> Unit) {
     FilterChip(selected, onClick, label = { Text(label) })
@@ -80,7 +85,7 @@ internal fun amount(minor: Long): String {
     }, confirmButton = { Button(onClick = save, enabled = valid) { Text("حفظ") } }, dismissButton = { TextButton(onClick = dismiss) { Text("إلغاء") } })
 }
 
-@Composable fun ManagerApp(vm: MainViewModel, requestedSession: String?) {
+@Composable fun ManagerApp(vm: MainViewModel, requestedSession: String?, requestedConfirmation: String? = null, requestedRecovery: String? = null) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var detail by rememberSaveable { mutableStateOf("") }
     var newSession by rememberSaveable { mutableStateOf(false) }
@@ -94,6 +99,10 @@ internal fun amount(minor: Long): String {
         while (true) { vm.refresh(); delay(15000) }
     } }
     LaunchedEffect(requestedSession) { if (requestedSession != null) { tab = 1; detail = "" } }
+    // Phase 3 confirmation tap-in (spec 21): opens the temporary confirmation detail.
+    LaunchedEffect(requestedConfirmation) { if (requestedConfirmation != null) { tab = 4; detail = "تأكيد الأجهزة اليومية" } }
+    LaunchedEffect(requestedRecovery) { if (requestedRecovery != null) { tab = 4; detail = "استعادة الاشتراكات" } }
+    var requestedRecoveryState by remember { mutableStateOf(requestedRecovery) }
     LaunchedEffect(message) { message?.let { host.showSnackbar(it); vm.message.value = null } }
     BackHandler(detail.isNotBlank() || tab != 0) { if (detail.isNotBlank()) detail = "" else tab = 0 }
     val labels = listOf("الرئيسية", "المشتركون", "الديون", "الاختصارات", "المزيد")
@@ -114,6 +123,8 @@ internal fun amount(minor: Long): String {
                         when {
                             detail == "اختبار Starlink" -> StarlinkTestScreen()
                             detail == "إدارة الأجهزة" -> DevicesScreen(vm)
+                            detail == "تأكيد الأجهزة اليومية" -> DeviceConfirmationScreen(vm)
+                            detail == "استعادة الاشتراكات" -> RecoveryScreen(vm)
                             detail == "الإعدادات" -> {
                                 val config by vm.settings.collectAsStateWithLifecycle()
                                 val now by vm.clock.collectAsStateWithLifecycle()
@@ -326,6 +337,8 @@ internal fun amount(minor: Long): String {
     LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Title("المزيد", "أدوات مشروعك وإعدادات التطبيق") }
         item { Card(onClick = { open("إدارة الأجهزة") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.Devices, "إدارة الأجهزة", "الأجهزة الحية وقوائم أهل البيت والمراقبة") } } }
+        item { Card(onClick = { open("استعادة الاشتراكات") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.Restore, "استعادة الاشتراكات", "إعادة ربط اشتراك قائم بجهازه بعد تغيير كلمة مرور الشبكة") } } }
+        item { Card(onClick = { open("تأكيد الأجهزة اليومية") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.FactCheck, "تأكيد الأجهزة اليومية", "أجهزة اليوم المرتبطة وغير المرتبطة") } } }
         item { Card(onClick = { open("اختبار Starlink") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.Router, "اختبار Starlink", "قراءة الأجهزة وتجربة الإيقاف · محليًا") } } }
         item { Card(onClick = { open("الباقات والأسعار") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.LocalOffer, "الباقات والأسعار", "إدارة المدة والسعر وأهل البيت") } } }
         item { Card(onClick = { open("التقارير") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.BarChart, "التقارير", "الدخل والتغطية وسجل الأيام") } } }
@@ -386,6 +399,10 @@ internal fun amount(minor: Long): String {
                 Text(remaining(Rules.remaining(s.clock(), timerNow)), Modifier.testTag("timer-${s.id}"),
                     style = MaterialTheme.typography.headlineLarge.copy(textDirection = androidx.compose.ui.text.style.TextDirection.Ltr),
                     fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                // Phase 4 (spec 6): END TIME is the primary value the operator sees,
+                // always reflecting the real clock (a pause shifts it; resume re-extends).
+                Text("النهاية: ${stamp(s.resumed + s.duration - s.served)}", Modifier.testTag("endtime-${s.id}"),
+                    style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             }
             if (expanded && s.state == "ACTIVE") Text("النهاية: ${stamp(s.resumed + s.duration - s.served)}")
             val financial = ledger["session:${s.id}"]
@@ -446,9 +463,185 @@ internal fun amount(minor: Long): String {
             Field("السعر بالجنيه السوداني", cash, { cash = it }, numeric = true)
         }
     }
+}/**
+ * Phase 4 daily device review (replaces the Phase 3 placeholder). The operator
+ * picks one event day, sees registered vs unregistered devices for it, records
+ * grouped manual amounts (500×1 + 1000×2), and confirms — money lands in the
+ * existing manual_sales table as DailyReconciliation rows attributed to the
+ * event day, idempotently (§40 report point H). HOME never reaches the history;
+ * WATCH counts as unregistered unless bound.
+ */
+@Composable
+private fun DeviceConfirmationScreen(vm: MainViewModel) {
+    val context = LocalContext.current
+    val now by vm.clock.collectAsStateWithLifecycle()
+    var devices by remember { mutableStateOf<List<DeviceAlerts.DayDevice>>(emptyList()) }
+    var bindings by remember { mutableStateOf<Map<Long, String>>(emptyMap()) }
+    var dayKey by rememberSaveable { mutableStateOf(DeviceAlerts.dayKey(System.currentTimeMillis())) }
+    var draft by remember(dayKey) { mutableStateOf(DailyDraft(dayKey, DeviceAlertsCoordinator.reviewState(context, dayKey).groups)) }
+    var showPicker by rememberSaveable { mutableStateOf(false) }
+
+    LaunchedEffect(now, dayKey) {
+        kotlinx.coroutines.withContext(Dispatchers.IO) {
+            devices = DeviceAlertsCoordinator.historyFor(context, dayKey)
+            bindings = DeviceAlertsCoordinator.activeBindingsFor(context)
+        }
+    }
+    val summary = remember(devices, bindings) { DeviceAlerts.summary(devices, bindings) }
+    val sales by vm.manualSales.collectAsStateWithLifecycle()
+    val confirmed = remember(sales, dayKey) { DailyReconciliation.rowsFor(sales, dayKey) }
+    val confirmedTotal = remember(confirmed) { confirmed.sumOf { it.amount } }
+    val busy by vm.busy.collectAsStateWithLifecycle()
+
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { Title("تأكيد الأجهزة اليومية", "أجهزة اليوم المرتبطة وغير المرتبطة · الإيراد يُنسب ليوم الأحداث") }
+        item { Panel {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("يوم المراجعة", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(dayLabel(dayKey), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                }
+                TextButton(onClick = { showPicker = true }) { Text("اختيار يوم") }
+            }
+            Text("الأجهزة المسجلة (اشتراك نشط): ${summary.subscribed.size}", color = MaterialTheme.colorScheme.primary)
+            Text("الأجهزة غير المسجلة: ${summary.unconfirmed.size}", color = if (summary.unconfirmed.isEmpty()) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error)
+        } }
+        item { Panel {
+            SectionHeading(Icons.Default.CheckCircle, "أجهزة مرتبطة باشتراك مسجل", "إيرادها معروف من الاختصارات؛ لا تُدخل هنا مرة ثانية")
+            if (summary.subscribed.isEmpty()) Text("لا يوجد")
+            summary.subscribed.forEach { Text("· ${it.name.ifBlank { "جهاز ${it.clientId}" }} (${it.ip})") }
+        } }
+        item { Panel {
+            SectionHeading(Icons.Default.HelpOutline, "أجهزة بدون اشتراك مسجل", "راجعها وأدخل المبالغ مجمعة بعدد الأجهزة")
+            if (summary.unconfirmed.isEmpty()) Text("لا توجد أجهزة غير مسجلة في هذا اليوم.")
+            summary.unconfirmed.forEach { Text("· ${it.name.ifBlank { "جهاز ${it.clientId}" }} (${it.ip})") }
+        } }
+        item { Panel {
+            SectionHeading(Icons.Default.Payments, "الإيراد الإضافي المؤكد", "قيود يوم الأحداث نفسه في المالية الحالية")
+            if (confirmed.isEmpty()) Text("لم يتم تأكيد مبالغ لهذا اليوم بعد.")
+            confirmed.forEach { row -> Text("· ${Money.show(row.unitPrice)} × ${row.count} = ${amount(row.amount)}") }
+            if (confirmed.isNotEmpty()) MoneyLine("إجمالي الإيراد الإضافي", confirmedTotal)
+        } }
+        item { Panel {
+            SectionHeading(Icons.Default.Calculate, "تسجيل مبالغ مجمعة", "مثال: 500 × 1 + 1000 × 2 = 2500 ج.س")
+            draft.groups.forEachIndexed { index, group ->
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Field("المبلغ (${index + 1})", Money.show(group.unitPrice), { value ->
+                        val price = Money.parse(value) ?: 0L
+                        draft = draft.copy(groups = draft.groups.mapIndexed { i, g -> if (i == index) g.copy(unitPrice = price) else g })
+                    }, numeric = true, modifier = Modifier.weight(1f))
+                    Field("عدد الأجهزة", group.count.toString(), { value ->
+                        draft = draft.copy(groups = draft.groups.mapIndexed { i, g -> if (i == index) g.copy(count = value.toIntOrNull() ?: 0) else g })
+                    }, numeric = true, modifier = Modifier.weight(1f))
+                    IconButton(onClick = { draft = draft.copy(groups = draft.groups.filterIndexed { i, _ -> i != index }) }) { Icon(Icons.Default.Close, "حذف") }
+                }
+            }
+            TextButton(enabled = draft.groups.size < DailyReconciliation.MAX_GROUPS, onClick = { draft = draft.copy(groups = draft.groups + DailyReconciliation.Group(1, 0)) }) { Text("إضافة مبلغ") }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Choice("كاش", draft.payment == "CASH") { draft = draft.copy(payment = "CASH") }
+                Choice("بنكك", draft.payment == "BANK") { draft = draft.copy(payment = "BANK") }
+            }
+            Button(enabled = !busy && summary.unconfirmed.isNotEmpty() && draft.groups.isNotEmpty(), onClick = {
+                vm.confirmDailyDevices(dayKey, summary.unconfirmed.size, draft.groups, draft.payment)
+            }) { Text("تأكيد الدخل الإضافي") }
+            Text("التأكيد يستبدل قيود هذا اليوم (لا يضيف مرتين)، والتعديل يحدث المبالغ مكانها.", style = MaterialTheme.typography.bodySmall)
+        } }
+    }
+    if (showPicker) DayPickerDialog(dayKey) { picked -> dayKey = picked; showPicker = false }
 }
 
-@Composable private fun SettingsScreen(vm: MainViewModel, config: BusinessSettings?, now: Long) {
+/**
+ * Phase 4 password-change recovery screen (§40 report point J): a short list of
+ * active/paused subscriptions whose device disappeared, each showing name +
+ * "...<last octets>" + actual end time; the operator picks a live device from
+ * the last successful snapshot. No auto-pick by IP (spec 28); relink keeps the
+ * remaining time and never creates a subscription, time, or revenue.
+ */
+@Composable
+private fun RecoveryScreen(vm: MainViewModel) {
+    val scope = rememberCoroutineScope()
+    val busy by vm.busy.collectAsStateWithLifecycle()
+    var board by remember { mutableStateOf<DeviceRecovery.Board?>(null) }
+    var loading by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var pairing by remember { mutableStateOf<DeviceRecovery.Candidate?>(null) }
+    var options by remember { mutableStateOf<List<DeviceRecovery.Option>>(emptyList()) }
+    var selectedOption by remember { mutableStateOf<DeviceRecovery.Option?>(null) }
+
+    suspend fun load() {
+        loading = true; error = null
+        try { board = vm.recoveryBoard() } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (e: Exception) { error = e.message ?: "تعذّر قراءة الأجهزة"; board = null }
+        finally { loading = false }
+    }
+    LaunchedEffect(Unit) { load() }
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { Title("استعادة الاشتراكات", "بعد تغيير كلمة مرور الشبكة: أعد ربط الاشتراك القائم بجهازه دون إنشاء اشتراك جديد") }
+        item { Panel {
+            when {
+                loading -> Text("جاري قراءة الأجهزة من الراوتر…")
+                error != null -> Text(error!!, color = MaterialTheme.colorScheme.error)
+                board != null && !board!!.snapshotOk -> Text("تعذّر الوصول للراوتر؛ لا تُقترح أي استعادة قبل نجاح القراءة.", color = MaterialTheme.colorScheme.error)
+                board != null && board!!.candidates.isEmpty() -> Text("لا توجد اشتراكات بحاجة لاستعادة: كل الأجهزة المرتبطة ظاهرة في آخر قراءة.")
+                board != null -> Text("اشتراكات أجهزتها غير ظاهرة بعد تغيير كلمة المرور: ${board!!.candidates.size}")
+            }
+            TextButton(enabled = !loading && !busy, onClick = { scope.launch { load() } }) { Text("تحديث") }
+        } }
+        val current = board
+        if (current != null) items(current.candidates, key = { it.sessionId }) { c ->
+            Panel {
+                Text(c.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text("…${DeviceRecovery.ipTail(c.ip)} · ${if (c.state == "PAUSED") "موقوف مؤقتًا" else "نشط"}",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("ينتهي: ${stamp(c.endAt)} · متبقٍ ${remaining(c.remaining)}", style = MaterialTheme.typography.bodyMedium)
+                TextButton(enabled = !busy && current.options.isNotEmpty(), onClick = {
+                    pairing = c; options = current.options
+                }) { Text("إعادة الربط بجهاز") }
+            }
+        }
+        if (current != null && current.candidates.isNotEmpty() && current.options.isEmpty() && !loading) {
+            item { Panel { Text("لا توجد أجهزة حية مرشحة الآن. تأكد أن الأجهزة أعادت الاتصال بالشبكة ثم اضغط تحديث.", color = MaterialTheme.colorScheme.error) } } }
+    }
+    pairing?.let { candidate ->
+        AlertDialog(onDismissRequest = { pairing = null; selectedOption = null }, title = { Text("اختر جهاز ${candidate.name}") }, text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("الأجهزة الحية المتاحة (الاسم · آخر مقاطع العنوان):", style = MaterialTheme.typography.bodySmall)
+                options.forEach { option ->
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(selected = selectedOption == option, onClick = { selectedOption = option })
+                        Text("${option.name.ifBlank { "جهاز ${option.clientId}" }} · …${DeviceRecovery.ipTail(option.ip)}")
+                    }
+                }
+                Text("الاستعادة تحافظ على الوقت المتبقي والسعر ولا تنشئ اشتراكًا أو إيرادًا جديدًا.", style = MaterialTheme.typography.bodySmall)
+            }
+        }, confirmButton = { Button(enabled = selectedOption != null && !busy, onClick = {
+            val option = selectedOption!!
+            val device = TrackedDevice(option.clientId, "", option.ip, option.mac, com.example.data.IpLists.Category.UNKNOWN, null)
+            vm.relinkDevice(candidate.sessionId, device, deviceIsLive = true)
+            pairing = null; selectedOption = null
+        }) { Text("تأكيد الاستعادة") } }, dismissButton = { TextButton(onClick = { pairing = null; selectedOption = null }) { Text("إلغاء") } })
+    }
+}
+
+/** Screen-local grouped-amount draft (payment is a per-confirm choice, not persisted). */
+internal data class DailyDraft(val dayKey: String, val groups: List<DailyReconciliation.Group>, val payment: String = "CASH")
+
+private fun dayLabel(dayKey: String): String = try {
+    SimpleDateFormat("EEEE، d MMMM yyyy", Locale.forLanguageTag("ar")).format(SimpleDateFormat("yyyy-MM-dd", Locale.US).parse(dayKey)!!)
+} catch (_: Exception) { dayKey }
+
+@Composable
+private fun DayPickerDialog(current: String, onPick: (String) -> Unit) {
+    var value by rememberSaveable { mutableStateOf(current) }
+    val valid = Regex("\\d{4}-\\d{2}-\\d{2}").matches(value)
+    Form("اختيار يوم المراجعة", { onPick(current) }, { onPick(value) }, valid) {
+        Field("اليوم · yyyy-MM-dd", value, { value = it })
+        Text("الافتراضي اليوم. الأيام السابقة تبقى قابلة للتأكيد ضمن نافذة الاحتفاظ.", style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+@Composable
+private fun SettingsScreen(vm: MainViewModel, config: BusinessSettings?, now: Long) {
     val context = LocalContext.current
     val bound by ExpanderHealth.connected.collectAsStateWithLifecycle()
     val selectedApps = remember(now) { ExpanderHealth.allowed(context) }
@@ -542,6 +735,36 @@ internal fun amount(minor: Long): String {
             Button(enabled = !busy && validClose, onClick = { vm.setDailyClose(if (closeTime.isBlank()) -1 else parsedMinute!!) }) { Text("حفظ وقت الإغلاق") }
             if (!validClose) Text("اكتب الوقت بصيغة HH:mm، مثل 18:00", color = MaterialTheme.colorScheme.error)
             Text("عند هذا الوقت تُنهى كل الاشتراكات النشطة والمتوقفة مؤقتًا فورًا، ويُحتسب إيرادها كاملًا حتى لو لم تكتمل مهلة التثبيت (${Rules.RECOGNITION_MINUTES} دقائق). أرقام اليوم لا تتاح لغيرها حتى بعد الإغلاق.", style = MaterialTheme.typography.bodySmall)
+        } }
+        item { Panel {
+            SectionHeading(Icons.Default.DevicesOther, "تنبيهات الأجهزة", "تنبيه عند ظهور جهاز غير مرتبط، وملخص يومي")
+            val delay = remember(now) { DeviceAlertsCoordinator.knownDelayMinutes(context) }
+            val summaryMin = remember(now) { DeviceAlertsCoordinator.knownSummaryMinute(context) }
+            Text("تنبيه جهاز غير معروف: بعد $delay دقيقة من ظهوره")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(1, 3, 5).forEach { option ->
+                    Choice("$option دقائق", delay == option) { if (delay != option) vm.setDeviceAlertDelay(option) }
+                }
+            }
+            Text("ملخص تأكيد الأجهزة اليومي: ${String.format(Locale.ROOT, "%02d:%02d", summaryMin / 60, summaryMin % 60)}")
+            var summaryTime by rememberSaveable(summaryMin) { mutableStateOf(String.format(Locale.ROOT, "%02d:%02d", summaryMin / 60, summaryMin % 60)) }
+            Field("وقت الملخص اليومي · HH:mm", summaryTime, { summaryTime = it })
+            val parsedSummary = Regex("^([01]?[0-9]|2[0-3]):([0-5][0-9])$").matchEntire(Money.normalize(summaryTime))
+                ?.let { m -> m.groupValues[1].toInt() * 60 + m.groupValues[2].toInt() }
+            Button(enabled = !busy && parsedSummary != null, onClick = { vm.setDeviceSummaryTime(parsedSummary!!) }) { Text("حفظ وقت الملخص") }
+            if (parsedSummary == null) Text("اكتب الوقت بصيغة HH:mm، مثل 22:00", color = MaterialTheme.colorScheme.error)
+            Text("التنبيهات محلية داخل الهاتف: لا يُرسل أي بيانات جهاز إلى أي خدمة خارجية.", style = MaterialTheme.typography.bodySmall)
+            val recoveryKeyword by vm.recoveryKeyword.collectAsStateWithLifecycle()
+            var recoveryField by remember(recoveryKeyword) { mutableStateOf(recoveryKeyword) }
+            Text("اختصار استعادة الاشتراكات (بعد تغيير كلمة المرور): $recoveryKeyword")
+            Field("كلمة استعادة الاشتراكات", recoveryField, { recoveryField = it })
+            Button(enabled = !busy && recoveryField.trim() != recoveryKeyword && recoveryField.isNotBlank(), onClick = { vm.setRecoveryKeyword(recoveryField) }) { Text("حفظ كلمة الاستعادة") }
+            Text("اكتبها ثم مسافة في أي تطبيق مسموح لفتح شاشة الاستعادة. الاستعادة تعيد ربط اشتراك قائم بجهازه ولا تنشئ اشتراكًا جديدًا.", style = MaterialTheme.typography.bodySmall)
+            val signing = remember(now) { vm.debugSigningInfo() }
+            signing?.let { info ->
+                Text("بصمة توقيع النسخة الحالية: ${info.take(16)}…", style = MaterialTheme.typography.bodySmall)
+                Text("تثبيت نسخة أعلى القديمة يتطلب نفس البصمة؛ التغيير يفرض حذف التطبيق وفقدان البيانات.", style = MaterialTheme.typography.bodySmall)
+            }
         } }
         item { Panel {
             SectionHeading(Icons.Default.CloudDone, "النسخ الاحتياطي والاستعادة")

@@ -73,6 +73,23 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
         })
     }
 
+    /**
+     * Phase 4 password-change recovery (§40 report point J): re-links an EXISTING
+     * active/paused subscription to a re-discovered device. No new session, no new
+     * amount, no revenue, no added time — only the four display/diagnostic columns
+     * and the clientId binding change; duration/started/reserved/served/amount are
+     * carried untouched, so remaining time and the projected end time survive.
+     * When [deviceIsLive], a PAUSED session is resumed right away via the existing
+     * changeState path so the tracker continues it from the remaining time.
+     */
+    suspend fun relinkDevice(id: String, device: TrackedDevice, deviceIsLive: Boolean) = db.withTransaction {
+        val s = dao.session(id) ?: throw IllegalArgumentException("الاشتراك غير موجود")
+        require(!s.home && s.state in listOf("ACTIVE", "PAUSED")) { "يمكن استعادة الاشتراكات النشطة أو المتوقفة فقط" }
+        require(device.clientId in 1..4294967295L) { "معرّف الجهاز غير صالح" }
+        dao.updateSession(s.copy(deviceClientId = device.clientId, deviceIp = device.ip, deviceName = device.name, deviceMac = device.mac))
+        if (deviceIsLive && s.state == "PAUSED") changeState(id, "RESUME")
+    }
+
     suspend fun insert(session: Session): Long = db.withTransaction {
         if (dao.session(session.id) != null) return@withTransaction -1L
         val reservation = dao.reservations().firstOrNull { it.sessionId == session.id }
@@ -94,6 +111,26 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
             dao.insertManualSale(ManualSale("$batchId:$index", now, count, price, total,
                 if (payment == "BANK") Money.bankToCash(total, settings.premiumBps) else total, payment, settings.premiumBps))
         }
+    }
+
+    /**
+     * Phase 4 daily device confirmation (§40 report point H): replaces this event
+     * day's review rows wholesale. Rows carry deterministic ids "rev-<dayKey>:<index>"
+     * (DailyReconciliation.upsertId), so confirming twice stores once, editing
+     * 2500→3000 rewrites in place, and a shorter group list deletes the superseded
+     * rows — never a second copy of the money. The rows' `at` is pinned inside the
+     * EVENT day, so Finance/Revenue bucket the revenue into that day regardless of
+     * when the operator confirms. [unregisteredCount] is enforced here too (spec 21),
+     * not only in the UI.
+     */
+    suspend fun confirmDailyRevenue(dayKey: String, unregisteredCount: Int, groups: List<Pair<Int, Long>>, payment: String) = db.withTransaction {
+        val parsed = groups.map { (count, price) -> DailyReconciliation.Group(count, price) }
+        DailyReconciliation.validate(parsed, unregisteredCount, payment)
+        val settings = dao.settings() ?: BusinessSettings()
+        val rows = DailyReconciliation.plan(dayKey, time(), parsed, payment, settings.premiumBps)
+        val existing = DailyReconciliation.rowsFor(dao.manualSales(), dayKey)
+        existing.filter { row -> rows.none { it.id == row.id } }.forEach { dao.deleteManualSale(it) }
+        rows.forEach { dao.upsertManualSale(it) }
     }
 
     suspend fun expansionPlan(id: Long): Plan = requireNotNull(dao.plan(id)).also { require(it.enabled) { "هذه الباقة متوقفة" } }
@@ -164,6 +201,9 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
         require(TextRules.validKeyword(key)) { "الاختصار دون مسافات أو / وبحد أقصى 40 حرفًا" }
         require(shortcut.phrase.isNotBlank() && shortcut.phrase.length <= 10000) { "اكتب نصًا لا يتجاوز 10000 حرف" }
         require(db.shortcutDao().list().none { it.id != shortcut.id && it.keyword == key }) { "هذا الاختصار موجود؛ عدّل الاختصار الحالي" }
+        // Phase 4: subscription shortcuts must not shadow the recovery keyword — the
+        // service checks recovery first, so such a shortcut could never fire.
+        require(key != com.example.service.ExpanderHealth.recoveryKeyword(context)) { "هذه الكلمة محفوظة لاستعادة الاشتراكات؛ اختر غيرها" }
         require(shortcut.planId == null || dao.plan(shortcut.planId) != null) { "اختر باقة موجودة" }
         db.shortcutDao().insert(shortcut.copy(keyword = key))
     }

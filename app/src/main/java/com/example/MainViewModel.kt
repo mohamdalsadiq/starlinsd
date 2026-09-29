@@ -1,28 +1,41 @@
 package com.example
 
 import android.app.Application
+import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.SubscriptionRepository
 import com.example.data.BackupData
 import com.example.data.ClientTracker
+import com.example.data.DailyReconciliation
+import com.example.data.DeviceRecovery
 import com.example.data.DeviceSelection
 import com.example.data.IpListStore
 import com.example.data.TrackedDevice
 import com.example.network.StarlinkProbe
 import com.example.db.*
 import com.example.domain.*
+import com.example.notifications.DeviceAlertsCoordinator
+import com.example.notifications.DeviceTrackerBridge
 import com.example.notifications.SubscriptionAlarms
+import com.example.service.ExpanderHealth
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
+
+
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val db = AppDatabase.getDatabase(application)
     private val repo = SubscriptionRepository(application)
     private val sharing = SharingStarted.WhileSubscribed(5000)
+
+    companion object {
+        /** Default recovery shortcut keyword (configurable in Settings, never hard-coded in the service). */
+        const val DEFAULT_RECOVERY_KEYWORD = "استعادة"
+    }
     val corrections = repo.dao.observeCorrections().stateIn(viewModelScope, sharing, emptyList())
     val cycles = repo.dao.observeCycles().stateIn(viewModelScope, sharing, emptyList())
     val debts = repo.dao.observeDebts().stateIn(viewModelScope, sharing, emptyList())
@@ -70,6 +83,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * One monitoring cycle: refresh live devices, then apply pause/resume for bound
      * sessions. Sharing one code path with the devices screen keeps UI and tracking
      * decisions identical. A failed read shows as failure and pauses nothing.
+     * On success, the snapshot also feeds the Phase 3 daily device history.
      */
     fun refreshDevices() {
         viewModelScope.launch {
@@ -80,6 +94,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // lastSnapshot is null only when the local read failed; an empty snapshot
                 // is a successful router answer and shows as "no devices".
                 deviceScan.value = DeviceScan(tracker.lastSnapshot.orEmpty(), System.currentTimeMillis(), failed = tracker.lastSnapshot == null)
+                // Discovery-failure protection (spec 32): history only advances on success.
+                if (tracker.lastSnapshot != null) {
+                    DeviceAlertsCoordinator.recordSnapshot(
+                        getApplication(), System.currentTimeMillis(), tracker.lastSnapshot.orEmpty(), lists.snapshot().home)
+                    DeviceTrackerBridge.updateSnapshot(tracker.lastSnapshot, lists.snapshot().home)
+                }
                 SubscriptionAlarms.refresh(getApplication())
             } }
             catch (e: CancellationException) { throw e }
@@ -144,6 +164,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun addSales(id: String, lines: List<Pair<Int, Long>>, payment: String) = work {
         repo.addSales(id, lines, payment); message.value = "تمت إضافة الدخل إلى حساب اليوم"
     }
+
+    /**
+     * Phase 4 daily device confirmation: upserts this event day's grouped review
+     * amounts as DailyReconciliation rows in manual_sales (idempotent per day,
+     * event-day attribution). work{} refreshes alarms/panel/finance flows after.
+     */
+    fun confirmDailyDevices(dayKey: String, unregisteredCount: Int, groups: List<DailyReconciliation.Group>, payment: String) = work {
+        repo.confirmDailyRevenue(dayKey, unregisteredCount, groups.map { it.count to it.unitPrice }, payment)
+        DeviceAlertsCoordinator.saveReviewDraft(getApplication(), DeviceAlertsCoordinator.ReviewState(dayKey, groups, confirmed = true))
+        message.value = "تم تأكيد الإيراد الإضافي ليوم $dayKey وإضافته إلى المالية"
+    }
     fun change(id: String, action: String) = work {
         repo.changeState(id, action)
     }
@@ -166,6 +197,87 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         message.value = if (minute < 0) "أُلغي إغلاق الشبكة اليومي"
             else "سيُنهي التطبيق كل الاشتراكات النشطة تلقائيًا الساعة ${String.format("%02d:%02d", minute / 60, minute % 60)}"
     }
+    /** Unknown-device alert delay (1/3/5 minutes); work{} re-schedules via refresh(). */
+    fun setDeviceAlertDelay(minutes: Int) = work {
+        DeviceAlertsCoordinator.setDelayMinutes(getApplication(), minutes)
+        message.value = "سيتم تنبيهك بعد $minutes دقيقة من ظهور جهاز غير مرتبط"
+    }
+    /** Daily device confirmation time; work{} re-schedules via refresh() (spec 44). */
+    fun setDeviceSummaryTime(minute: Int) = work {
+        DeviceAlertsCoordinator.setSummaryMinute(getApplication(), minute)
+        message.value = "سيصلك ملخص تأكيد الأجهزة يوميًا الساعة ${String.format("%02d:%02d", minute / 60, minute % 60)}"
+    }
+    /**
+     * Phase 4 password-change recovery: reads live devices (one poll), builds the
+     * recovery view-model via the pure DeviceRecovery engine, and re-links the
+     * user-confirmed session to the user-confirmed device. No new subscription,
+     * no added time, no revenue — only the binding moves (and an immediate RESUME
+     * when the device is live). Throws on read failure so the UI can explain it.
+     */
+    suspend fun recoveryBoard(): DeviceRecovery.Board {
+        commands.lock()
+        busy.value = true
+        return try { withContext(Dispatchers.IO) {
+            tracker.poll()
+            val ok = tracker.lastSnapshot != null
+            if (ok) {
+                DeviceAlertsCoordinator.recordSnapshot(getApplication(), System.currentTimeMillis(), tracker.lastSnapshot.orEmpty(), lists.snapshot().home)
+                DeviceTrackerBridge.updateSnapshot(tracker.lastSnapshot, lists.snapshot().home)
+            }
+            val sessions = repo.dao.sessions()
+            val liveIds = tracker.lastSnapshot.orEmpty().map { it.clientId }.toSet()
+            val bound = sessions.filter { !it.home && it.state in listOf("ACTIVE", "PAUSED") && it.deviceClientId != null }.mapNotNull { it.deviceClientId }.toSet()
+            return@withContext DeviceRecovery.Board(
+                snapshotOk = ok,
+                candidates = DeviceRecovery.candidates(sessions, System.currentTimeMillis(), liveIds, ok),
+                options = DeviceRecovery.options(tracker.lastSnapshot, lists.snapshot().home, bound)
+            )
+        } }
+        catch (e: CancellationException) { throw e }
+        finally { busy.value = false; commands.unlock() }
+    }
+
+    /** Re-links an existing subscription (see SubscriptionRepository.relinkDevice). */
+    fun relinkDevice(sessionId: String, device: TrackedDevice, deviceIsLive: Boolean) = work {
+        repo.relinkDevice(sessionId, device, deviceIsLive)
+        message.value = "تم إعادة ربط الاشتراك بنفس الوقت المتبقي دون إنشاء اشتراك جديد"
+    }
+
+    /** Recovery shortcut keyword, configurable in Settings (never a hard-coded letter). */
+    private val recoveryPrefs = getApplication<Application>().getSharedPreferences("expander", Context.MODE_PRIVATE)
+    val recoveryKeyword: StateFlow<String> = ExpanderHealth.recoveryKeywordFlow(recoveryPrefs)
+        .stateIn(viewModelScope, sharing, DEFAULT_RECOVERY_KEYWORD)
+
+    /** Sets the recovery keyword; validated and de-conflicted exactly like a shortcut. */
+    fun setRecoveryKeyword(keyword: String) = work {
+        val key = keyword.trim()
+        require(TextRules.validKeyword(key)) { "الاختصار دون مسافات أو / وبحد أقصى 40 حرفًا" }
+        require(db.shortcutDao().list().none { it.keyword == key }) { "هذا الاختصار مستخدم لاختصار اشتراك؛ اختر غيره" }
+        recoveryPrefs.edit().putString("recovery_keyword", key).apply()
+        message.value = "اكتب $key ثم مسافة في أي تطبيق مسموح لفتح شاشة الاستعادة"
+    }
+
+    /**
+     * Phase 4 signing transparency: the installed APK's signing certificate
+     * SHA-256, so the owner can verify update-over-install compatibility from
+     * Settings. Null when the platform does not expose it (pre-P) or on failure.
+     */
+    fun debugSigningInfo(): String? = try {
+        val pm = getApplication<Application>().packageManager
+        val signatures = if (android.os.Build.VERSION.SDK_INT >= 28) {
+            pm.getPackageInfo(getApplication<Application>().packageName, android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES)
+                .signingInfo?.apkContentsSigners ?: return null
+        } else {
+            @Suppress("DEPRECATION")
+            pm.getPackageInfo(getApplication<Application>().packageName, android.content.pm.PackageManager.GET_SIGNATURES).signatures
+                ?: return null
+        }
+        signatures.firstOrNull()?.let { sig ->
+            val digest = java.security.MessageDigest.getInstance("SHA-256").digest(sig.toByteArray())
+            digest.joinToString("") { "%02x".format(it) }
+        }
+    } catch (e: Exception) { null }
+
     fun dismissRestore() { pendingRestore.value = null; restoreText = null }
     fun previewRestore(uri: Uri) = work {
         dismissRestore()
