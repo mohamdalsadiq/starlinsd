@@ -6,7 +6,6 @@ import androidx.test.core.app.ApplicationProvider
 import com.example.db.AppDatabase
 import com.example.db.DeviceIdentity
 import com.example.domain.Finance
-import com.example.domain.Revenue
 import com.example.domain.Rules
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -154,10 +153,10 @@ class DeviceIdentityReconciliationTest {
         assertEquals(1, rows.size)
         assertEquals(42L, rows[0].deviceId)
         assertEquals(50000L, rows[0].confirmed)
-        // The day's single ledger row carries the amount for the event day.
-        val ledger = DailyReconciliation.rowsFor(db.businessDao().manualSales(), dayKey).single()
-        assertEquals(50000L, ledger.amount)
-        assertEquals(Revenue.day(now), Revenue.day(ledger.at))
+        assertEquals(50000L, rows[0].registered) // session revenue already recognized: audit-only
+        // Subscribed revenue already exists as session revenue (spec 14), so no
+        // manual_sales ledger row is written and nothing is double-counted.
+        assertTrue(DailyReconciliation.rowsFor(db.businessDao().manualSales(), dayKey).isEmpty())
     }
 
     // ---- TEST 9: Daily Confirmation recognizes an unregistered device ----
