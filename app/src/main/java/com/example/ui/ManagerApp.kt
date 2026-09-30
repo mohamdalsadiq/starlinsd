@@ -145,7 +145,7 @@ internal fun amount(minor: Long): String {
                                     detail == "التقارير" -> ReportsScreen(ready, vm::correctRevenue)
                                     tab == 2 -> DebtsScreen(ready.data.debts, ready.data.payments, ready.budget, ready.day, busy, vm::saveDebt, vm::payDebt)
                                     else -> Dashboard(ready, { bulk = true }, { detail = "التقارير" }, vm::correctRevenue,
-                                        live = { LiveOverview(vm) { tab = 1 } }) { newSession = true }
+                                        live = { LiveOverview(vm) { tab = 1 }; DailyReviewCard(vm) { detail = "تأكيد الأجهزة اليومية" } }) { newSession = true }
                                 }
                             }
                             tab == 1 -> {
@@ -254,6 +254,46 @@ internal fun amount(minor: Long): String {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(value, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
         Text(label, style = MaterialTheme.typography.labelMedium)
+    }
+}
+/**
+ * Compact daily-reconciliation summary on the home tab (spec 16): registered
+ * subscription income vs confirmed unregistered money for today, with one tap
+ * to the full confirmation screen. HOME/WATCH devices never enter the
+ * financial totals (spec 18). Read-only: all edits stay in the detail screen.
+ */
+@Composable private fun DailyReviewCard(vm: MainViewModel, open: () -> Unit) {
+    val context = LocalContext.current
+    val now by vm.clock.collectAsStateWithLifecycle()
+    val dayKey = remember(now) { DeviceAlerts.dayKey(now) }
+    var devices by remember { mutableStateOf<List<DeviceAlerts.DayDevice>>(emptyList()) }
+    var sessions by remember { mutableStateOf<List<com.example.db.Session>>(emptyList()) }
+    val sales by vm.manualSales.collectAsStateWithLifecycle()
+    LaunchedEffect(now, dayKey) {
+        withContext(Dispatchers.IO) {
+            devices = DeviceAlertsCoordinator.historyFor(context, dayKey)
+            sessions = com.example.db.AppDatabase.getDatabase(context).businessDao().sessions()
+        }
+    }
+    // Subscription chain + financial split (pure, unit-tested): HOME/WATCH never
+    // enter the financial totals.
+    val groups = remember(devices, sessions) { DailyReconciliation.confirmationGroups(devices, sessions) }
+    val subscribed = groups.subscribed
+    val unregistered = groups.unregistered
+    val registeredTotal = remember(subscribed) { subscribed.sumOf { it.second.amount } }
+    val confirmedUnregistered = remember(sales, dayKey) {
+        DailyReconciliation.rowsFor(sales, dayKey).firstOrNull { it.id == DailyReconciliation.dailyRowId(dayKey) }?.amount ?: 0L
+    }
+    Panel {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("المراجعة اليومية", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            TextButton(onClick = open) { Text("تأكيد الأجهزة") }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            DetailMetric("مسجّل (${subscribed.size})", amount(registeredTotal), Modifier.weight(1f))
+            DetailMetric("غير مسجّل (${unregistered.size})", amount(confirmedUnregistered), Modifier.weight(1f))
+        }
+        Text("المسجّل تلقائي من الاشتراكات · غير المسجّل بعد التأكيد فقط", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 /**
@@ -510,18 +550,13 @@ private fun DeviceConfirmationScreen(vm: MainViewModel) {
             sessions = com.example.db.AppDatabase.getDatabase(context).businessDao().sessions()
         }
     }
-    // Subscription chain: device.clientId → deviceClientId → session (ACTIVE/PAUSED/ENDED).
-    val subscribed = remember(devices, sessions) {
-        devices.mapNotNull { device ->
-            sessions.firstOrNull { !it.home && it.deviceClientId == device.clientId && it.state in listOf("ACTIVE", "PAUSED", "ENDED") }
-                ?.let { device to it }
-        }
-    }
-    val subscribedIds = remember(subscribed) { subscribed.map { it.first.clientId }.toSet() }
-    val others = remember(devices, subscribedIds) { devices.filter { it.clientId !in subscribedIds } }
-    val home = remember(others) { others.filter { it.category == IpLists.Category.HOME } }
-    val watch = remember(others) { others.filter { it.category == IpLists.Category.WATCH } }
-    val unregistered = remember(others, home, watch) { others.filter { it.category == IpLists.Category.UNKNOWN } }
+    // Subscription chain + financial split (pure, unit-tested in
+    // DailyReconciliationTest): HOME/WATCH never enter the financial groups.
+    val groups = remember(devices, sessions) { DailyReconciliation.confirmationGroups(devices, sessions) }
+    val subscribed = groups.subscribed
+    val unregistered = groups.unregistered
+    val home = groups.home
+    val watch = groups.watch
 
     val confirmedRows by vm.manualSales.collectAsStateWithLifecycle()
     val dayLedger = remember(confirmedRows, dayKey) {
@@ -540,7 +575,7 @@ private fun DeviceConfirmationScreen(vm: MainViewModel) {
     }
     val confirmedSubscribed = remember(amounts, subscribed) { subscribed.sumOf { confirmedOf(it.first) } }
     val confirmedUnregistered = remember(amounts, unregistered) { unregistered.sumOf { confirmedOf(it) } }
-    val confirmedCount = remember(amounts, devices) { devices.count { confirmedOf(it) > 0 } }
+    val confirmedCount = remember(amounts, subscribed, unregistered) { (subscribed.map { it.first } + unregistered).count { confirmedOf(it) > 0 } }
     val grandTotal = confirmedSubscribed + confirmedUnregistered
 
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
