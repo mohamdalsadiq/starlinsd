@@ -74,8 +74,21 @@ class DeviceRecoveryTest {
             TrackedDevice(2, "b", "192.168.1.3", "m2", IpLists.Category.HOME, null),
             TrackedDevice(3, "c", "192.168.1.4", "m3", IpLists.Category.WATCH, null),
         )
-        val options = DeviceRecovery.options(snapshot, homeIps = setOf("192.168.1.3"), boundClientIds = setOf(3L))
+        val options = DeviceRecovery.options(snapshot, homeClientIds = setOf(2L), legacyHomeIps = emptySet(), boundClientIds = setOf(3L), homeMacs = emptySet())
         assertEquals(listOf(1L), options.map { it.clientId })
+    }
+
+    // Identity reconciliation: the candidate list keys on clientId only — a session whose
+    // device came back with a DIFFERENT IP is a candidate exactly when its clientId is
+    // absent from the live set; the stored IP never disqualifies it.
+    @Test fun candidatesIgnoreStoredIpAfterDeviceIpChange() {
+        val sessions = listOf(sessionWith(1L, "ACTIVE", 10L).copy(deviceIp = "192.168.1.69"))
+        // Same clientId live at a NEW IP: not a candidate (device is present).
+        val live = listOf(TrackedDevice(10, "x", "192.168.1.101", "m", IpLists.Category.UNKNOWN, null))
+        assertTrue(DeviceRecovery.candidates(sessions, 1000L, liveClientIds = setOf(10L), snapshotOk = true).isEmpty())
+        // ClientId absent (device truly gone): candidate regardless of stored IP.
+        val candidates = DeviceRecovery.candidates(sessions, 1000L, liveClientIds = emptySet(), snapshotOk = true)
+        assertEquals(listOf("s1"), candidates.map { it.sessionId })
     }
 
     @Test fun ipTailShowsLastOctetsOnly() {

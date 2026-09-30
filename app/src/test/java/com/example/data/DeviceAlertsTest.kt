@@ -13,8 +13,8 @@ class DeviceAlertsTest {
     private val dayStart = DeviceAlerts.dayStart(1_800_000_000_000L)
     private fun at(minute: Long) = dayStart + minute * 60_000L
 
-    private fun device(id: Long, ip: String = "192.168.1.5", category: IpLists.Category = IpLists.Category.UNKNOWN) =
-        TrackedDevice(id, "d$id", ip, "aa:bb:cc:00:00:0$id", category)
+    private fun device(id: Long, ip: String = "192.168.1.5", category: IpLists.Category = IpLists.Category.UNKNOWN, mac: String = "aa:bb:cc:00:00:0$id") =
+        TrackedDevice(id, "d$id", ip, mac, category)
 
     private fun pending(id: Long, firstSeen: Long, deadline: Long, category: IpLists.Category = IpLists.Category.UNKNOWN) =
         DeviceAlerts.PendingAlert(id, firstSeen, deadline, category)
@@ -122,20 +122,37 @@ class DeviceAlertsTest {
         val existing = listOf(
             DeviceAlerts.DayDevice(7, "old", "192.168.1.9", "mac7", IpLists.Category.UNKNOWN, at(500), at(500)),
             DeviceAlerts.DayDevice(10, "gone", "192.168.1.30", "mac10", IpLists.Category.UNKNOWN, at(510), at(515)))
-        // 7 still live with a new IP (same device), 8 is new, 9 moved to HOME, 10 left.
+        // 7 still live with a new IP (same device), 8 is new, 9 is HOME by identity, 10 left.
         val seen = listOf(
             device(7, ip = "192.168.1.20"),
             device(8, ip = "192.168.1.21"),
             device(9, ip = "192.168.1.22", category = IpLists.Category.HOME),
         )
-        val home = setOf("192.168.1.22")
-        val merged = DeviceAlerts.mergeSnapshot(now, seen, existing, home)
+        val merged = DeviceAlerts.mergeSnapshot(now, seen, existing,
+            homeClientIds = setOf(9L), homeMacs = emptySet(), legacyHomeIps = emptySet())
         val byId = merged.associateBy { it.clientId }
         assertEquals("192.168.1.20", byId[7L]!!.ip); assertEquals(at(500), byId[7L]!!.firstSeen)
         assertEquals(now, byId[7L]!!.lastSeen)
         assertEquals(now, byId[8L]!!.firstSeen)
         assertNull(byId[9L])
         assertEquals(at(515), byId[10L]!!.lastSeen) // left the network but stays in today's history
+    }
+
+    // Identity reconciliation: a HOME device that appears with a NEW IP is still excluded
+    // (clientId match), and a legacy-IP device is excluded only while it holds that IP.
+    @Test fun homeExclusionFollowsIdentityNotIp() {
+        val now = at(600)
+        val seen = listOf(
+            device(7, ip = "192.168.1.101", mac = "mac7"), // HOME clientId, IP changed overnight
+            device(8, ip = "192.168.1.69", mac = "mac8"), // legacy IP match, pre-promotion
+            device(9, ip = "192.168.1.70", mac = "mac9"), // legacy HOME device now at a NEW IP: tracked
+        )
+        val merged = DeviceAlerts.mergeSnapshot(now, seen, emptyList(),
+            homeClientIds = setOf(7L), homeMacs = emptySet(), legacyHomeIps = setOf("192.168.1.69"))
+        val ids = merged.map { it.clientId }
+        assertTrue(7L !in ids)  // HOME by clientId survives any IP change
+        assertTrue(8L !in ids)  // still holding the legacy listed IP
+        assertTrue(9L in ids)   // legacy IP no longer matches after the move: normal device
     }
 
     @Test fun dayKeyUsesLocalDateAndRollsAtMidnight() {

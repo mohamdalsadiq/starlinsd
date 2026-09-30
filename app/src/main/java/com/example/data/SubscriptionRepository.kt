@@ -114,24 +114,60 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
     }
 
     /**
-     * Phase 4 daily device confirmation (§40 report point H): replaces this event
-     * day's review rows wholesale. Rows carry deterministic ids "rev-<dayKey>:<index>"
-     * (DailyReconciliation.upsertId), so confirming twice stores once, editing
-     * 2500→3000 rewrites in place, and a shorter group list deletes the superseded
-     * rows — never a second copy of the money. The rows' `at` is pinned inside the
-     * EVENT day, so Finance/Revenue bucket the revenue into that day regardless of
-     * when the operator confirms. [unregisteredCount] is enforced here too (spec 21),
-     * not only in the UI.
+     * Phase 4 daily device confirmation (§40 report point H), redesigned per device
+     * (device-identity-reconciliation-v1):
+     *
+     * - The operator edits ONE row per device: registered (from the bound session) and
+     *   confirmed (what was actually received). Unbound devices get an entered amount.
+     * - Storage is the schema-v8 daily_device_confirmations table keyed by
+     *   (dayKey, deviceId) — the stable identity the task requires. Opening the review
+     *   twice, editing 1000→500, or re-confirming rewrites the SAME row: idempotent by
+     *   primary key, never a second revenue record.
+     * - The money still lands in manual_sales as ONE deterministic ledger row per day
+     *   (DailyReconciliation.dailyRowId), REBUILT from the confirmation rows on every
+     *   save. Editing a device's amount updates its row and rewrites the day's ledger
+     *   row in place — manual_sales keeps one row per confirmed day, never duplicates.
+     * - The row's `at` is pinned inside the EVENT day, so Finance/Revenue bucket it
+     *   into that day regardless of when the operator confirms.
+     * - HOME devices never reach this path: the caller (DeviceConfirmationScreen)
+     *   classifies by identity and excludes them from financial totals.
      */
-    suspend fun confirmDailyRevenue(dayKey: String, unregisteredCount: Int, groups: List<Pair<Int, Long>>, payment: String) = db.withTransaction {
-        val parsed = groups.map { (count, price) -> DailyReconciliation.Group(count, price) }
-        DailyReconciliation.validate(parsed, unregisteredCount, payment)
+    suspend fun confirmDailyDevices(dayKey: String, devices: List<DailyDeviceAmount>, payment: String) = db.withTransaction {
         val settings = dao.settings() ?: BusinessSettings()
-        val rows = DailyReconciliation.plan(dayKey, time(), parsed, payment, settings.premiumBps)
+        DailyReconciliation.validateDeviceAmounts(payment, devices.map { it.deviceId to it.confirmed })
+        val sessionsById = dao.sessions().associateBy { it.id }
+        devices.forEach { entry ->
+            val session = sessionsById[entry.sessionId]
+            if (session != null) require(!session.home) { "أجهزة أهل البيت لا تدخل في التأكيد المالي" }
+        }
+        val activeSessions = dao.sessions().filter { it.state in listOf("ACTIVE", "PAUSED", "ENDED") }.associateBy { it.id }
+        val now = time()
+        val previous = dao.dayConfirmations(dayKey)
+        val keep = devices.map { it.deviceId }.toSet()
+        previous.filter { it.deviceId !in keep }.forEach { dao.deleteConfirmations(dayKey, listOf(it.deviceId)) }
+        devices.forEach { entry ->
+            val session = activeSessions[entry.sessionId]
+            val registered = session?.takeIf { !it.home && it.recognized > 0 }?.amount ?: 0L
+            val row = DailyDeviceConfirmation(
+                dayKey = dayKey, deviceId = entry.deviceId, sessionId = entry.sessionId,
+                registered = registered, confirmed = entry.confirmed,
+                payment = payment, premiumBps = settings.premiumBps, updated = now)
+            if (previous.any { it.deviceId == entry.deviceId }) dao.upsertConfirmation(row)
+            else dao.insertConfirmation(row)
+        }
+        // Rebuild the day's single ledger row from the surviving confirmation rows.
+        val rows = dao.dayConfirmations(dayKey)
+        val ledger = DailyReconciliation.ledgerRow(dayKey, rows, now, settings.premiumBps)
         val existing = DailyReconciliation.rowsFor(dao.manualSales(), dayKey)
-        existing.filter { row -> rows.none { it.id == row.id } }.forEach { dao.deleteManualSale(it) }
-        rows.forEach { dao.upsertManualSale(it) }
+        if (ledger == null) existing.forEach { dao.deleteManualSale(it) }
+        else {
+            existing.filter { it.id != ledger.id }.forEach { dao.deleteManualSale(it) }
+            dao.upsertManualSale(ledger)
+        }
     }
+
+    /** One editable device amount for [confirmDailyDevices]. */
+    data class DailyDeviceAmount(val deviceId: Long, val sessionId: String, val confirmed: Long)
 
     suspend fun expansionPlan(id: Long): Plan = requireNotNull(dao.plan(id)).also { require(it.enabled) { "هذه الباقة متوقفة" } }
 
@@ -289,7 +325,7 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
 
     suspend fun exportJson(): String = withContext(Dispatchers.IO) {
         db.withTransaction {
-            val root = org.json.JSONObject().put("version", 7).put("format", "slotra-backup").put("exportedAt", System.currentTimeMillis())
+            val root = org.json.JSONObject().put("version", 8).put("format", "slotra-backup").put("exportedAt", System.currentTimeMillis())
             fun rows(query: String): org.json.JSONArray {
                 val result = org.json.JSONArray()
                 db.openHelper.readableDatabase.query(query).use { c -> while (c.moveToNext()) {

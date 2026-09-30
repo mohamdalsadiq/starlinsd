@@ -58,7 +58,7 @@ interface ShortcutDao {
     @Query("SELECT * FROM shortcuts") suspend fun list(): List<Shortcut>
 }
 
-@Database(entities = [Device::class, Shortcut::class, Plan::class, Session::class, BusinessSettings::class, Sequence::class, HomeIp::class, WatchIp::class, ManualSale::class, SlotReservation::class, RevenueCorrection::class, BillingCycle::class, Debt::class, DebtPayment::class, BalanceUpdate::class], version = 7, exportSchema = true)
+@Database(entities = [Device::class, Shortcut::class, Plan::class, Session::class, BusinessSettings::class, Sequence::class, HomeIp::class, WatchIp::class, ManualSale::class, SlotReservation::class, RevenueCorrection::class, BillingCycle::class, Debt::class, DebtPayment::class, BalanceUpdate::class, DeviceIdentity::class, DailyDeviceConfirmation::class], version = 8, exportSchema = true)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun deviceDao(): DeviceDao
     abstract fun shortcutDao(): ShortcutDao
@@ -117,10 +117,25 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL("CREATE TABLE IF NOT EXISTS watch_ips (ip TEXT NOT NULL PRIMARY KEY, label TEXT NOT NULL, added INTEGER NOT NULL)")
             }
         }
+        /**
+         * Device identity reconciliation (v8): purely additive. The new identity
+         * tables store the router's stable clientId as PRIMARY identity; the
+         * legacy home_ips/watch_ips IP rows are KEPT untouched as the owner's
+         * manual fallback — no row is migrated, rewritten or dropped here.
+         * Live IP→clientId reconciliation happens on the first successful
+         * snapshot (DeviceIdentityEngine), never inside the migration, so a
+         * migration failure can never lose the owner's lists.
+         */
+        val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS device_identities (deviceId INTEGER NOT NULL PRIMARY KEY, list TEXT NOT NULL, mac TEXT NOT NULL DEFAULT '', name TEXT NOT NULL DEFAULT '', lastIp TEXT NOT NULL DEFAULT '', added INTEGER NOT NULL DEFAULT 0, updated INTEGER NOT NULL DEFAULT 0)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS daily_device_confirmations (dayKey TEXT NOT NULL, deviceId INTEGER NOT NULL, sessionId TEXT NOT NULL, registered INTEGER NOT NULL, confirmed INTEGER NOT NULL, payment TEXT NOT NULL, premiumBps INTEGER NOT NULL, updated INTEGER NOT NULL, PRIMARY KEY(dayKey, deviceId))")
+            }
+        }
         fun getDatabase(context: Context): AppDatabase =
             instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, "app_db")
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
                     .build().also { instance = it }
             }
     }

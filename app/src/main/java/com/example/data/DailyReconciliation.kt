@@ -93,4 +93,46 @@ object DailyReconciliation {
             )
         }
     }
+
+    // ---- Per-device confirmation (device-identity-reconciliation-v1) ----
+
+    /** The ONE deterministic manual-sales id for [dayKey]'s device-level ledger row. */
+    fun dailyRowId(dayKey: String): String = "${SOURCE_PREFIX}$dayKey:devices"
+
+    /** Validates per-device entries: known payment, no duplicate devices, positive amounts. */
+    fun validateDeviceAmounts(payment: String, entries: List<Pair<Long, Long>>) {
+        require(payment == "CASH" || payment == "BANK") { "اختر طريقة الدفع" }
+        require(entries.size <= MAX_GROUPS * 100) { "عدد الأجهزة كبير جدًا لليوم الواحد" }
+        require(entries.map { it.first }.distinct().size == entries.size) { "جهاز مكرر في نفس اليوم" }
+        entries.forEach { (_, confirmed) ->
+            require(confirmed in 0..99999999999) { "أدخل مبلغًا صحيحًا لكل جهاز" }
+        }
+    }
+
+    /**
+     * The day's single ledger row, REBUILT from the stored confirmation rows on
+     * every save: editing a device amount rewrites this row in place (same id),
+     * so manual_sales keeps exactly one revenue entry per confirmed day. `at` is
+     * pinned INSIDE THE EVENT DAY (dayKey parsed as the device's local calendar
+     * day, then +12h) so the money always lands on the reviewed day — never on
+     * the day the operator happens to confirm. count = devices with money.
+     * Returns null when nothing is confirmed for the day (row should not exist).
+     */
+    fun ledgerRow(dayKey: String, devices: List<com.example.db.DailyDeviceConfirmation>, at: Long, premiumBps: Int): ManualSale? {
+        if (devices.isEmpty()) return null
+        val total = devices.sumOf { it.confirmed }
+        val rowTime = try {
+            val format = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+            format.isLenient = false
+            format.parse(dayKey)!!.time + 12 * 60 * 60_000L
+        } catch (_: Exception) { Revenue.day(at) + 12 * 60 * 60_000L }
+        val count = devices.count { it.confirmed > 0 }
+        return ManualSale(
+            id = dailyRowId(dayKey), at = rowTime, count = count, unitPrice = total,
+            amount = total, cashEquivalent = total, payment = "CASH", premiumBps = premiumBps)
+    }
+
+    /** Confirmed device total for [dayKey] (sum of per-device confirmed amounts). */
+    fun confirmedDeviceTotal(devices: List<com.example.db.DailyDeviceConfirmation>): Long =
+        devices.sumOf { it.confirmed }
 }

@@ -5,6 +5,7 @@ import android.database.sqlite.SQLiteDatabase
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.example.db.AppDatabase
+import com.example.db.DeviceIdentity
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
@@ -28,7 +29,7 @@ class MigrationTest {
             old.execSQL("INSERT INTO shortcuts VALUES (9, 'قديم', 'الساعة %time+2h%')")
             old.version = 1
         }
-        val db = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_1_2, AppDatabase.MIGRATION_2_3, AppDatabase.MIGRATION_3_4, AppDatabase.MIGRATION_4_5, AppDatabase.MIGRATION_5_6, AppDatabase.MIGRATION_6_7).build()
+        val db = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_1_2, AppDatabase.MIGRATION_2_3, AppDatabase.MIGRATION_3_4, AppDatabase.MIGRATION_4_5, AppDatabase.MIGRATION_5_6, AppDatabase.MIGRATION_6_7, AppDatabase.MIGRATION_7_8).build()
         try {
             val device = db.deviceDao().getByIp("192.168.1.2")!!
             assertEquals(7, device.id); assertEquals("جهاز البيت", device.name)
@@ -57,7 +58,7 @@ class MigrationTest {
             old.execSQL("INSERT INTO sessions VALUES ('original', 'محمد', '3 ساعات', 1700000000000, 1700000000000, 10800000, 0, 'ACTIVE', 125000, 100000, 'BANK', 2500, 0, 1800000, 1700001800000, 0, 0, 'mm')")
             old.version = 2
         }
-        val db = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_2_3, AppDatabase.MIGRATION_3_4, AppDatabase.MIGRATION_4_5, AppDatabase.MIGRATION_5_6, AppDatabase.MIGRATION_6_7).build()
+        val db = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_2_3, AppDatabase.MIGRATION_3_4, AppDatabase.MIGRATION_4_5, AppDatabase.MIGRATION_5_6, AppDatabase.MIGRATION_6_7, AppDatabase.MIGRATION_7_8).build()
         try {
             val row = db.businessDao().session("original")!!
             assertEquals("محمد", row.client); assertEquals(125000L, row.amount)
@@ -82,7 +83,7 @@ class MigrationTest {
             old.execSQL("INSERT INTO sessions VALUES ('original', 'محمد', '3 ساعات', 1700000000000, 1700000000000, 10800000, 120000, 'PAUSED', 125000, 100000, 'BANK', 2500, 0, 1800000, 0, 0, 0, 'mm', '7')")
             old.version = 5
         }
-        val db = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_5_6, AppDatabase.MIGRATION_6_7).build()
+        val db = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_5_6, AppDatabase.MIGRATION_6_7, AppDatabase.MIGRATION_7_8).build()
         try {
             val repo = SubscriptionRepository(context, db); repo.initialize()
             val row = repo.dao.session("original")!!
@@ -109,7 +110,7 @@ class MigrationTest {
             old.execSQL("INSERT INTO devices VALUES (7, '192.168.1.2', 'جهاز البيت', 123456, 1, 60000)")
             old.version = 6
         }
-        val db = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_6_7).build()
+        val db = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_6_7, AppDatabase.MIGRATION_7_8).build()
         try {
             // Existing rows survive with their values; new device columns start empty/null.
             val row = db.businessDao().session("original")!!
@@ -131,6 +132,36 @@ class MigrationTest {
             repo.restoreJson(backup)
             assertEquals(102L, repo.dao.session("original")!!.deviceClientId)
             assertEquals(1, repo.dao.homeIps().size)
+        } finally { db.close(); context.deleteDatabase(name) }
+    }
+
+    @Test fun versionSevenUpgradeAddsIdentityTablesWithoutLosingData() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val name = "migration-v7-${System.nanoTime()}"
+        val path = context.getDatabasePath(name); path.parentFile!!.mkdirs()
+        val schema = org.json.JSONObject(java.io.File("schemas/com.example.db.AppDatabase/7.json").readText()).getJSONObject("database").getJSONArray("entities")
+        SQLiteDatabase.openOrCreateDatabase(path, null).use { old ->
+            for (index in 0 until schema.length()) {
+                val entity = schema.getJSONObject(index)
+                old.execSQL(entity.getString("createSql").replace("\${TABLE_NAME}", entity.getString("tableName")))
+            }
+            old.execSQL("INSERT INTO sessions VALUES ('original', 'محمد', '3 ساعات', 1700000000000, 1700000000000, 10800000, 120000, 'PAUSED', 125000, 100000, 'BANK', 2500, 0, 1800000, 0, 0, 0, 'mm', '7', NULL, '', '', '')")
+            old.execSQL("INSERT INTO home_ips VALUES ('192.168.1.69', 'Galaxy-A21s', 1700000000000)")
+            old.execSQL("INSERT INTO watch_ips VALUES ('192.168.1.139', 'realme-C55', 1700000000000)")
+            old.version = 7
+        }
+        val db = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_7_8).build()
+        try {
+            // Legacy IP rows survive the identity migration untouched; identity tables exist empty.
+            assertEquals(listOf("192.168.1.69"), db.businessDao().homeIps().map { it.ip })
+            assertEquals(listOf("192.168.1.139"), db.businessDao().watchIps().map { it.ip })
+            assertEquals(0, db.businessDao().identities().size)
+            val row = db.businessDao().session("original")!!
+            assertEquals("PAUSED", row.state); assertEquals(125000L, row.amount)
+            // Identity records and per-device confirmations are usable post-migration.
+            db.businessDao().identity(DeviceIdentity(102, "HOME", "mac", "هاتف", "192.168.1.50", 1, 1))
+            db.businessDao().insertConfirmation(com.example.db.DailyDeviceConfirmation("2026-09-30", 102, "original", 125000, 100000, "CASH", 2500, 1))
+            assertEquals(1, db.businessDao().dayConfirmations("2026-09-30").size)
         } finally { db.close(); context.deleteDatabase(name) }
     }
 

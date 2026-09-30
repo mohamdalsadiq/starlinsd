@@ -46,6 +46,8 @@ import com.example.data.DeviceAlerts
 import com.example.data.DeviceRecovery
 import com.example.data.DeviceSelection
 import com.example.data.IpListStore
+import com.example.data.IpLists
+import com.example.data.SubscriptionRepository
 import com.example.data.TrackedDevice
 import com.example.db.*
 import com.example.domain.*
@@ -263,6 +265,7 @@ internal fun amount(minor: Long): String {
     val context = LocalContext.current
     val homeIps by vm.homeIps.collectAsStateWithLifecycle()
     val watchIps by vm.watchIps.collectAsStateWithLifecycle()
+    val identities by vm.identities.collectAsStateWithLifecycle()
     val scan by vm.deviceScanState.collectAsStateWithLifecycle()
     val busy by vm.busy.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { vm.refreshDevices() }
@@ -291,32 +294,46 @@ internal fun amount(minor: Long): String {
             Panel {
                 DeviceRow(d)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextButton(enabled = !busy, onClick = { vm.addHomeIp(d.ip, d.name) }) { Text("إضافة لأهل البيت (IP)") }
-                    TextButton(enabled = !busy, onClick = { vm.addWatchIp(d.ip, d.name) }) { Text("إضافة للمراقبة") }
+                    // Identity-based: records the stable clientId (MAC + last IP kept for
+                    // display), so a DHCP IP change can never un-HOME the device.
+                    TextButton(enabled = !busy, onClick = { vm.addHomeDevice(d) }) { Text("إضافة لأهل البيت") }
+                    TextButton(enabled = !busy, onClick = { vm.addWatchDevice(d) }) { Text("إضافة للمراقبة") }
                 }
             }
         }
         item { Panel {
-            SectionHeading(Icons.Default.Home, "أهل البيت (بالعناوين IP)", "مستبعد تمامًا من التتبع والإيقاف التلقائي")
+            SectionHeading(Icons.Default.Home, "أهل البيت (بالهوية)", "مرتبطة بمعرّف الجهاز؛ تغيّر IP لا يُخرجها من القائمة")
+            identities.filter { it.list == "HOME" }.forEach { entry ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("${entry.name.ifBlank { "جهاز ${entry.deviceId}" }} · آخر عنوان ${entry.lastIp.ifBlank { "؟" }}", Modifier.weight(1f))
+                    TextButton(enabled = !busy, onClick = { vm.removeHomeDevice(entry.deviceId) }) { Text("حذف") }
+                }
+            }
             homeIps.forEach { entry ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("${entry.ip}${if (entry.label.isBlank()) "" else " · ${entry.label}"}", Modifier.weight(1f))
+                    Text("${entry.ip}${if (entry.label.isBlank()) "" else " · ${entry.label}"} (IP قديم)", Modifier.weight(1f))
                     TextButton(enabled = !busy, onClick = { vm.removeHomeIp(entry.ip) }) { Text("حذف") }
                 }
             }
-            if (homeIps.isEmpty()) Text("لا توجد عناوين محفوظة بعد.", style = MaterialTheme.typography.bodySmall)
-            TextButton(onClick = { newHome = true }) { Text("إضافة عنوان يدويًا") }
+            if (identities.none { it.list == "HOME" } && homeIps.isEmpty()) Text("لا توجد أجهزة محفوظة بعد.", style = MaterialTheme.typography.bodySmall)
+            TextButton(onClick = { newHome = true }) { Text("إضافة عنوان يدويًا (IP)") }
         } }
         item { Panel {
-            SectionHeading(Icons.Default.Visibility, "قائمة المراقبة (بالعناوين IP)", "تُصنَّف الآن؛ إشعاراتها لاحقًا")
+            SectionHeading(Icons.Default.Visibility, "قائمة المراقبة (بالهوية)", "مرتبطة بمعرّف الجهاز؛ إشعارها يعرض الاسم وآخر IP")
+            identities.filter { it.list == "WATCH" }.forEach { entry ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("${entry.name.ifBlank { "جهاز ${entry.deviceId}" }} · آخر عنوان ${entry.lastIp.ifBlank { "؟" }}", Modifier.weight(1f))
+                    TextButton(enabled = !busy, onClick = { vm.removeWatchDevice(entry.deviceId) }) { Text("حذف") }
+                }
+            }
             watchIps.forEach { entry ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("${entry.ip}${if (entry.label.isBlank()) "" else " · ${entry.label}"}", Modifier.weight(1f))
+                    Text("${entry.ip}${if (entry.label.isBlank()) "" else " · ${entry.label}"} (IP قديم)", Modifier.weight(1f))
                     TextButton(enabled = !busy, onClick = { vm.removeWatchIp(entry.ip) }) { Text("حذف") }
                 }
             }
-            if (watchIps.isEmpty()) Text("لا توجد عناوين محفوظة بعد.", style = MaterialTheme.typography.bodySmall)
-            TextButton(onClick = { newWatch = true }) { Text("إضافة عنوان يدويًا") }
+            if (identities.none { it.list == "WATCH" } && watchIps.isEmpty()) Text("لا توجد أجهزة محفوظة بعد.", style = MaterialTheme.typography.bodySmall)
+            TextButton(onClick = { newWatch = true }) { Text("إضافة عنوان يدويًا (IP)") }
         } }
     }
     if (newHome) IpEntryForm("إضافة لأهل البيت", { newHome = false }) { ip, label -> vm.addHomeIp(ip, label); newHome = false }
@@ -464,37 +481,70 @@ internal fun amount(minor: Long): String {
         }
     }
 }/**
- * Phase 4 daily device review (replaces the Phase 3 placeholder). The operator
- * picks one event day, sees registered vs unregistered devices for it, records
- * grouped manual amounts (500×1 + 1000×2), and confirms — money lands in the
- * existing manual_sales table as DailyReconciliation rows attributed to the
- * event day, idempotently (§40 report point H). HOME never reaches the history;
- * WATCH counts as unregistered unless bound.
+ * Daily device reconciliation screen (device-identity-reconciliation-v1). The
+ * operator picks one event day and sees the day's recognized devices split into
+ * A) subscribed (bound ACTIVE/PAUSED/ENDED with its registered amount),
+ * B) appeared without a subscription (proposed/uncertain),
+ * C) HOME (identity-based; never enters the money),
+ * D) WATCH (separate status; never auto-revenue).
+ * Each A/B device has ONE editable confirmed amount; saving upserts the
+ * (dayKey, deviceId) row and rebuilds the day's single ledger row — idempotent,
+ * never a duplicate revenue record. Identity is clientId; IP is display-only.
  */
 @Composable
 private fun DeviceConfirmationScreen(vm: MainViewModel) {
     val context = LocalContext.current
     val now by vm.clock.collectAsStateWithLifecycle()
     var devices by remember { mutableStateOf<List<DeviceAlerts.DayDevice>>(emptyList()) }
-    var bindings by remember { mutableStateOf<Map<Long, String>>(emptyMap()) }
+    var sessions by remember { mutableStateOf<List<com.example.db.Session>>(emptyList()) }
     var dayKey by rememberSaveable { mutableStateOf(DeviceAlerts.dayKey(System.currentTimeMillis())) }
-    var draft by remember(dayKey) { mutableStateOf(DailyDraft(dayKey, DeviceAlertsCoordinator.reviewState(context, dayKey).groups)) }
+    var amounts by remember(dayKey, sessions, devices) {
+        mutableStateOf<Map<Long, String>>(emptyMap())
+    }
+    var payment by rememberSaveable(dayKey) { mutableStateOf("CASH") }
     var showPicker by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(now, dayKey) {
         kotlinx.coroutines.withContext(Dispatchers.IO) {
             devices = DeviceAlertsCoordinator.historyFor(context, dayKey)
-            bindings = DeviceAlertsCoordinator.activeBindingsFor(context)
+            sessions = com.example.db.AppDatabase.getDatabase(context).businessDao().sessions()
         }
     }
-    val summary = remember(devices, bindings) { DeviceAlerts.summary(devices, bindings) }
-    val sales by vm.manualSales.collectAsStateWithLifecycle()
-    val confirmed = remember(sales, dayKey) { DailyReconciliation.rowsFor(sales, dayKey) }
-    val confirmedTotal = remember(confirmed) { confirmed.sumOf { it.amount } }
+    // Subscription chain: device.clientId → deviceClientId → session (ACTIVE/PAUSED/ENDED).
+    val subscribed = remember(devices, sessions) {
+        devices.mapNotNull { device ->
+            sessions.firstOrNull { !it.home && it.deviceClientId == device.clientId && it.state in listOf("ACTIVE", "PAUSED", "ENDED") }
+                ?.let { device to it }
+        }
+    }
+    val subscribedIds = remember(subscribed) { subscribed.map { it.first.clientId }.toSet() }
+    val others = remember(devices, subscribedIds) { devices.filter { it.clientId !in subscribedIds } }
+    val home = remember(others) { others.filter { it.category == IpLists.Category.HOME } }
+    val watch = remember(others) { others.filter { it.category == IpLists.Category.WATCH } }
+    val unregistered = remember(others, home, watch) { others.filter { it.category == IpLists.Category.UNKNOWN } }
+
+    val confirmedRows by vm.manualSales.collectAsStateWithLifecycle()
+    val dayLedger = remember(confirmedRows, dayKey) {
+        DailyReconciliation.rowsFor(confirmedRows, dayKey).firstOrNull { it.id == DailyReconciliation.dailyRowId(dayKey) }
+    }
     val busy by vm.busy.collectAsStateWithLifecycle()
 
+    // Live totals over the operator's edits (المطلوب 7): count, registered, confirmed,
+    // additions on unregistered, and the final confirmed total — computed per device.
+    val registeredTotal = remember(subscribed) { subscribed.sumOf { it.second.amount } }
+    fun confirmedOf(device: DeviceAlerts.DayDevice): Long {
+        val typed = amounts[device.clientId]?.let { Money.parse(it) }
+        if (typed != null) return typed
+        val session = sessions.firstOrNull { !it.home && it.deviceClientId == device.clientId && it.state in listOf("ACTIVE", "PAUSED", "ENDED") }
+        return session?.amount ?: 0L
+    }
+    val confirmedSubscribed = remember(amounts, subscribed) { subscribed.sumOf { confirmedOf(it.first) } }
+    val confirmedUnregistered = remember(amounts, unregistered) { unregistered.sumOf { confirmedOf(it) } }
+    val confirmedCount = remember(amounts, devices) { devices.count { confirmedOf(it) > 0 } }
+    val grandTotal = confirmedSubscribed + confirmedUnregistered
+
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { Title("تأكيد الأجهزة اليومية", "أجهزة اليوم المرتبطة وغير المرتبطة · الإيراد يُنسب ليوم الأحداث") }
+        item { Title("تأكيد الأجهزة اليومية", "مطابقة أجهزة اليوم باشتراكاتها · المبلغ النهائي من تعديلك لكل جهاز") }
         item { Panel {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
@@ -503,48 +553,66 @@ private fun DeviceConfirmationScreen(vm: MainViewModel) {
                 }
                 TextButton(onClick = { showPicker = true }) { Text("اختيار يوم") }
             }
-            Text("الأجهزة المسجلة (اشتراك نشط): ${summary.subscribed.size}", color = MaterialTheme.colorScheme.primary)
-            Text("الأجهزة غير المسجلة: ${summary.unconfirmed.size}", color = if (summary.unconfirmed.isEmpty()) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error)
+            Text("الأجهزة المُعرف عليها اليوم: ${devices.size}", style = MaterialTheme.typography.bodyMedium)
         } }
         item { Panel {
-            SectionHeading(Icons.Default.CheckCircle, "أجهزة مرتبطة باشتراك مسجل", "إيرادها معروف من الاختصارات؛ لا تُدخل هنا مرة ثانية")
-            if (summary.subscribed.isEmpty()) Text("لا يوجد")
-            summary.subscribed.forEach { Text("· ${it.name.ifBlank { "جهاز ${it.clientId}" }} (${it.ip})") }
-        } }
-        item { Panel {
-            SectionHeading(Icons.Default.HelpOutline, "أجهزة بدون اشتراك مسجل", "راجعها وأدخل المبالغ مجمعة بعدد الأجهزة")
-            if (summary.unconfirmed.isEmpty()) Text("لا توجد أجهزة غير مسجلة في هذا اليوم.")
-            summary.unconfirmed.forEach { Text("· ${it.name.ifBlank { "جهاز ${it.clientId}" }} (${it.ip})") }
-        } }
-        item { Panel {
-            SectionHeading(Icons.Default.Payments, "الإيراد الإضافي المؤكد", "قيود يوم الأحداث نفسه في المالية الحالية")
-            if (confirmed.isEmpty()) Text("لم يتم تأكيد مبالغ لهذا اليوم بعد.")
-            confirmed.forEach { row -> Text("· ${Money.show(row.unitPrice)} × ${row.count} = ${amount(row.amount)}") }
-            if (confirmed.isNotEmpty()) MoneyLine("إجمالي الإيراد الإضافي", confirmedTotal)
-        } }
-        item { Panel {
-            SectionHeading(Icons.Default.Calculate, "تسجيل مبالغ مجمعة", "مثال: 500 × 1 + 1000 × 2 = 2500 ج.س")
-            draft.groups.forEachIndexed { index, group ->
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Field("المبلغ (${index + 1})", Money.show(group.unitPrice), { value ->
-                        val price = Money.parse(value) ?: 0L
-                        draft = draft.copy(groups = draft.groups.mapIndexed { i, g -> if (i == index) g.copy(unitPrice = price) else g })
-                    }, numeric = true, modifier = Modifier.weight(1f))
-                    Field("عدد الأجهزة", group.count.toString(), { value ->
-                        draft = draft.copy(groups = draft.groups.mapIndexed { i, g -> if (i == index) g.copy(count = value.toIntOrNull() ?: 0) else g })
-                    }, numeric = true, modifier = Modifier.weight(1f))
-                    IconButton(onClick = { draft = draft.copy(groups = draft.groups.filterIndexed { i, _ -> i != index }) }) { Icon(Icons.Default.Close, "حذف") }
+            SectionHeading(Icons.Default.CheckCircle, "أ) أجهزة لديها اشتراك مسجل", "المبلغ المسجل من الاشتراك نفسه؛ عدّله للمبلغ المدفوع فعليًا")
+            if (subscribed.isEmpty()) Text("لا يوجد")
+            subscribed.forEach { (device, session) ->
+                Column(Modifier.padding(vertical = 4.dp)) {
+                    Text("· ${device.name.ifBlank { "جهاز ${device.clientId}" }} · ${session.client} #${session.reference.ifBlank { "?" }}")
+                    Text("آخر عنوان: ${device.ip} · المسجل: ${amount(session.amount)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Field("المدفوع فعليًا", amounts[device.clientId] ?: Money.show(session.amount), { value ->
+                        amounts = amounts + (device.clientId to value)
+                    }, numeric = true)
                 }
             }
-            TextButton(enabled = draft.groups.size < DailyReconciliation.MAX_GROUPS, onClick = { draft = draft.copy(groups = draft.groups + DailyReconciliation.Group(1, 0)) }) { Text("إضافة مبلغ") }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Choice("كاش", draft.payment == "CASH") { draft = draft.copy(payment = "CASH") }
-                Choice("بنكك", draft.payment == "BANK") { draft = draft.copy(payment = "BANK") }
+            MoneyLine("إجمالي المسجل (أ)", registeredTotal)
+        } }
+        item { Panel {
+            SectionHeading(Icons.Default.HelpOutline, "ب) أجهزة ظهرت بدون اشتراك", "أدخل المبلغ الفعلي لكل جهاز أو اتركه صفرًا")
+            if (unregistered.isEmpty()) Text("لا يوجد")
+            unregistered.forEach { device ->
+                Column(Modifier.padding(vertical = 4.dp)) {
+                    Text("· ${device.name.ifBlank { "جهاز ${device.clientId}" }}")
+                    Text("آخر عنوان: ${device.ip}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Field("المدفوع فعليًا", amounts[device.clientId] ?: "0", { value ->
+                        amounts = amounts + (device.clientId to value)
+                    }, numeric = true)
+                }
             }
-            Button(enabled = !busy && summary.unconfirmed.isNotEmpty() && draft.groups.isNotEmpty(), onClick = {
-                vm.confirmDailyDevices(dayKey, summary.unconfirmed.size, draft.groups, draft.payment)
-            }) { Text("تأكيد الدخل الإضافي") }
-            Text("التأكيد يستبدل قيود هذا اليوم (لا يضيف مرتين)، والتعديل يحدث المبالغ مكانها.", style = MaterialTheme.typography.bodySmall)
+            MoneyLine("إجمالي غير المؤكد (ب)", confirmedUnregistered)
+        } }
+        item { Panel {
+            SectionHeading(Icons.Default.Home, "ج) أهل البيت (HOME)", "لا تدخل في الإيراد ولا في التأكيد المالي إطلاقًا")
+            if (home.isEmpty()) Text("لا يوجد")
+            home.forEach { Text("· ${it.name.ifBlank { "جهاز ${it.clientId}" }} (${it.ip})") }
+        } }
+        item { Panel {
+            SectionHeading(Icons.Default.Visibility, "د) قائمة المراقبة (WATCH)", "حالة منفصلة؛ لا تتحول تلقائيًا إلى إيراد")
+            if (watch.isEmpty()) Text("لا يوجد")
+            watch.forEach { Text("· ${it.name.ifBlank { "جهاز ${it.clientId}" }} (${it.ip})") }
+        } }
+        item { Panel {
+            SectionHeading(Icons.Default.Calculate, "الملخص المالي لليوم", "حسب تعديلاتك أعلاه، لكل جهاز على حدة")
+            Text("الأجهزة المؤكدة: $confirmedCount")
+            Text("إجمالي المسجل: ${amount(registeredTotal)}")
+            Text("إجمالي المدفوع فعليًا: ${amount(grandTotal)}")
+            Text("إضافات أجهزة غير مشتركة: ${amount(confirmedUnregistered)}")
+            if (dayLedger != null) Text("محفوظ مسبقًا لهذا اليوم: ${amount(dayLedger.amount)}", style = MaterialTheme.typography.bodySmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Choice("كاش", payment == "CASH") { payment = "CASH" }
+                Choice("بنكك", payment == "BANK") { payment = "BANK" }
+            }
+            Button(enabled = !busy && devices.isNotEmpty(), onClick = {
+                val entries = subscribed.map { (device, session) ->
+                    SubscriptionRepository.DailyDeviceAmount(device.clientId, session.id, confirmedOf(device))
+                } + unregistered.map { device ->
+                    SubscriptionRepository.DailyDeviceAmount(device.clientId, "", confirmedOf(device))
+                }
+                vm.confirmDailyDevices(dayKey, entries, payment)
+            }) { Text("حفظ وتأكيد إيراد اليوم") }
+            Text("الحفظ يكتب سطرًا واحدًا لكل جهاز بنفس اليوم والمعرّف: إعادة الفتح أو التعديل يحدّث السجل نفسه ولا يضيف إيرادًا مكررًا.", style = MaterialTheme.typography.bodySmall)
         } }
     }
     if (showPicker) DayPickerDialog(dayKey) { picked -> dayKey = picked; showPicker = false }
@@ -622,9 +690,6 @@ private fun RecoveryScreen(vm: MainViewModel) {
         }) { Text("تأكيد الاستعادة") } }, dismissButton = { TextButton(onClick = { pairing = null; selectedOption = null }) { Text("إلغاء") } })
     }
 }
-
-/** Screen-local grouped-amount draft (payment is a per-confirm choice, not persisted). */
-internal data class DailyDraft(val dayKey: String, val groups: List<DailyReconciliation.Group>, val payment: String = "CASH")
 
 private fun dayLabel(dayKey: String): String = try {
     SimpleDateFormat("EEEE، d MMMM yyyy", Locale.forLanguageTag("ar")).format(SimpleDateFormat("yyyy-MM-dd", Locale.US).parse(dayKey)!!)

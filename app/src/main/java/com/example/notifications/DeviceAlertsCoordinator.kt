@@ -265,9 +265,14 @@ object DeviceAlertsCoordinator {
     /**
      * History bookkeeping after a successful snapshot (spec 32: only successful
      * reads touch history). Called by MainViewModel right after tracker.poll().
+     * HOME exclusion is identity-based: clientIds/MACs from the stored identity
+     * records, with the legacy manual IP rows as the pre-promotion fallback.
      */
-    fun recordSnapshot(context: Context, now: Long, tracked: List<TrackedDevice>, homeIps: Set<String>) {
-        val updated = DeviceAlerts.mergeSnapshot(now, tracked, history(context, now), homeIps)
+    suspend fun recordSnapshot(context: Context, now: Long, tracked: List<TrackedDevice>) {
+        val lists = com.example.data.IpListStore(context).identitySnapshot()
+        val updated = DeviceAlerts.mergeSnapshot(now, tracked, history(context, now),
+            homeClientIds = lists.homeClientIds, homeMacs = com.example.data.IpLists.homeMacs(lists.identities),
+            legacyHomeIps = lists.legacyHomeIps)
         saveHistory(context, now, updated)
     }
 

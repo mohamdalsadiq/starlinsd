@@ -9,12 +9,14 @@ data class BackupData(val rows: Map<String, List<JSONObject>>, val apps: Set<Str
     val summary: String get() = "${rows.getValue("sessions").size} اشتراك · ${rows.getValue("manual_sales").size} قيد دخل · ${rows.getValue("shortcuts").size} اختصار"
     companion object {
         const val MAX_BYTES = 20 * 1024 * 1024
-        val tables = listOf("plans", "sessions", "settings", "shortcuts", "devices", "sequences", "home_ips", "watch_ips", "manual_sales", "revenue_corrections", "billing_cycles", "debts", "debt_payments", "balance_updates")
+        val tables = listOf("plans", "sessions", "settings", "shortcuts", "devices", "sequences", "home_ips", "watch_ips", "manual_sales", "revenue_corrections", "billing_cycles", "debts", "debt_payments", "balance_updates", "device_identities", "daily_device_confirmations")
         private val fields = mapOf(
             "plans" to "id name minutes cash bank home enabled",
             "sessions" to "id client plan started resumed duration served state amount cashEquivalent payment premiumBps home grace recognized warned notified source reference deviceClientId deviceIp deviceName deviceMac",
             "home_ips" to "ip label added",
             "watch_ips" to "ip label added",
+            "device_identities" to "deviceId list mac name lastIp added updated",
+            "daily_device_confirmations" to "dayKey deviceId sessionId registered confirmed payment premiumBps updated",
             "settings" to "id graceMinutes premiumBps usdCents bankRate cycleStart cycleEnd expenses maxSubscribers cycleId",
             "shortcuts" to "id keyword phrase planId payment enabled",
             "devices" to "id ip name endTime isPaused remainingWhenPaused",
@@ -25,14 +27,14 @@ data class BackupData(val rows: Map<String, List<JSONObject>>, val apps: Set<Str
             "debts" to "id name total start due",
             "debt_payments" to "id debtId at amount",
             "balance_updates" to "id at cash bank cashReceived bankReceived premiumBps reason expectedCash expectedBank")
-        private val strings = setOf("name", "client", "plan", "state", "payment", "source", "reference", "keyword", "phrase", "ip", "cycleId", "debtId", "reason", "label", "deviceIp", "deviceName", "deviceMac")
+        private val strings = setOf("name", "client", "plan", "state", "payment", "source", "reference", "keyword", "phrase", "ip", "cycleId", "debtId", "reason", "label", "deviceIp", "deviceName", "deviceMac", "list", "mac", "lastIp", "dayKey", "sessionId")
         fun parse(text: String): BackupData {
             require(text.toByteArray(Charsets.UTF_8).size <= MAX_BYTES) { "النسخة أكبر من 20 ميجابايت" }
             val root = JSONObject(text)
             val version = root.getInt("version")
-            require(version in 2..7) { "إصدار النسخة الاحتياطية غير مدعوم" }
+            require(version in 2..8) { "إصدار النسخة الاحتياطية غير مدعوم" }
             val rows = tables.associateWith { table ->
-                val array = if (table == "balance_updates" && version < 6 || table == "manual_sales" && version < 4 || table == "sequences" && version < 3 || table in listOf("revenue_corrections", "billing_cycles", "debts", "debt_payments") && version < 5 || table in listOf("home_ips", "watch_ips") && version < 7)
+                val array = if (table == "balance_updates" && version < 6 || table == "manual_sales" && version < 4 || table == "sequences" && version < 3 || table in listOf("revenue_corrections", "billing_cycles", "debts", "debt_payments") && version < 5 || table in listOf("home_ips", "watch_ips") && version < 7 || table in listOf("device_identities", "daily_device_confirmations") && version < 8)
                     org.json.JSONArray() else root.getJSONArray(table)
                 require(array.length() <= 100000) { "عدد السجلات يتجاوز الحد" }
                 val keys = fields.getValue(table).split(' ').toSet()
@@ -89,6 +91,18 @@ data class BackupData(val rows: Map<String, List<JSONObject>>, val apps: Set<Str
                             require(IpLists.valid(row.getString("ip")))
                             range("added", 32503680000000)
                         }
+                        "device_identities" -> {
+                            range("deviceId", 4294967295L, 1)
+                            require(row.getString("list") in listOf("HOME", "WATCH", "UNKNOWN"))
+                            range("added", 32503680000000); range("updated", 32503680000000)
+                        }
+                        "daily_device_confirmations" -> {
+                            require(Regex("\\d{4}-\\d{2}-\\d{2}").matches(row.getString("dayKey")))
+                            range("deviceId", 4294967295L, 1)
+                            require(row.getString("sessionId").isNotBlank())
+                            range("registered", 99999999999); range("confirmed", 99999999999)
+                            range("updated", 32503680000000)
+                        }
                         "shortcuts" -> { require(TextRules.validKeyword(row.getString("keyword"))); require(row.getString("phrase").isNotBlank()) }
                         "manual_sales" -> {
                             range("count", 100000, 1); range("unitPrice", 99999999999, 1)
@@ -96,8 +110,8 @@ data class BackupData(val rows: Map<String, List<JSONObject>>, val apps: Set<Str
                             require(row.getLong("cashEquivalent") == if (row.getString("payment") == "BANK") Money.bankToCash(row.getLong("amount"), row.getInt("premiumBps")) else row.getLong("amount"))
                         }
                     }
-                } }.also { list ->
-                    val primary = when (table) { "sequences" -> "name"; "home_ips", "watch_ips" -> "ip"; else -> "id" }
+                }                }.also { list ->
+                    val primary = when (table) { "sequences" -> "name"; "home_ips", "watch_ips" -> "ip"; "daily_device_confirmations" -> "dayKey"; else -> "id" }
                     require(list.map { it.get(primary).toString() }.distinct().size == list.size) { "سجلات مكررة في النسخة" }
                 }
             }

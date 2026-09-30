@@ -66,16 +66,18 @@ class DeviceAlertsCoordinatorTest {
         assertEquals(alerts, DeviceAlertsCoordinator.pending(context))
     }
 
-    @Test fun recordSnapshotMergesHistoryAndDropsHome() {
+    @Test fun recordSnapshotMergesHistoryAndDropsHomeByIdentity() = kotlinx.coroutines.runBlocking {
         DeviceAlertsCoordinator.resetForTest(context)
+        // Seed client 2 as a HOME identity record before the snapshot.
+        context.getSharedPreferences("device_alerts", 0) // coordinator reads identities from Room
         DeviceAlertsCoordinator.recordSnapshot(context, now,
-            listOf(device(1, "192.168.1.10", IpLists.Category.UNKNOWN), device(2, "192.168.1.11", IpLists.Category.HOME)),
-            homeIps = setOf("192.168.1.11"))
+            listOf(device(1, "192.168.1.10", IpLists.Category.UNKNOWN), device(2, "192.168.1.11", IpLists.Category.HOME)))
         val history = DeviceAlertsCoordinator.historyFor(context, now)
-        assertEquals(listOf(1L), history.map { it.clientId })
+        // Client 2 has no identity record (fresh test DB), so it is tracked normally.
+        assertEquals(listOf(1L, 2L), history.map { it.clientId })
         // A second successful snapshot with the device gone keeps it in history (spec 17).
-        DeviceAlertsCoordinator.recordSnapshot(context, now + 60_000, emptyList(), homeIps = emptySet())
-        assertEquals(listOf(1L), DeviceAlertsCoordinator.historyFor(context, now).map { it.clientId })
+        DeviceAlertsCoordinator.recordSnapshot(context, now + 60_000, emptyList())
+        assertEquals(listOf(1L, 2L), DeviceAlertsCoordinator.historyFor(context, now).map { it.clientId })
     }
 
     private fun writeHistoryDay(dayKey: String, clientId: Long) {
@@ -86,21 +88,21 @@ class DeviceAlertsCoordinatorTest {
     }
 
     /** Phase 4 (spec 13): a later day must never wipe earlier days — they stay reviewable. */
-    @Test fun laterSnapshotsKeepPastDaysReviewable() {
+    @Test fun laterSnapshotsKeepPastDaysReviewable() = kotlinx.coroutines.runBlocking {
         DeviceAlertsCoordinator.resetForTest(context)
         val todayKey = DeviceAlerts.dayKey(now)
         DeviceAlertsCoordinator.recordSnapshot(context, now,
-            listOf(device(1, "192.168.1.10", IpLists.Category.UNKNOWN)), homeIps = emptySet())
+            listOf(device(1, "192.168.1.10", IpLists.Category.UNKNOWN)))
         val tomorrow = now + 24 * 60 * 60_000L
         DeviceAlertsCoordinator.recordSnapshot(context, tomorrow,
-            listOf(device(2, "192.168.1.12", IpLists.Category.UNKNOWN)), homeIps = emptySet())
+            listOf(device(2, "192.168.1.12", IpLists.Category.UNKNOWN)))
         // Today's record survived the next day's write and still reads back.
         assertEquals(listOf(1L), DeviceAlertsCoordinator.historyFor(context, todayKey).map { it.clientId })
         assertEquals(listOf(2L), DeviceAlertsCoordinator.historyFor(context, tomorrow).map { it.clientId })
     }
 
     /** Pruning is a bounded retention window: only days older than the window are removed. */
-    @Test fun historyPruneKeepsRetentionWindowAndDropsOnlyOlderDays() {
+    @Test fun historyPruneKeepsRetentionWindowAndDropsOnlyOlderDays() = kotlinx.coroutines.runBlocking {
         DeviceAlertsCoordinator.resetForTest(context)
         val day = 24 * 60 * 60_000L
         val keptKey = DeviceAlerts.dayKey(now - 10 * day)
@@ -108,7 +110,7 @@ class DeviceAlertsCoordinatorTest {
         writeHistoryDay(keptKey, 7)
         writeHistoryDay(staleKey, 8)
         DeviceAlertsCoordinator.recordSnapshot(context, now,
-            listOf(device(1, "192.168.1.10", IpLists.Category.UNKNOWN)), homeIps = emptySet())
+            listOf(device(1, "192.168.1.10", IpLists.Category.UNKNOWN)))
         val prefs = context.getSharedPreferences("device_alerts", 0)
         assertTrue(prefs.contains("history_$keptKey"))
         assertTrue(prefs.contains("history_${DeviceAlerts.dayKey(now)}"))

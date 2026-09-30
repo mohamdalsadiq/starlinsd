@@ -12,6 +12,7 @@ import com.example.data.DailyReconciliation
 import com.example.data.DeviceRecovery
 import com.example.data.DeviceSelection
 import com.example.data.IpListStore
+import com.example.data.IpLists
 import com.example.data.TrackedDevice
 import com.example.network.StarlinkProbe
 import com.example.db.*
@@ -96,9 +97,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 deviceScan.value = DeviceScan(tracker.lastSnapshot.orEmpty(), System.currentTimeMillis(), failed = tracker.lastSnapshot == null)
                 // Discovery-failure protection (spec 32): history only advances on success.
                 if (tracker.lastSnapshot != null) {
-                    DeviceAlertsCoordinator.recordSnapshot(
-                        getApplication(), System.currentTimeMillis(), tracker.lastSnapshot.orEmpty(), lists.snapshot().home)
-                    DeviceTrackerBridge.updateSnapshot(tracker.lastSnapshot, lists.snapshot().home)
+                    DeviceAlertsCoordinator.recordSnapshot(getApplication(), System.currentTimeMillis(), tracker.lastSnapshot.orEmpty())
+                    DeviceTrackerBridge.updateSnapshot(tracker.lastSnapshot)
                 }
                 SubscriptionAlarms.refresh(getApplication())
             } }
@@ -113,6 +113,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun removeHomeIp(ip: String) = work { lists.removeHome(ip) }
     fun addWatchIp(ip: String, label: String = "") = work { lists.addWatch(ip, label); message.value = "تمت إضافة الجهاز لقائمة المراقبة" }
     fun removeWatchIp(ip: String) = work { lists.removeWatch(ip) }
+
+    // Identity-based list management (schema v8): the stable clientId is saved with the
+    // MAC and last-known IP as display data, so DHCP IP changes cannot reclassify.
+    fun addHomeDevice(device: TrackedDevice) = work {
+        lists.setHomeIdentity(device.clientId, device.name, device.mac, device.ip)
+        message.value = "تمت إضافة الجهاز لأهل البيت بمعرّفه الثابت"
+    }
+    fun addWatchDevice(device: TrackedDevice) = work {
+        lists.setWatchIdentity(device.clientId, device.name, device.mac, device.ip)
+        message.value = "تمت إضافة الجهاز لقائمة المراقبة بمعرّفه الثابت"
+    }
+    fun removeHomeDevice(deviceId: Long) = work { lists.removeIdentity(deviceId) }
+    fun removeWatchDevice(deviceId: Long) = work { lists.removeIdentity(deviceId) }
+    val identities = repo.dao.observeIdentities().stateIn(viewModelScope, sharing, emptyList())
 
     /** Live candidates for the binding flow; null when discovery is currently unavailable. */
     suspend fun bindingChoices(): DeviceSelection.Result? {
@@ -166,14 +180,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * Phase 4 daily device confirmation: upserts this event day's grouped review
-     * amounts as DailyReconciliation rows in manual_sales (idempotent per day,
-     * event-day attribution). work{} refreshes alarms/panel/finance flows after.
+     * Phase 4 daily device confirmation, per device: upserts each device's
+     * (dayKey, deviceId) confirmation row and rebuilds the day's single ledger row.
+     * Idempotent by identity — reopening, editing, and re-confirming never duplicate.
+     * work{} refreshes alarms/panel/finance flows after.
      */
-    fun confirmDailyDevices(dayKey: String, unregisteredCount: Int, groups: List<DailyReconciliation.Group>, payment: String) = work {
-        repo.confirmDailyRevenue(dayKey, unregisteredCount, groups.map { it.count to it.unitPrice }, payment)
-        DeviceAlertsCoordinator.saveReviewDraft(getApplication(), DeviceAlertsCoordinator.ReviewState(dayKey, groups, confirmed = true))
-        message.value = "تم تأكيد الإيراد الإضافي ليوم $dayKey وإضافته إلى المالية"
+    fun confirmDailyDevices(dayKey: String, devices: List<SubscriptionRepository.DailyDeviceAmount>, payment: String) = work {
+        repo.confirmDailyDevices(dayKey, devices, payment)
+        message.value = "تم تأكيد إيراد $dayKey وإضافته إلى المالية"
     }
     fun change(id: String, action: String) = work {
         repo.changeState(id, action)
@@ -221,16 +235,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             tracker.poll()
             val ok = tracker.lastSnapshot != null
             if (ok) {
-                DeviceAlertsCoordinator.recordSnapshot(getApplication(), System.currentTimeMillis(), tracker.lastSnapshot.orEmpty(), lists.snapshot().home)
-                DeviceTrackerBridge.updateSnapshot(tracker.lastSnapshot, lists.snapshot().home)
+                DeviceAlertsCoordinator.recordSnapshot(getApplication(), System.currentTimeMillis(), tracker.lastSnapshot.orEmpty())
+                DeviceTrackerBridge.updateSnapshot(tracker.lastSnapshot)
             }
             val sessions = repo.dao.sessions()
             val liveIds = tracker.lastSnapshot.orEmpty().map { it.clientId }.toSet()
             val bound = sessions.filter { !it.home && it.state in listOf("ACTIVE", "PAUSED") && it.deviceClientId != null }.mapNotNull { it.deviceClientId }.toSet()
+            val homeIds = lists.identitySnapshot()
             return@withContext DeviceRecovery.Board(
                 snapshotOk = ok,
                 candidates = DeviceRecovery.candidates(sessions, System.currentTimeMillis(), liveIds, ok),
-                options = DeviceRecovery.options(tracker.lastSnapshot, lists.snapshot().home, bound)
+                options = DeviceRecovery.options(tracker.lastSnapshot, homeIds.homeClientIds, homeIds.legacyHomeIps, bound,
+                    IpLists.homeMacs(homeIds.identities))
             )
         } }
         catch (e: CancellationException) { throw e }

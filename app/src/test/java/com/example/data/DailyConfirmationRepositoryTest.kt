@@ -15,9 +15,10 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 /**
- * Integration tests for the Phase 4 daily device confirmation (§40 report point H):
- * confirmDailyRevenue upsert semantics against a real in-memory Room database.
- * No sleeps; the repository clock is injected (spec 33).
+ * Integration tests for the per-device daily confirmation (§40 report point H,
+ * redesigned by device-identity-reconciliation-v1): confirmDailyDevices upsert
+ * semantics against a real in-memory Room database. No sleeps; the repository
+ * clock is injected (spec 33).
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36])
@@ -36,72 +37,82 @@ class DailyConfirmationRepositoryTest {
     @After fun close() { db.close() }
 
     private suspend fun ledger() = Finance.ledger(repo.dao.sessions(), repo.dao.manualSales(), emptyList())
+    private fun amount(deviceId: Long, sessionId: String, confirmed: Long) =
+        SubscriptionRepository.DailyDeviceAmount(deviceId, sessionId, confirmed)
 
-    /** 500×1 + 1000×2 lands as two rev- rows, visible in the ledger for the event day. */
-    @Test fun groupedConfirmationIsVisibleInLedgerForEventDay() = runBlocking {
-        repo.confirmDailyRevenue(eventDay, 3, listOf(1 to 50000L, 2 to 100000L), "CASH")
-        val rows = DailyReconciliation.rowsFor(repo.dao.manualSales(), eventDay)
-        assertEquals(listOf("rev-$eventDay:0", "rev-$eventDay:1"), rows.map { it.id })
-        assertEquals(250000L, rows.sumOf { it.amount })
-        val day = Revenue.day(rows[0].at)
-        val ledgerDay = ledger().filter { Revenue.day(it.at) == day && !it.voided }
-        // Manual review rows are the only money that day: the ledger shows them for the event day.
-        assertEquals(250000L, ledgerDay.sumOf { it.value })
-        assertEquals(2, ledgerDay.size)
+    /** Per-device entries land as (dayKey, deviceId) rows plus ONE ledger row for the event day. */
+    @Test fun perDeviceConfirmationIsVisibleInLedgerForEventDay() = runBlocking {
+        repo.confirmDailyDevices(eventDay, listOf(amount(1, "", 50000L), amount(2, "", 100000L)), "CASH")
+        val rows = repo.dao.dayConfirmations(eventDay).sortedBy { it.deviceId }
+        assertEquals(listOf(1L, 2L), rows.map { it.deviceId })
+        assertEquals(150000L, rows.sumOf { it.confirmed })
+        val ledgerRow = DailyReconciliation.rowsFor(repo.dao.manualSales(), eventDay).single()
+        assertEquals(DailyReconciliation.dailyRowId(eventDay), ledgerRow.id)
+        assertEquals(150000L, ledgerRow.amount)
+        assertEquals(Revenue.day(ledgerRow.at), Revenue.day(ledgerRow.id.removePrefix("rev-").take(10).let {
+            java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }.parse(it)!!.time
+        }.coerceAtLeast(0)) )
     }
 
-    /** Confirming twice with the same groups stores one copy of the money (spec 14). */
+    /** Confirming twice with the same devices stores one copy of the money (spec 14). */
     @Test fun repeatedConfirmationDoesNotDoubleCount() = runBlocking {
-        repo.confirmDailyRevenue(eventDay, 3, listOf(1 to 50000L, 2 to 100000L), "CASH")
+        repo.confirmDailyDevices(eventDay, listOf(amount(1, "", 50000L), amount(2, "", 100000L)), "CASH")
         now += 60 * 60_000L // reopen the review an hour later and confirm again
-        repo.confirmDailyRevenue(eventDay, 3, listOf(1 to 50000L, 2 to 100000L), "CASH")
-        val rows = DailyReconciliation.rowsFor(repo.dao.manualSales(), eventDay)
+        repo.confirmDailyDevices(eventDay, listOf(amount(1, "", 50000L), amount(2, "", 100000L)), "CASH")
+        val rows = repo.dao.dayConfirmations(eventDay)
         assertEquals(2, rows.size)
-        assertEquals(250000L, rows.sumOf { it.amount })
+        val ledger = ledger().filter { it.id.startsWith("manual:") && !it.voided }
+        assertEquals(1, ledger.size)
+        assertEquals(150000L, ledger.single().value)
     }
 
-    /** Editing 2500→3000 rewrites in place instead of adding a second entry (spec 15). */
-    @Test fun editingConfirmedGroupsReplacesNotAppends() = runBlocking {
-        repo.confirmDailyRevenue(eventDay, 3, listOf(1 to 50000L, 2 to 100000L), "CASH")
+    /** Editing 1000→500 rewrites the SAME device row in place instead of adding one (spec 15). */
+    @Test fun editingConfirmedAmountReplacesNotAppends() = runBlocking {
+        repo.confirmDailyDevices(eventDay, listOf(amount(1, "", 100000L)), "CASH")
         now += 60 * 60_000L
-        repo.confirmDailyRevenue(eventDay, 3, listOf(3 to 100000L), "CASH")
-        val rows = DailyReconciliation.rowsFor(repo.dao.manualSales(), eventDay)
-        assertEquals(listOf("rev-$eventDay:0"), rows.map { it.id })
-        assertEquals(300000L, rows[0].amount)
-        assertEquals(3, rows[0].count)
+        repo.confirmDailyDevices(eventDay, listOf(amount(1, "", 50000L)), "CASH")
+        val rows = repo.dao.dayConfirmations(eventDay)
+        assertEquals(1, rows.size)
+        assertEquals(50000L, rows[0].confirmed)
+        assertEquals(DailyReconciliation.dailyRowId(eventDay), DailyReconciliation.rowsFor(repo.dao.manualSales(), eventDay).single().id)
+        assertEquals(50000L, DailyReconciliation.rowsFor(repo.dao.manualSales(), eventDay).single().amount)
     }
 
-    /** A shorter replacement list deletes the superseded rows. */
-    @Test fun shrinkingGroupsDeletesSupersededRows() = runBlocking {
-        repo.confirmDailyRevenue(eventDay, 3, listOf(1 to 50000L, 2 to 100000L), "CASH")
+    /** A device dropped from the new list loses its stored row (and its money). */
+    @Test fun droppedDevicesDeleteTheirStoredRow() = runBlocking {
+        repo.confirmDailyDevices(eventDay, listOf(amount(1, "", 50000L), amount(2, "", 100000L)), "CASH")
         now += 60 * 60_000L
-        repo.confirmDailyRevenue(eventDay, 3, listOf(2 to 100000L), "CASH")
-        val rows = DailyReconciliation.rowsFor(repo.dao.manualSales(), eventDay)
-        assertEquals(listOf("rev-$eventDay:0"), rows.map { it.id })
-        assertEquals(200000L, rows.sumOf { it.amount })
+        repo.confirmDailyDevices(eventDay, listOf(amount(2, "", 100000L)), "CASH")
+        val rows = repo.dao.dayConfirmations(eventDay)
+        assertEquals(listOf(2L), rows.map { it.deviceId })
+        assertEquals(100000L, DailyReconciliation.rowsFor(repo.dao.manualSales(), eventDay).single().amount)
     }
 
     /** Different days never collide: each event day owns its own deterministic rows. */
     @Test fun otherDaysAreUntouched() = runBlocking {
-        repo.confirmDailyRevenue(eventDay, 3, listOf(1 to 50000L), "CASH")
-        repo.confirmDailyRevenue("2026-09-29", 2, listOf(1 to 50000L), "CASH")
-        assertEquals(1, DailyReconciliation.rowsFor(repo.dao.manualSales(), eventDay).size)
-        assertEquals(1, DailyReconciliation.rowsFor(repo.dao.manualSales(), "2026-09-29").size)
+        repo.confirmDailyDevices(eventDay, listOf(amount(1, "", 50000L)), "CASH")
+        repo.confirmDailyDevices("2026-09-29", listOf(amount(1, "", 50000L)), "CASH")
+        assertEquals(1, repo.dao.dayConfirmations(eventDay).size)
+        assertEquals(1, repo.dao.dayConfirmations("2026-09-29").size)
     }
 
-    /** Spec 21 enforced at the repository layer, not only in the UI. */
-    @Test fun overAllocationIsRejectedWithoutWriting() = runBlocking {
+    /** Duplicate device entries are rejected before any write. */
+    @Test fun duplicateDeviceEntriesAreRejectedWithoutWriting() = runBlocking {
         try {
-            repo.confirmDailyRevenue(eventDay, 3, listOf(5 to 100000L), "CASH")
-            fail("allocating 5 devices against 3 must fail")
+            repo.confirmDailyDevices(eventDay, listOf(amount(7, "", 50000L), amount(7, "", 30000L)), "CASH")
+            fail("the same deviceId twice must fail")
         } catch (expected: IllegalArgumentException) { }
-        assertTrue(repo.dao.manualSales().none { DailyReconciliation.dayKeyOf(it.id) == eventDay })
+        assertTrue(repo.dao.dayConfirmations(eventDay).isEmpty())
+        assertTrue(repo.dao.manualSales().isEmpty())
     }
 
-    /** Bank payment keeps the project's premium conversion rule. */
-    @Test fun bankPaymentAppliesPremiumLikeAddSales() = runBlocking {
-        repo.confirmDailyRevenue(eventDay, 1, listOf(1 to 125000L), "BANK")
-        val row = DailyReconciliation.rowsFor(repo.dao.manualSales(), eventDay).single()
-        assertEquals(100000L, row.cashEquivalent)
+    /** Bank payment is recorded; the ledger row stays cash-equivalent (single conversion). */
+    @Test fun bankPaymentIsRecordedOnTheDeviceRow() = runBlocking {
+        repo.confirmDailyDevices(eventDay, listOf(amount(1, "", 125000L)), "BANK")
+        val row = repo.dao.dayConfirmations(eventDay).single()
+        assertEquals("BANK", row.payment)
+        assertEquals(125000L, row.confirmed)
+        val ledgerRow = DailyReconciliation.rowsFor(repo.dao.manualSales(), eventDay).single()
+        assertEquals(125000L, ledgerRow.amount)
     }
 }

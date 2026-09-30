@@ -146,10 +146,9 @@ object SubscriptionAlarms {
  */
 object DeviceTrackerBridge {
     @Volatile private var snapshot: List<com.example.data.TrackedDevice>? = null
-    @Volatile private var homeIps: Set<String> = emptySet()
 
-    fun updateSnapshot(tracked: List<com.example.data.TrackedDevice>?, homeIps: Set<String>) {
-        snapshot = tracked; this.homeIps = homeIps
+    fun updateSnapshot(tracked: List<com.example.data.TrackedDevice>?) {
+        snapshot = tracked
     }
 
     fun lastSnapshot(app: Context): List<com.example.data.TrackedDevice>? = snapshot
@@ -163,10 +162,6 @@ object DeviceTrackerBridge {
         }
     } catch (e: CancellationException) { throw e } catch (_: Exception) { emptyMap() }
 
-    fun currentHomeIps(app: Context): Set<String> = try {
-        kotlinx.coroutines.runBlocking { AppDatabase.getDatabase(app).businessDao().homeIps().map { it.ip }.toSet() }
-    } catch (e: CancellationException) { throw e } catch (_: Exception) { emptySet() }
-
     /** One Phase 2 monitoring cycle, shared with MainViewModel's code path. */
     suspend fun poll(app: Context): DeviceTracker.Plan? = withContext(Dispatchers.IO) {
         val repo = SubscriptionRepository(app)
@@ -174,9 +169,8 @@ object DeviceTrackerBridge {
         val probe = com.example.network.StarlinkProbe(app)
         val tracker = ClientTracker(app, repo, lists) { network -> probe.clients(network) }
         val plan = tracker.poll()
-        updateSnapshot(tracker.lastSnapshot, currentHomeIps(app))
-        DeviceAlertsCoordinator.recordSnapshot(app, System.currentTimeMillis(),
-            tracker.lastSnapshot.orEmpty(), currentHomeIps(app))
+        updateSnapshot(tracker.lastSnapshot)
+        DeviceAlertsCoordinator.recordSnapshot(app, System.currentTimeMillis(), tracker.lastSnapshot.orEmpty())
         plan
     }
 }

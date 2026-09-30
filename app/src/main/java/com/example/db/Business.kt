@@ -39,6 +39,43 @@ data class HomeIp(@PrimaryKey val ip: String, val label: String = "", val added:
 @Entity(tableName = "watch_ips")
 data class WatchIp(@PrimaryKey val ip: String, val label: String = "", val added: Long = 0)
 
+/**
+ * Identity-keyed HOME/WATCH records (schema v8). The router's stable clientId is the
+ * PRIMARY identity; IP is a mutable display/last-known address only, so a DHCP move
+ * can never turn a family device into "unknown" or invent a second record.
+ * Legacy home_ips/watch_ips rows are never deleted; they stay as the owner's manual
+ * fallback entries, while identities are auto-discovered from successful snapshots.
+ */
+@Entity(tableName = "device_identities")
+data class DeviceIdentity(
+    @PrimaryKey val deviceId: Long,
+    val list: String,
+    val mac: String = "",
+    val name: String = "",
+    val lastIp: String = "",
+    val added: Long = 0,
+    val updated: Long = 0,
+)
+
+/**
+ * Per-device daily confirmation (schema v8): one row per device per event day.
+ * The (dayKey, deviceId) primary key makes every confirm/edit idempotent —
+ * reopening the review and re-saving rewrites the SAME row, never a second
+ * revenue record. Registered amount comes from the bound session; confirmed is
+ * what the operator actually received (editable, defaults to registered).
+ */
+@Entity(tableName = "daily_device_confirmations", primaryKeys = ["dayKey", "deviceId"])
+data class DailyDeviceConfirmation(
+    val dayKey: String,
+    val deviceId: Long,
+    val sessionId: String,
+    val registered: Long,
+    val confirmed: Long,
+    val payment: String,
+    val premiumBps: Int,
+    val updated: Long,
+)
+
 @Entity(tableName = "manual_sales")
 data class ManualSale(@PrimaryKey val id: String, val at: Long, val count: Int, val unitPrice: Long,
     val amount: Long, val cashEquivalent: Long, val payment: String, val premiumBps: Int)
@@ -116,4 +153,18 @@ interface BusinessDao {
     @Query("SELECT * FROM watch_ips") suspend fun watchIps(): List<WatchIp>
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun watchIp(entry: WatchIp)
     @Query("DELETE FROM watch_ips WHERE ip = :ip") suspend fun deleteWatchIp(ip: String)
+
+    @Query("SELECT * FROM device_identities ORDER BY added, deviceId") fun observeIdentities(): Flow<List<DeviceIdentity>>
+    @Query("SELECT * FROM device_identities") suspend fun identities(): List<DeviceIdentity>
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun identity(entry: DeviceIdentity)
+    @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertIdentity(entry: DeviceIdentity): Long
+    @Query("SELECT * FROM device_identities WHERE deviceId = :deviceId") suspend fun identity(deviceId: Long): DeviceIdentity?
+    @Query("SELECT * FROM device_identities WHERE mac = :mac AND mac != '' LIMIT 1") suspend fun identityByMac(mac: String): DeviceIdentity?
+    @Query("SELECT * FROM device_identities WHERE lastIp = :ip LIMIT 1") suspend fun identityByIp(ip: String): DeviceIdentity?
+    @Query("DELETE FROM device_identities WHERE deviceId = :deviceId") suspend fun deleteIdentity(deviceId: Long)
+
+    @Query("SELECT * FROM daily_device_confirmations WHERE dayKey = :dayKey") suspend fun dayConfirmations(dayKey: String): List<DailyDeviceConfirmation>
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun upsertConfirmation(entry: DailyDeviceConfirmation)
+    @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertConfirmation(entry: DailyDeviceConfirmation): Long
+    @Query("DELETE FROM daily_device_confirmations WHERE dayKey = :dayKey AND deviceId IN (:deviceIds)") suspend fun deleteConfirmations(dayKey: String, deviceIds: List<Long>)
 }

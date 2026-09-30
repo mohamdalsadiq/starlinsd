@@ -67,13 +67,20 @@ object DeviceRecovery {
 
     /**
      * Live devices the operator may link to: non-HOME, not currently bound to
-     * another active/paused session. A null snapshot (failed read) yields no
-     * options; the screen explains the failure instead of guessing.
+     * another active/paused session. HOME exclusion is identity-based (clientId,
+     * then MAC before promotion) with the legacy IP rows only as a pre-promotion
+     * fallback. A null snapshot (failed read) yields no options; the screen
+     * explains the failure instead of guessing.
      */
-    fun options(snapshot: List<TrackedDevice>?, homeIps: Set<String>, boundClientIds: Set<Long>): List<Option> {
+    fun options(snapshot: List<TrackedDevice>?, homeClientIds: Set<Long>, legacyHomeIps: Set<String>,
+        boundClientIds: Set<Long>, homeMacs: Set<String> = emptySet()): List<Option> {
         if (snapshot == null) return emptyList()
-        return snapshot.filter { it.ip !in homeIps && it.clientId !in boundClientIds }
-            .map { Option(it.clientId, it.name, it.ip, it.mac) }
+        return snapshot.filter { device ->
+            device.clientId !in homeClientIds &&
+                (device.mac.isBlank() || device.mac !in homeMacs) &&
+                device.ip !in legacyHomeIps &&
+                device.clientId !in boundClientIds
+        }.map { Option(it.clientId, it.name, it.ip, it.mac) }
     }
 
     /**

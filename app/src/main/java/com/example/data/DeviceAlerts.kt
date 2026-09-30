@@ -58,12 +58,20 @@ object DeviceAlerts {
     /**
      * Merges one successful snapshot into the day's history and returns the full
      * updated list. Callers pass null snapshot results straight through as no call
-     * at all: only successful answers touch history (spec 32). HOME devices are
-     * dropped both from new sightings and from earlier entries (spec 33).
+     * at all: only successful answers touch history (spec 32). HOME exclusion is
+     * IDENTITY-based: a device whose clientId (or MAC before promotion) is
+     * HOME-classified never enters history, and a HISTORY entry whose device is
+     * HOME by identity disappears entirely — the legacy homeIps set is only a
+     * pre-promotion fallback keyed to the IP the device held when seen.
      */
-    fun mergeSnapshot(now: Long, seen: List<TrackedDevice>, existing: List<DayDevice>, homeIps: Set<String>): List<DayDevice> {
+    fun mergeSnapshot(now: Long, seen: List<TrackedDevice>, existing: List<DayDevice>,
+        homeClientIds: Set<Long> = emptySet(), homeMacs: Set<String> = emptySet(),
+        legacyHomeIps: Set<String> = emptySet()): List<DayDevice> {
         val byId = existing.associateBy { it.clientId }
-        val updated = seen.filter { it.ip !in homeIps }.map { device ->
+        val updated = seen.filter { device ->
+            device.clientId !in homeClientIds && (device.mac.isBlank() || device.mac !in homeMacs) &&
+                device.ip !in legacyHomeIps
+        }.map { device ->
             val previous = byId[device.clientId]
             if (previous == null) DayDevice(device.clientId, device.name, device.ip, device.mac, device.category, now, now)
             else previous.copy(name = device.name.ifBlank { previous.name }, ip = device.ip, mac = device.mac,
@@ -71,8 +79,11 @@ object DeviceAlerts {
         }
         val liveIds = updated.map { it.clientId }.toSet()
         // Devices sighted earlier today but absent now stay in history (their alert
-        // window dies instead); a device moved to HOME disappears entirely.
-        return updated + existing.filter { it.clientId !in liveIds && it.ip !in homeIps }
+        // window dies instead); a device whose identity became HOME disappears entirely.
+        return updated + existing.filter { entry ->
+            entry.clientId !in liveIds && entry.clientId !in homeClientIds &&
+                (entry.mac.isBlank() || entry.mac !in homeMacs) && entry.ip !in legacyHomeIps
+        }
     }
 
     /** An unknown-device alert waiting out the user-configured delay. */
