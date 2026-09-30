@@ -132,8 +132,13 @@ class TextExpanderService : AccessibilityService() {
                 })
                 if (session != null) {
                     repo.insert(session)
+                    // The shortcut IS the subscription workflow: bind the new session to the
+                    // device being sold to (best-effort, never throws). An unbound session
+                    // would classify the customer's device as unregistered in reconciliation.
+                    val bound = runCatching { com.example.data.bindShortcutSession(this@TextExpanderService, session.id) }.getOrNull()
                     SubscriptionAlarms.refresh(this@TextExpanderService)
-                    Toast.makeText(this@TextExpanderService, "تم تسجيل ${session.client}", Toast.LENGTH_SHORT).show()
+                    val bindingNote = if (bound != null) " · تم ربط الجهاز تلقائيًا" else ""
+                    Toast.makeText(this@TextExpanderService, "تم تسجيل ${session.client}$bindingNote", Toast.LENGTH_SHORT).show()
                 }
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) {

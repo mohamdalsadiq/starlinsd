@@ -127,6 +127,11 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
      *   (DailyReconciliation.dailyRowId), REBUILT from the confirmation rows on every
      *   save. Editing a device's amount updates its row and rewrites the day's ledger
      *   row in place — manual_sales keeps one row per confirmed day, never duplicates.
+     * - Only confirmed UNREGISTERED amounts create ledger money (spec 14):
+     *   registered (subscribed) income already exists as session revenue, so the
+     *   subscribed amounts are kept on the confirmation rows for audit but
+     *   contribute zero ledger money. Total day income = session revenue +
+     *   this row — never double-counted.
      * - The row's `at` is pinned inside the EVENT day, so Finance/Revenue bucket it
      *   into that day regardless of when the operator confirms.
      * - HOME devices never reach this path: the caller (DeviceConfirmationScreen)
@@ -156,8 +161,11 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
             else dao.insertConfirmation(row)
         }
         // Rebuild the day's single ledger row from the surviving confirmation rows.
+        // Only confirmed UNREGISTERED amounts become ledger money (spec 14): the
+        // subscribed amounts already exist as session revenue and must not be
+        // written again.
         val rows = dao.dayConfirmations(dayKey)
-        val ledger = DailyReconciliation.ledgerRow(dayKey, rows, now, settings.premiumBps)
+        val ledger = DailyReconciliation.ledgerRow(dayKey, rows, now, settings.premiumBps, payment)
         val existing = DailyReconciliation.rowsFor(dao.manualSales(), dayKey)
         if (ledger == null) existing.forEach { dao.deleteManualSale(it) }
         else {

@@ -75,6 +75,14 @@ object SubscriptionAlarms {
         val closeMinute = dailyCloseMinute(app)
         // Phase 3 defaults are seeded once, on the existing refresh path (spec 7/15/36).
         try { DeviceAlertsCoordinator.seedDefaults(app) } catch (e: CancellationException) { throw e } catch (_: Exception) { }
+        // Background device monitoring (spec 21): the single scheduler performs one
+        // bounded CLIENTS poll so pause/resume, the unregistered-delay evaluation,
+        // and NEW-device discovery work while the UI is closed. Skipped only when
+        // nothing is tracked AND the discovery sweep is not due; a poll failure
+        // must never break alarm scheduling.
+        try {
+            if (DeviceTrackerBridge.needsPoll(app)) withTimeout(5000) { DeviceTrackerBridge.poll(app) }
+        } catch (e: CancellationException) { throw e } catch (_: Exception) { /* monitoring is best-effort */ }
         val closePrefs = app.getSharedPreferences(DAILY_CLOSE_PREFS, 0)
         todayClose(now, closeMinute)?.let { close ->
             if (now >= close && closePrefs.getLong("applied", 0L) < close) {
@@ -110,9 +118,14 @@ object SubscriptionAlarms {
         val dailyClose = nextDailyClose(now, closeMinute)
         // Phase 3 device alerts ride the same single alarm: evaluate now, then merge
         // their next wakeup into the one-schedule-for-everything mechanism (spec 5/39).
+        // Only a FRESH snapshot drives evaluation: stale data is treated as a
+        // discovery failure (monitoring freezes, never acts on old data).
         val deviceWakeups = try { DeviceAlertsCoordinator.onRefresh(app, now,
-            DeviceTrackerBridge.lastSnapshot(app), DeviceTrackerBridge.activeBindings(app)) } catch (e: CancellationException) { throw e } catch (_: Exception) { emptyList() }
-        val next = (listOfNotNull(deadline, midnight, dailyClose) + deviceWakeups).minOrNull()
+            DeviceTrackerBridge.freshSnapshot(), DeviceTrackerBridge.activeBindings(app)) } catch (e: CancellationException) { throw e } catch (_: Exception) { emptyList() }
+        // Background discovery tick (spec 21): keeps new-device observation alive
+        // while the app is closed, on the SAME alarm — never a second scheduler.
+        val monitoringWakeup = DeviceTrackerBridge.monitoringWakeup(now)
+        val next = (listOfNotNull(deadline, midnight, dailyClose, monitoringWakeup) + deviceWakeups).minOrNull()
         val manager = app.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         manager.cancel(pending(app))
         if (next != null) {
@@ -146,12 +159,64 @@ object SubscriptionAlarms {
  */
 object DeviceTrackerBridge {
     @Volatile private var snapshot: List<com.example.data.TrackedDevice>? = null
+    @Volatile private var snapshotAt: Long = 0L
 
     fun updateSnapshot(tracked: List<com.example.data.TrackedDevice>?) {
         snapshot = tracked
+        snapshotAt = if (tracked == null) 0L else System.currentTimeMillis()
+        // Any successful observation (UI poll, shortcut binding poll, or the
+        // scheduler's own poll) counts for the discovery cadence: the network was
+        // just seen, so the background tick restarts from here.
+        if (tracked != null) lastPollAttemptAt = System.currentTimeMillis()
     }
 
     fun lastSnapshot(app: Context): List<com.example.data.TrackedDevice>? = snapshot
+
+    /**
+     * Last successful snapshot only when fresh; null when stale or never polled.
+     * Stale data must never drive alerts or pause/resume (spec: discovery failure
+     * freezes monitoring, never acts on old data).
+     */
+    fun freshSnapshot(maxAgeMs: Long = 15 * 60_000L): List<com.example.data.TrackedDevice>? =
+        snapshot?.takeIf { snapshotAt > 0 && System.currentTimeMillis() - snapshotAt <= maxAgeMs }
+
+    /**
+     * Background discovery cadence for the unknown-device monitor (spec 21): how
+     * often the single scheduler may observe the network when nothing is already
+     * tracked. This keeps NEW-device discovery alive while the app is closed — no
+     * subscription and no pending candidate must never mean no observation. The
+     * tick is merged into the one AlarmManager schedule (spec 5/39); it is never
+     * a second scheduler.
+     */
+    const val MONITOR_INTERVAL_MS = 5 * 60_000L
+    @Volatile private var lastPollAttemptAt: Long = 0L
+
+    /**
+     * True when background monitoring has something to evaluate or is due for its
+     * periodic discovery sweep: bound trackable sessions (pause/resume needs fresh
+     * snapshots), pending unregistered-delay candidates awaiting their deadline,
+     * or the monitoring interval elapsed with nothing tracked yet (new-device
+     * discovery). When false the poll is skipped entirely.
+     */
+    fun needsPoll(app: Context, now: Long = System.currentTimeMillis()): Boolean = try {
+        activeBindings(app).isNotEmpty() ||
+            DeviceAlertsCoordinator.pending(app).isNotEmpty() ||
+            now - lastPollAttemptAt >= MONITOR_INTERVAL_MS
+    } catch (_: Exception) { false }
+
+    /**
+     * Next background discovery tick for the single alarm schedule, or null when
+     * the tick is already due (the poll runs on this refresh instead).
+     */
+    fun monitoringWakeup(now: Long = System.currentTimeMillis()): Long? =
+        (lastPollAttemptAt + MONITOR_INTERVAL_MS).takeIf { it > now }
+
+    /** Test-only reset of snapshot and cadence state. */
+    internal fun resetForTest() {
+        snapshot = null
+        snapshotAt = 0L
+        lastPollAttemptAt = 0L
+    }
 
     /** clientId -> session id for sessions currently ACTIVE/PAUSED with a bound device. */
     fun activeBindings(app: Context): Map<Long, String> = try {
@@ -164,13 +229,23 @@ object DeviceTrackerBridge {
 
     /** One Phase 2 monitoring cycle, shared with MainViewModel's code path. */
     suspend fun poll(app: Context): DeviceTracker.Plan? = withContext(Dispatchers.IO) {
+        lastPollAttemptAt = System.currentTimeMillis()
         val repo = SubscriptionRepository(app)
         val lists = IpListStore(app)
         val probe = com.example.network.StarlinkProbe(app)
         val tracker = ClientTracker(app, repo, lists) { network -> probe.clients(network) }
         val plan = tracker.poll()
-        updateSnapshot(tracker.lastSnapshot)
-        DeviceAlertsCoordinator.recordSnapshot(app, System.currentTimeMillis(), tracker.lastSnapshot.orEmpty())
+        if (plan != null) {
+            // Successful CLIENTS answer: the fresh snapshot drives pause/resume
+            // (already applied inside tracker.poll()), alert evaluation, and history.
+            updateSnapshot(tracker.lastSnapshot)
+            DeviceAlertsCoordinator.recordSnapshot(app, System.currentTimeMillis(), tracker.lastSnapshot.orEmpty())
+        } else {
+            // Discovery failure: freeze monitoring. The stale snapshot is dropped
+            // (never re-stamped as fresh) and history is untouched (spec 32), so a
+            // failed poll can never pause, resume, alert, or fabricate sightings.
+            updateSnapshot(null)
+        }
         plan
     }
 }

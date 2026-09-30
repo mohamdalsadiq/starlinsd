@@ -99,9 +99,52 @@ object DailyReconciliation {
     /** The ONE deterministic manual-sales id for [dayKey]'s device-level ledger row. */
     fun dailyRowId(dayKey: String): String = "${SOURCE_PREFIX}$dayKey:devices"
 
+    /**
+     * Financial candidate split for the daily confirmation screen (pure, testable).
+     *
+     * Subscription chain: history device clientId → session deviceClientId, for
+     * non-home sessions in ACTIVE/PAUSED/ENDED. Anything else splits by category:
+     * - SUBSCRIBED: bound to a live (or today-ended) session → audit/reference
+     *   only, never new ledger money.
+     * - UNREGISTERED: UNKNOWN devices with no binding → the only group whose
+     *   confirmed amounts may become ledger money.
+     * - HOME: tracked for identity, never enters financial confirmation or totals.
+     * - WATCH: stays in device management with its own section, never enters
+     *   financial confirmation or totals.
+     *
+     * Identity is always the clientId; IP/MAC/name are display only here.
+     */
+    data class ConfirmationGroups(
+        val subscribed: List<Pair<DeviceAlerts.DayDevice, com.example.db.Session>>,
+        val unregistered: List<DeviceAlerts.DayDevice>,
+        val home: List<DeviceAlerts.DayDevice>,
+        val watch: List<DeviceAlerts.DayDevice>,
+    )
+
+    fun confirmationGroups(
+        devices: List<DeviceAlerts.DayDevice>,
+        sessions: List<com.example.db.Session>,
+    ): ConfirmationGroups {
+        // HOME devices never enter financial confirmation, even if a session
+        // somehow references their clientId (mergeSnapshot already keeps them
+        // out of history; this is defense in depth).
+        val billable = devices.filter { it.category != IpLists.Category.HOME }
+        val subscribed = billable.mapNotNull { device ->
+            sessions.firstOrNull { !it.home && it.deviceClientId == device.clientId && it.state in listOf("ACTIVE", "PAUSED", "ENDED") }
+                ?.let { device to it }
+        }
+        val subscribedIds = subscribed.map { it.first.clientId }.toSet()
+        val others = billable.filter { it.clientId !in subscribedIds }
+        return ConfirmationGroups(
+            subscribed = subscribed,
+            unregistered = others.filter { it.category == IpLists.Category.UNKNOWN },
+            home = devices.filter { it.category == IpLists.Category.HOME },
+            watch = others.filter { it.category == IpLists.Category.WATCH },
+        )
+    }
+
     /** Validates per-device entries: known payment, no duplicate devices, positive amounts. */
-    fun validateDeviceAmounts(payment: String, entries: List<Pair<Long, Long>>) {
-        require(payment == "CASH" || payment == "BANK") { "اختر طريقة الدفع" }
+    fun validateDeviceAmounts(payment: String, entries: List<Pair<Long, Long>>) {        require(payment == "CASH" || payment == "BANK") { "اختر طريقة الدفع" }
         require(entries.size <= MAX_GROUPS * 100) { "عدد الأجهزة كبير جدًا لليوم الواحد" }
         require(entries.map { it.first }.distinct().size == entries.size) { "جهاز مكرر في نفس اليوم" }
         entries.forEach { (_, confirmed) ->
@@ -117,19 +160,28 @@ object DailyReconciliation {
      * day, then +12h) so the money always lands on the reviewed day — never on
      * the day the operator happens to confirm. count = devices with money.
      * Returns null when nothing is confirmed for the day (row should not exist).
+     *
+     * Only CONFIRMED UNREGISTERED amounts create reconciliation revenue (spec 14):
+     * registered (subscribed) income already exists as session revenue in the
+     * finance ledger, and writing it here again would double-count it. The
+     * per-device confirmation rows keep the subscribed amounts for audit, but
+     * they contribute zero ledger money.
      */
-    fun ledgerRow(dayKey: String, devices: List<com.example.db.DailyDeviceConfirmation>, at: Long, premiumBps: Int): ManualSale? {
-        if (devices.isEmpty()) return null
-        val total = devices.sumOf { it.confirmed }
+    fun ledgerRow(dayKey: String, devices: List<com.example.db.DailyDeviceConfirmation>, at: Long, premiumBps: Int, payment: String): ManualSale? {
+        val unregistered = devices.filter { it.sessionId.isBlank() }
+        if (unregistered.isEmpty()) return null
+        val total = unregistered.sumOf { it.confirmed }
+        val method = if (payment == "BANK") "BANK" else "CASH"
         val rowTime = try {
             val format = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
             format.isLenient = false
             format.parse(dayKey)!!.time + 12 * 60 * 60_000L
         } catch (_: Exception) { Revenue.day(at) + 12 * 60 * 60_000L }
-        val count = devices.count { it.confirmed > 0 }
+        val count = unregistered.count { it.confirmed > 0 }
         return ManualSale(
             id = dailyRowId(dayKey), at = rowTime, count = count, unitPrice = total,
-            amount = total, cashEquivalent = total, payment = "CASH", premiumBps = premiumBps)
+            amount = total, cashEquivalent = if (method == "BANK") Money.bankToCash(total, premiumBps) else total,
+            payment = method, premiumBps = premiumBps)
     }
 
     /** Confirmed device total for [dayKey] (sum of per-device confirmed amounts). */
