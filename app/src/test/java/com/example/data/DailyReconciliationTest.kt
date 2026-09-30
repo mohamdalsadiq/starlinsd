@@ -87,4 +87,101 @@ class DailyReconciliationTest {
         assertEquals(100000L, rows[0].cashEquivalent)
         assertEquals("BANK", rows[0].payment)
     }
+
+    private fun confirmation(deviceId: Long, sessionId: String, confirmed: Long) =
+        com.example.db.DailyDeviceConfirmation("2026-09-28", deviceId, sessionId, 0L, confirmed, "CASH", 2500, 0L)
+
+    /** Subscribed amounts are audit-only: they never create ledger money (spec 14). */
+    @Test
+    fun ledgerRowExcludesRegisteredAmounts() {
+        val row = DailyReconciliation.ledgerRow("2026-09-28", listOf(
+            confirmation(1, "session-a", 50000L),   // subscribed: registered income already exists
+            confirmation(2, "", 100000L),          // unregistered: creates reconciliation revenue
+        ), 1759000000000L, 2500, "CASH")
+        assertNotNull(row)
+        assertEquals(100000L, row!!.amount)
+        assertEquals(1, row.count)
+    }
+
+    /** A day with only subscribed devices writes no ledger row at all. */
+    @Test
+    fun ledgerRowIsNullWhenOnlySubscribedDevices() {
+        assertNull(DailyReconciliation.ledgerRow("2026-09-28",
+            listOf(confirmation(1, "session-a", 50000L)), 1759000000000L, 2500, "CASH"))
+    }
+
+    /** CASH keeps cashEquivalent == amount (no premium haircut on cash). */
+    @Test
+    fun ledgerRowCashKeepsFullValue() {
+        val row = DailyReconciliation.ledgerRow("2026-09-28",
+            listOf(confirmation(2, "", 100000L)), 1759000000000L, 2500, "CASH")
+        assertEquals("CASH", row!!.payment)
+        assertEquals(100000L, row.cashEquivalent)
+    }
+
+    /** BANK converts through the premium, like every other manual sale. */
+    @Test
+    fun ledgerRowBankConvertsThroughPremium() {
+        val row = DailyReconciliation.ledgerRow("2026-09-28",
+            listOf(confirmation(2, "", 125000L)), 1759000000000L, 2500, "BANK")
+        assertEquals("BANK", row!!.payment)
+        assertEquals(100000L, row.cashEquivalent)
+    }
+
+    // ---- confirmationGroups: HOME/WATCH never enter financial confirmation ----
+
+    private fun dayDevice(id: Long, category: IpLists.Category) =
+        DeviceAlerts.DayDevice(id, "d$id", "192.168.1.$id", "aa:bb:cc:dd:ee:$id", category, 1000L, 2000L)
+
+    private fun session(id: String, clientId: Long?, home: Boolean = false, state: String = "ACTIVE") =
+        com.example.db.Session(id = id, client = "c", plan = "p", started = 1000L, resumed = 1000L,
+            duration = 3600000L, amount = 50000L, cashEquivalent = 50000L, payment = "CASH",
+            premiumBps = 2500, home = home, grace = 300000L, state = state, deviceClientId = clientId)
+
+    @Test
+    fun confirmationGroupsSplitByIdentityAndCategory() {
+        val devices = listOf(
+            dayDevice(101, IpLists.Category.UNKNOWN), // bound below
+            dayDevice(102, IpLists.Category.UNKNOWN), // free
+            dayDevice(103, IpLists.Category.HOME),
+            dayDevice(104, IpLists.Category.WATCH),
+        )
+        val sessions = listOf(session("s1", 101L))
+        val groups = DailyReconciliation.confirmationGroups(devices, sessions)
+        assertEquals(listOf(101L), groups.subscribed.map { it.first.clientId })
+        assertEquals("s1", groups.subscribed.single().second.id)
+        assertEquals(listOf(102L), groups.unregistered.map { it.clientId })
+        assertEquals(listOf(103L), groups.home.map { it.clientId })
+        assertEquals(listOf(104L), groups.watch.map { it.clientId })
+    }
+
+    @Test
+    fun watchDevicesNeverEnterFinancialGroups() {
+        // A WATCH device with no session stays in device management only: it is
+        // neither subscribed nor an unregistered financial candidate.
+        val groups = DailyReconciliation.confirmationGroups(
+            listOf(dayDevice(104, IpLists.Category.WATCH)), emptyList())
+        assertTrue(groups.subscribed.isEmpty())
+        assertTrue(groups.unregistered.isEmpty())
+        assertEquals(listOf(104L), groups.watch.map { it.clientId })
+    }
+
+    @Test
+    fun homeDevicesNeverEnterFinancialGroups() {
+        val groups = DailyReconciliation.confirmationGroups(
+            listOf(dayDevice(103, IpLists.Category.HOME)), listOf(session("s1", 103L)))
+        assertTrue(groups.subscribed.isEmpty())
+        assertTrue(groups.unregistered.isEmpty())
+        assertEquals(listOf(103L), groups.home.map { it.clientId })
+    }
+
+    @Test
+    fun endedSessionStillCountsAsSubscribed() {
+        // A session that ended today keeps its device in the subscribed
+        // (audit-only) group — its money already exists as session revenue.
+        val groups = DailyReconciliation.confirmationGroups(
+            listOf(dayDevice(101, IpLists.Category.UNKNOWN)), listOf(session("s1", 101L, state = "ENDED")))
+        assertEquals(listOf(101L), groups.subscribed.map { it.first.clientId })
+        assertTrue(groups.unregistered.isEmpty())
+    }
 }
