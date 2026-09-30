@@ -90,9 +90,10 @@ suspend fun bindShortcutSession(
         val tracked = withTimeout(timeoutMs) {
             val network = wifiNetwork(app) ?: return@withTimeout null
             val raw: List<StarlinkProtocol.Client> = probe.clients(network) ?: return@withTimeout null
-            lists.reconcile(raw.map {
-                TrackedDevice(it.clientId, it.name, it.ip, it.mac, IpLists.Category.UNKNOWN)
-            })
+            lists.reconcile(raw
+                .filter { it.id != null }
+                .map { TrackedDevice(it.id!!, it.name, it.ip, it.mac, IpLists.Category.UNKNOWN, it.blocked) }
+            )
         } ?: return@withContext null
         val now = System.currentTimeMillis()
         // Keep the same pipeline as the periodic poll: refresh the in-memory
