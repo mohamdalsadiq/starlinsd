@@ -538,48 +538,62 @@ private fun DeviceConfirmationScreen(vm: MainViewModel) {
     var devices by remember { mutableStateOf<List<DeviceAlerts.DayDevice>>(emptyList()) }
     var sessions by remember { mutableStateOf<List<com.example.db.Session>>(emptyList()) }
     var dayKey by rememberSaveable { mutableStateOf(DeviceAlerts.dayKey(System.currentTimeMillis())) }
-    var amounts by remember(dayKey, sessions, devices) {
-        mutableStateOf<Map<Long, String>>(emptyMap())
-    }
     var payment by rememberSaveable(dayKey) { mutableStateOf("CASH") }
     var showPicker by rememberSaveable { mutableStateOf(false) }
+    var savedSummary by remember(dayKey) { mutableStateOf<com.example.db.UnregisteredDaySummary?>(null) }
+    // Aggregate unregistered fields: seeded once per day from the saved summary
+    // (or the tariff setting), then owned by the operator's typing.
+    var tariffText by remember(dayKey) { mutableStateOf("") }
+    var unpaidText by remember(dayKey) { mutableStateOf("") }
+    var fieldsSeeded by remember(dayKey) { mutableStateOf(false) }
+    var showSubscribedDetails by rememberSaveable { mutableStateOf(false) }
+    var showUnregisteredDetails by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(now, dayKey) {
-        kotlinx.coroutines.withContext(Dispatchers.IO) {
-            devices = DeviceAlertsCoordinator.historyFor(context, dayKey)
-            sessions = com.example.db.AppDatabase.getDatabase(context).businessDao().sessions()
+        val loaded = kotlinx.coroutines.withContext(Dispatchers.IO) {
+            val dao = com.example.db.AppDatabase.getDatabase(context).businessDao()
+            Triple(
+                DeviceAlertsCoordinator.historyFor(context, dayKey),
+                dao.sessions(),
+                dao.unregisteredSummary(dayKey),
+            )
+        }
+        devices = loaded.first
+        sessions = loaded.second
+        savedSummary = loaded.third
+        if (!fieldsSeeded) {
+            val tariff = loaded.third?.tariff ?: DeviceAlertsCoordinator.unregisteredTariff(context)
+            tariffText = Money.show(tariff)
+            unpaidText = (loaded.third?.unpaidCount ?: 0).takeIf { it > 0 }?.toString() ?: ""
+            fieldsSeeded = true
         }
     }
-    // Subscription chain + financial split (pure, unit-tested in
-    // DailyReconciliationTest): HOME/WATCH never enter the financial groups.
+
+    // Financial split (pure, unit-tested): HOME/WATCH never enter the groups.
     val groups = remember(devices, sessions) { DailyReconciliation.confirmationGroups(devices, sessions) }
     val subscribed = groups.subscribed
-    val unregistered = groups.unregistered
-    val home = groups.home
     val watch = groups.watch
-
-    val confirmedRows by vm.manualSales.collectAsStateWithLifecycle()
-    val dayLedger = remember(confirmedRows, dayKey) {
-        DailyReconciliation.rowsFor(confirmedRows, dayKey).firstOrNull { it.id == DailyReconciliation.dailyRowId(dayKey) }
+    // Unregistered = binding-excluded devices that DWELLED past the delay.
+    // Passing phones never qualify; a later subscription moves the device out.
+    val delay = remember(now) { DeviceAlertsCoordinator.knownDelayMinutes(context) }
+    val qualifiedUnregistered = remember(devices, sessions, delay, now) {
+        DailyReconciliation.qualifiedUnregistered(devices, sessions, delay, now)
     }
+
+    // Subscribed amounts are LOCKED to the shortcut plan prices — no per-device edits.
+    val subscribedTotal = remember(subscribed) { subscribed.sumOf { it.second.amount } }
+    val tariff = remember(tariffText) { Money.parse(tariffText) ?: 0L }
+    val unpaidCount = remember(unpaidText) { unpaidText.toIntOrNull()?.coerceAtLeast(0) ?: 0 }
+    val paidCount = (qualifiedUnregistered.size - unpaidCount).coerceAtLeast(0)
+    val unregisteredNet = remember(qualifiedUnregistered, tariff, unpaidCount) {
+        runCatching { DailyReconciliation.unregisteredNet(qualifiedUnregistered.size, tariff, unpaidCount) }.getOrDefault(0L)
+    }
+    val grandTotal = subscribedTotal + unregisteredNet
     val busy by vm.busy.collectAsStateWithLifecycle()
-
-    // Live totals over the operator's edits (المطلوب 7): count, registered, confirmed,
-    // additions on unregistered, and the final confirmed total — computed per device.
-    val registeredTotal = remember(subscribed) { subscribed.sumOf { it.second.amount } }
-    fun confirmedOf(device: DeviceAlerts.DayDevice): Long {
-        val typed = amounts[device.clientId]?.let { Money.parse(it) }
-        if (typed != null) return typed
-        val session = sessions.firstOrNull { !it.home && it.deviceClientId == device.clientId && it.state in listOf("ACTIVE", "PAUSED", "ENDED") }
-        return session?.amount ?: 0L
-    }
-    val confirmedSubscribed = remember(amounts, subscribed) { subscribed.sumOf { confirmedOf(it.first) } }
-    val confirmedUnregistered = remember(amounts, unregistered) { unregistered.sumOf { confirmedOf(it) } }
-    val confirmedCount = remember(amounts, subscribed, unregistered) { (subscribed.map { it.first } + unregistered).count { confirmedOf(it) > 0 } }
-    val grandTotal = confirmedSubscribed + confirmedUnregistered
+    val valid = tariff > 0 && unpaidCount <= qualifiedUnregistered.size
 
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { Title("تأكيد الأجهزة اليومية", "مطابقة أجهزة اليوم باشتراكاتها · المبلغ النهائي من تعديلك لكل جهاز") }
+        item { Title("تأكيد الأجهزة اليومية", "المشترك: عدد وإجمالي مقفول · غير المسجل: عدد × تعرفة − غير الدافعين") }
         item { Panel {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
@@ -591,63 +605,62 @@ private fun DeviceConfirmationScreen(vm: MainViewModel) {
             Text("الأجهزة المُعرف عليها اليوم: ${devices.size}", style = MaterialTheme.typography.bodyMedium)
         } }
         item { Panel {
-            SectionHeading(Icons.Default.CheckCircle, "أ) أجهزة لديها اشتراك مسجل", "المبلغ المسجل من الاشتراك نفسه؛ عدّله للمبلغ المدفوع فعليًا")
+            SectionHeading(Icons.Default.CheckCircle, "المشترك", "${subscribed.size} أجهزة · ${amount(subscribedTotal)}")
+            Text("المبالغ مقفولة على أسعار الاختصارات؛ لا تعديل بعد تأكيد الاشتراك.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (subscribed.isEmpty()) Text("لا يوجد")
-            subscribed.forEach { (device, session) ->
-                Column(Modifier.padding(vertical = 4.dp)) {
-                    Text("· ${device.name.ifBlank { "جهاز ${device.clientId}" }} · ${session.client} #${session.reference.ifBlank { "?" }}")
-                    Text("آخر عنوان: ${device.ip} · المسجل: ${amount(session.amount)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Field("المدفوع فعليًا", amounts[device.clientId] ?: Money.show(session.amount), { value ->
-                        amounts = amounts + (device.clientId to value)
-                    }, numeric = true)
+            else {
+                TextButton(onClick = { showSubscribedDetails = !showSubscribedDetails }) {
+                    Text(if (showSubscribedDetails) "إخفاء التفاصيل" else "عرض التفاصيل")
+                }
+                if (showSubscribedDetails) subscribed.forEach { (device, session) ->
+                    Text("· ${device.name.ifBlank { "جهاز ${device.clientId}" }} · ${session.client} #${session.reference.ifBlank { "?" }} · ${amount(session.amount)} (مقفول)",
+                        style = MaterialTheme.typography.bodySmall)
                 }
             }
-            MoneyLine("إجمالي المسجل (أ)", registeredTotal)
         } }
         item { Panel {
-            SectionHeading(Icons.Default.HelpOutline, "ب) أجهزة ظهرت بدون اشتراك", "أدخل المبلغ الفعلي لكل جهاز أو اتركه صفرًا")
-            if (unregistered.isEmpty()) Text("لا يوجد")
-            unregistered.forEach { device ->
-                Column(Modifier.padding(vertical = 4.dp)) {
-                    Text("· ${device.name.ifBlank { "جهاز ${device.clientId}" }}")
-                    Text("آخر عنوان: ${device.ip}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Field("المدفوع فعليًا", amounts[device.clientId] ?: "0", { value ->
-                        amounts = amounts + (device.clientId to value)
-                    }, numeric = true)
+            SectionHeading(Icons.Default.HelpOutline, "غير المسجل", "${qualifiedUnregistered.size} أجهزة × ${amount(tariff)}")
+            Text("يدخل القائمة الجهاز الذي بقي بدون اشتراك $delay دقائق. من سُجّل لاحقًا باشتراك يُنقل تلقائيًا إلى المشترك.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Field("التعرفة للجهاز (ج.س)", tariffText, { tariffText = it }, numeric = true)
+            Field("عدد الأجهزة التي لم تدفع", unpaidText, { unpaidText = it }, numeric = true)
+            MoneyLine("الدافعون: $paidCount × ${amount(tariff)}", unregisteredNet)
+            if (!valid) Text("راجع التعرفة وعدد غير الدافعين (بين صفر وعدد الأجهزة).", color = MaterialTheme.colorScheme.error)
+            if (qualifiedUnregistered.isEmpty()) Text("لا يوجد")
+            else {
+                TextButton(onClick = { showUnregisteredDetails = !showUnregisteredDetails }) {
+                    Text(if (showUnregisteredDetails) "إخفاء الأجهزة" else "عرض الأجهزة (${qualifiedUnregistered.size})")
+                }
+                if (showUnregisteredDetails) qualifiedUnregistered.forEach { device ->
+                    Text("· ${device.name.ifBlank { "جهاز ${device.clientId}" }}", style = MaterialTheme.typography.bodySmall)
                 }
             }
-            MoneyLine("إجمالي غير المؤكد (ب)", confirmedUnregistered)
         } }
         item { Panel {
-            SectionHeading(Icons.Default.Home, "ج) أهل البيت (HOME)", "لا تدخل في الإيراد ولا في التأكيد المالي إطلاقًا")
-            if (home.isEmpty()) Text("لا يوجد")
-            home.forEach { Text("· ${it.name.ifBlank { "جهاز ${it.clientId}" }} (${it.ip})") }
-        } }
-        item { Panel {
-            SectionHeading(Icons.Default.Visibility, "د) قائمة المراقبة (WATCH)", "حالة منفصلة؛ لا تتحول تلقائيًا إلى إيراد")
+            SectionHeading(Icons.Default.Visibility, "قائمة المراقبة (WATCH)", "حالة منفصلة؛ لا تتحول تلقائيًا إلى إيراد")
             if (watch.isEmpty()) Text("لا يوجد")
             watch.forEach { Text("· ${it.name.ifBlank { "جهاز ${it.clientId}" }} (${it.ip})") }
         } }
         item { Panel {
-            SectionHeading(Icons.Default.Calculate, "الملخص المالي لليوم", "حسب تعديلاتك أعلاه، لكل جهاز على حدة")
-            Text("الأجهزة المؤكدة: $confirmedCount")
-            Text("إجمالي المسجل: ${amount(registeredTotal)}")
-            Text("إجمالي المدفوع فعليًا: ${amount(grandTotal)}")
-            Text("إضافات أجهزة غير مشتركة: ${amount(confirmedUnregistered)}")
-            if (dayLedger != null) Text("محفوظ مسبقًا لهذا اليوم: ${amount(dayLedger.amount)}", style = MaterialTheme.typography.bodySmall)
+            SectionHeading(Icons.Default.Calculate, "الملخص المالي لليوم", "حفظ واحد يعيد كتابة نفس السجلات")
+            Text("المشترك: ${subscribed.size} أجهزة · ${amount(subscribedTotal)}")
+            Text("غير المسجل: $paidCount دافع × ${amount(tariff)} = ${amount(unregisteredNet)}")
+            Text("الإجمالي: ${amount(grandTotal)}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            savedSummary?.let { summary ->
+                Text("محفوظ مسبقًا: ${summary.deviceCount} أجهزة × ${amount(summary.tariff)} − ${summary.unpaidCount} = ${amount(summary.netTotal)}",
+                    style = MaterialTheme.typography.bodySmall)
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Choice("كاش", payment == "CASH") { payment = "CASH" }
                 Choice("بنكك", payment == "BANK") { payment = "BANK" }
             }
-            Button(enabled = !busy && devices.isNotEmpty(), onClick = {
+            Button(enabled = !busy && valid, onClick = {
                 val entries = subscribed.map { (device, session) ->
-                    SubscriptionRepository.DailyDeviceAmount(device.clientId, session.id, confirmedOf(device))
-                } + unregistered.map { device ->
-                    SubscriptionRepository.DailyDeviceAmount(device.clientId, "", confirmedOf(device))
+                    SubscriptionRepository.DailyDeviceAmount(device.clientId, session.id, session.amount)
                 }
-                vm.confirmDailyDevices(dayKey, entries, payment)
+                vm.confirmDay(dayKey, entries, qualifiedUnregistered.size, tariff, unpaidCount, payment)
             }) { Text("حفظ وتأكيد إيراد اليوم") }
-            Text("الحفظ يكتب سطرًا واحدًا لكل جهاز بنفس اليوم والمعرّف: إعادة الفتح أو التعديل يحدّث السجل نفسه ولا يضيف إيرادًا مكررًا.", style = MaterialTheme.typography.bodySmall)
+            Text("الحفظ يعيد كتابة نفس سجلات اليوم: إعادة التأكيد أو التعديل لا تضيف إيرادًا مكررًا.", style = MaterialTheme.typography.bodySmall)
         } }
     }
     if (showPicker) DayPickerDialog(dayKey) { picked -> dayKey = picked; showPicker = false }
@@ -840,12 +853,13 @@ private fun SettingsScreen(vm: MainViewModel, config: BusinessSettings?, now: Lo
             SectionHeading(Icons.Default.DevicesOther, "تنبيهات الأجهزة", "تنبيه عند ظهور جهاز غير مرتبط، وملخص يومي")
             val delay = remember(now) { DeviceAlertsCoordinator.knownDelayMinutes(context) }
             val summaryMin = remember(now) { DeviceAlertsCoordinator.knownSummaryMinute(context) }
-            Text("تنبيه جهاز غير معروف: بعد $delay دقيقة من ظهوره")
+            Text("اعتبار الجهاز غير مسجل: بعد $delay دقيقة من ظهوره بدون اشتراك")
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(1, 3, 5).forEach { option ->
+                listOf(1, 3, 5, 10).forEach { option ->
                     Choice("$option دقائق", delay == option) { if (delay != option) vm.setDeviceAlertDelay(option) }
                 }
             }
+            Text("الأجهزة غير المعروفة لا تُرسل تنبيهًا؛ بعد هذه المدة تدخل قائمة غير المسجل في التأكيد اليومي. التنبيه الفوري مخصص لقائمة المراقبة فقط.", style = MaterialTheme.typography.bodySmall)
             Text("ملخص تأكيد الأجهزة اليومي: ${String.format(Locale.ROOT, "%02d:%02d", summaryMin / 60, summaryMin % 60)}")
             var summaryTime by rememberSaveable(summaryMin) { mutableStateOf(String.format(Locale.ROOT, "%02d:%02d", summaryMin / 60, summaryMin % 60)) }
             Field("وقت الملخص اليومي · HH:mm", summaryTime, { summaryTime = it })

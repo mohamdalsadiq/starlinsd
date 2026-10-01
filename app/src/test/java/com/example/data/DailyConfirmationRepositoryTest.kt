@@ -138,11 +138,17 @@ class DailyConfirmationRepositoryTest {
             .filter { !it.home && it.state in listOf("ACTIVE", "PAUSED") && it.deviceClientId != null }
             .mapNotNull { it.deviceClientId }.toSet()
         assertTrue(bound.contains(101L))
+        val now = System.currentTimeMillis()
         val live = listOf(
-            TrackedDevice(101L, "subscribed", "192.168.1.50", "aa:bb:cc:dd:ee:ff", IpLists.Category.UNKNOWN),
-            TrackedDevice(102L, "free", "192.168.1.51", "aa:bb:cc:dd:ee:00", IpLists.Category.UNKNOWN),
+            TrackedDevice(101L, "[9] subscribed", "192.168.1.50", "aa:bb:cc:dd:ee:ff", IpLists.Category.UNKNOWN),
+            TrackedDevice(102L, "[9] free", "192.168.1.51", "aa:bb:cc:dd:ee:00", IpLists.Category.UNKNOWN),
         )
-        val picked = ShortcutBinding.choose(live, bound, emptyList(), emptySet(), emptySet(), emptySet())
+        val sighted = mapOf(
+            "${DeviceAlerts.dayKey(now)}:101:9" to now,
+            "${DeviceAlerts.dayKey(now)}:102:9" to now,
+        )
+        val picked = ShortcutBinding.matchStamp(live, "9", now - 60_000L, sighted, now,
+            bound, emptySet(), emptySet(), emptySet())
         assertEquals(102L, picked?.clientId)
     }
 
@@ -181,5 +187,63 @@ class DailyConfirmationRepositoryTest {
         repo.confirmDailyDevices(eventDay, listOf(amount(101L, sessionId, 50000L)), "CASH")
         assertEquals(1, repo.dao.dayConfirmations(eventDay).size)
         assertTrue(DailyReconciliation.rowsFor(repo.dao.manualSales(), eventDay).isEmpty())
+    }
+
+    // ---- Aggregate unregistered summary ----
+
+    /** The summary writes one aggregate row and one ledger row; re-saving rewrites both in place. */
+    @Test fun unregisteredSummaryIsAggregateAndIdempotent() = runBlocking {
+        repo.confirmUnregisteredSummary(eventDay, 3, 50000L, 1, "CASH")
+        var summary = repo.dao.unregisteredSummary(eventDay)!!
+        assertEquals(3, summary.deviceCount)
+        assertEquals(1, summary.unpaidCount)
+        assertEquals(50000L, summary.tariff)
+        assertEquals(100000L, summary.netTotal)
+        var ledgers = DailyReconciliation.rowsFor(repo.dao.manualSales(), eventDay)
+        assertEquals(1, ledgers.size)
+        assertEquals(DailyReconciliation.dailyRowId(eventDay), ledgers.single().id)
+        assertEquals(100000L, ledgers.single().amount)
+        assertEquals(2, ledgers.single().count)
+        // Re-confirm with different numbers: the SAME rows, rewritten — never a second ledger row.
+        repo.confirmUnregisteredSummary(eventDay, 4, 50000L, 0, "CASH")
+        summary = repo.dao.unregisteredSummary(eventDay)!!
+        assertEquals(4, summary.deviceCount)
+        assertEquals(200000L, summary.netTotal)
+        ledgers = DailyReconciliation.rowsFor(repo.dao.manualSales(), eventDay)
+        assertEquals(1, ledgers.size)
+        assertEquals(200000L, ledgers.single().amount)
+    }
+
+    /** Subscribed sessions stay out of the summary ledger: the day's money is counted once. */
+    @Test fun subscribedSessionsDoNotEnterSummaryLedger() = runBlocking {
+        val sessionId = boundSession(101L)
+        val session = repo.dao.session(sessionId)!!
+        // Subscribed pass: audit row only, no ledger money.
+        repo.confirmDailyDevices(eventDay, listOf(amount(101L, sessionId, session.amount)), "CASH")
+        // Summary pass: only the unregistered aggregate becomes ledger money.
+        repo.confirmUnregisteredSummary(eventDay, 2, 50000L, 0, "CASH")
+        val ledgers = DailyReconciliation.rowsFor(repo.dao.manualSales(), eventDay)
+        assertEquals(1, ledgers.size)
+        assertEquals(100000L, ledgers.single().amount)
+        assertEquals(1, repo.dao.dayConfirmations(eventDay).size) // the subscribed audit row survives
+    }
+
+    /** Invalid summary input fails before any write. */
+    @Test fun invalidSummaryIsRejectedWithoutWriting() = runBlocking {
+        try {
+            repo.confirmUnregisteredSummary(eventDay, 2, 50000L, 5, "CASH")
+            fail("unpaid > count must fail")
+        } catch (expected: IllegalArgumentException) { }
+        assertNull(repo.dao.unregisteredSummary(eventDay))
+        assertTrue(DailyReconciliation.rowsFor(repo.dao.manualSales(), eventDay).isEmpty())
+    }
+
+    /** Legacy per-device unregistered rows are cleaned when the aggregate is saved. */
+    @Test fun summarySaveCleansLegacyPerDeviceUnregisteredRows() = runBlocking {
+        repo.confirmDailyDevices(eventDay, listOf(amount(7, "", 50000L)), "CASH")
+        assertEquals(1, repo.dao.dayConfirmations(eventDay).size)
+        repo.confirmUnregisteredSummary(eventDay, 1, 50000L, 0, "CASH")
+        assertTrue(repo.dao.dayConfirmations(eventDay).isEmpty())
+        assertEquals(50000L, DailyReconciliation.rowsFor(repo.dao.manualSales(), eventDay).single().amount)
     }
 }
