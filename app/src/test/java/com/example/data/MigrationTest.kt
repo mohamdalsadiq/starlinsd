@@ -29,7 +29,7 @@ class MigrationTest {
             old.execSQL("INSERT INTO shortcuts VALUES (9, 'قديم', 'الساعة %time+2h%')")
             old.version = 1
         }
-        val db = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_1_2, AppDatabase.MIGRATION_2_3, AppDatabase.MIGRATION_3_4, AppDatabase.MIGRATION_4_5, AppDatabase.MIGRATION_5_6, AppDatabase.MIGRATION_6_7, AppDatabase.MIGRATION_7_8).build()
+        val db = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_1_2, AppDatabase.MIGRATION_2_3, AppDatabase.MIGRATION_3_4, AppDatabase.MIGRATION_4_5, AppDatabase.MIGRATION_5_6, AppDatabase.MIGRATION_6_7, AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9).build()
         try {
             val device = db.deviceDao().getByIp("192.168.1.2")!!
             assertEquals(7, device.id); assertEquals("جهاز البيت", device.name)
@@ -58,7 +58,7 @@ class MigrationTest {
             old.execSQL("INSERT INTO sessions VALUES ('original', 'محمد', '3 ساعات', 1700000000000, 1700000000000, 10800000, 0, 'ACTIVE', 125000, 100000, 'BANK', 2500, 0, 1800000, 1700001800000, 0, 0, 'mm')")
             old.version = 2
         }
-        val db = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_2_3, AppDatabase.MIGRATION_3_4, AppDatabase.MIGRATION_4_5, AppDatabase.MIGRATION_5_6, AppDatabase.MIGRATION_6_7, AppDatabase.MIGRATION_7_8).build()
+        val db = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_2_3, AppDatabase.MIGRATION_3_4, AppDatabase.MIGRATION_4_5, AppDatabase.MIGRATION_5_6, AppDatabase.MIGRATION_6_7, AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9).build()
         try {
             val row = db.businessDao().session("original")!!
             assertEquals("محمد", row.client); assertEquals(125000L, row.amount)
@@ -83,7 +83,7 @@ class MigrationTest {
             old.execSQL("INSERT INTO sessions VALUES ('original', 'محمد', '3 ساعات', 1700000000000, 1700000000000, 10800000, 120000, 'PAUSED', 125000, 100000, 'BANK', 2500, 0, 1800000, 0, 0, 0, 'mm', '7')")
             old.version = 5
         }
-        val db = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_5_6, AppDatabase.MIGRATION_6_7, AppDatabase.MIGRATION_7_8).build()
+        val db = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_5_6, AppDatabase.MIGRATION_6_7, AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9).build()
         try {
             val repo = SubscriptionRepository(context, db); repo.initialize()
             val row = repo.dao.session("original")!!
@@ -110,7 +110,7 @@ class MigrationTest {
             old.execSQL("INSERT INTO devices VALUES (7, '192.168.1.2', 'جهاز البيت', 123456, 1, 60000)")
             old.version = 6
         }
-        val db = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_6_7, AppDatabase.MIGRATION_7_8).build()
+        val db = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_6_7, AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9).build()
         try {
             // Existing rows survive with their values; new device columns start empty/null.
             val row = db.businessDao().session("original")!!
@@ -150,7 +150,7 @@ class MigrationTest {
             old.execSQL("INSERT INTO watch_ips VALUES ('192.168.1.139', 'realme-C55', 1700000000000)")
             old.version = 7
         }
-        val db = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_7_8).build()
+        val db = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9).build()
         try {
             // Legacy IP rows survive the identity migration untouched; identity tables exist empty.
             assertEquals(listOf("192.168.1.69"), db.businessDao().homeIps().map { it.ip })

@@ -76,13 +76,15 @@ object ShortcutBinding {
         // Freshness: the stamp must have appeared at/after the session started.
         // A sighting recorded under either the session's day or today is accepted
         // (midnight-boundary sales); anything older is a stale stamp from a
-        // previous day and must never match.
+        // previous day and must never match. No sighting at all means the stamp
+        // predates our observation — also stale, never a match. There is no
+        // fallback: an unobserved stamp is not a fresh stamp.
         val fresh = candidates.filter { device ->
             val keys = listOf(
                 "${DeviceAlerts.dayKey(sessionStartedAt)}:${device.clientId}:$reference",
                 "${DeviceAlerts.dayKey(now)}:${device.clientId}:$reference",
             )
-            val firstSeen = keys.firstNotNullOfOrNull { stampFirstSeen[it] } ?: now
+            val firstSeen = keys.firstNotNullOfOrNull { stampFirstSeen[it] } ?: return@filter false
             firstSeen >= sessionStartedAt - STAMP_TOLERANCE_MS
         }
         return fresh.singleOrNull()
