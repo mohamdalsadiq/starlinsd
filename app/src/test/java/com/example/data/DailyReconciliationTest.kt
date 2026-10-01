@@ -133,8 +133,11 @@ class DailyReconciliationTest {
     private fun dayDevice(id: Long, category: IpLists.Category) =
         DeviceAlerts.DayDevice(id, "d$id", "192.168.1.$id", "aa:bb:cc:dd:ee:$id", category, 1000L, 2000L)
 
+    private val sessionStarted = 1_700_000_000_000L // safely mid-day in every timezone
+    private val day = DeviceAlerts.dayKey(sessionStarted)
+
     private fun session(id: String, clientId: Long?, home: Boolean = false, state: String = "ACTIVE") =
-        com.example.db.Session(id = id, client = "c", plan = "p", started = 1000L, resumed = 1000L,
+        com.example.db.Session(id = id, client = "c", plan = "p", started = sessionStarted, resumed = sessionStarted,
             duration = 3600000L, amount = 50000L, cashEquivalent = 50000L, payment = "CASH",
             premiumBps = 2500, home = home, grace = 300000L, state = state, deviceClientId = clientId)
 
@@ -147,7 +150,7 @@ class DailyReconciliationTest {
             dayDevice(104, IpLists.Category.WATCH),
         )
         val sessions = listOf(session("s1", 101L))
-        val groups = DailyReconciliation.confirmationGroups(devices, sessions)
+        val groups = DailyReconciliation.confirmationGroups(devices, sessions, day)
         assertEquals(listOf(101L), groups.subscribed.map { it.first.clientId })
         assertEquals("s1", groups.subscribed.single().second.id)
         assertEquals(listOf(102L), groups.unregistered.map { it.clientId })
@@ -160,7 +163,7 @@ class DailyReconciliationTest {
         // A WATCH device with no session stays in device management only: it is
         // neither subscribed nor an unregistered financial candidate.
         val groups = DailyReconciliation.confirmationGroups(
-            listOf(dayDevice(104, IpLists.Category.WATCH)), emptyList())
+            listOf(dayDevice(104, IpLists.Category.WATCH)), emptyList(), day)
         assertTrue(groups.subscribed.isEmpty())
         assertTrue(groups.unregistered.isEmpty())
         assertEquals(listOf(104L), groups.watch.map { it.clientId })
@@ -169,7 +172,7 @@ class DailyReconciliationTest {
     @Test
     fun homeDevicesNeverEnterFinancialGroups() {
         val groups = DailyReconciliation.confirmationGroups(
-            listOf(dayDevice(103, IpLists.Category.HOME)), listOf(session("s1", 103L)))
+            listOf(dayDevice(103, IpLists.Category.HOME)), listOf(session("s1", 103L)), day)
         assertTrue(groups.subscribed.isEmpty())
         assertTrue(groups.unregistered.isEmpty())
         assertEquals(listOf(103L), groups.home.map { it.clientId })
@@ -180,7 +183,7 @@ class DailyReconciliationTest {
         // A session that ended today keeps its device in the subscribed
         // (audit-only) group — its money already exists as session revenue.
         val groups = DailyReconciliation.confirmationGroups(
-            listOf(dayDevice(101, IpLists.Category.UNKNOWN)), listOf(session("s1", 101L, state = "ENDED")))
+            listOf(dayDevice(101, IpLists.Category.UNKNOWN)), listOf(session("s1", 101L, state = "ENDED")), day)
         assertEquals(listOf(101L), groups.subscribed.map { it.first.clientId })
         assertTrue(groups.unregistered.isEmpty())
     }
@@ -201,7 +204,7 @@ class DailyReconciliationTest {
             dwellDevice(4, now - 30 * 60_000L, now), // bound below: subscribed, never unregistered
         )
         val sessions = listOf(session("s4", 4L))
-        val qualified = DailyReconciliation.qualifiedUnregistered(devices, sessions, 5, now)
+        val qualified = DailyReconciliation.qualifiedUnregistered(devices, sessions, day, 5, now)
         assertEquals(listOf(1L, 2L), qualified.map { it.clientId })
     }
 
@@ -209,8 +212,8 @@ class DailyReconciliationTest {
     fun qualifiedUnregisteredFollowsTheConfiguredDelay() {
         val now = 10_000_000L
         val devices = listOf(dwellDevice(1, now - 4 * 60_000L, now))
-        assertEquals(listOf(1L), DailyReconciliation.qualifiedUnregistered(devices, emptyList(), 3, now).map { it.clientId })
-        assertTrue(DailyReconciliation.qualifiedUnregistered(devices, emptyList(), 5, now).isEmpty())
+        assertEquals(listOf(1L), DailyReconciliation.qualifiedUnregistered(devices, emptyList(), day, 3, now).map { it.clientId })
+        assertTrue(DailyReconciliation.qualifiedUnregistered(devices, emptyList(), day, 5, now).isEmpty())
     }
 
     @Test
@@ -254,5 +257,151 @@ class DailyReconciliationTest {
         val row = DailyReconciliation.summaryLedgerRow("2026-09-28", summary, 1_800_000_000_000L, 2500)!!
         assertEquals("BANK", row.payment)
         assertEquals(80000L, row.cashEquivalent) // 1000 / 1.25
+    }
+
+    // ---- Subscriber-stamp matching: the clientId-churn leak ----
+
+    private fun stampedDevice(id: Long, stamp: String, firstSeen: Long, lastSeen: Long, mac: String = "") =
+        DeviceAlerts.DayDevice(id, "🌹٠٢:٢٨م [$stamp]🌹 M05", "192.168.1.$id", mac,
+            IpLists.Category.UNKNOWN, firstSeen, lastSeen)
+
+    private fun stampedSession(id: String, clientId: Long?, reference: String, mac: String = "") =
+        com.example.db.Session(id = id, client = "c", plan = "p", started = sessionStarted, resumed = sessionStarted,
+            duration = 3600000L, amount = 50000L, cashEquivalent = 50000L, payment = "CASH",
+            premiumBps = 2500, home = false, grace = 300000L, state = "ACTIVE",
+            deviceClientId = clientId, deviceMac = mac, reference = reference)
+
+    @Test
+    fun subscribedDeviceUnderNewClientIdStillMatchesByStamp() {
+        // The reported leak: the session bound the device at clientId 100, then
+        // the router reported it as 200 (same "[2]" stamp in the router name).
+        // It must stay subscribed and never enter the unregistered list.
+        val now = 10_000_000L
+        val devices = listOf(stampedDevice(200, "2", now - 60_000L, now))
+        val sessions = listOf(stampedSession("s1", 100L, "2"))
+        val groups = DailyReconciliation.confirmationGroups(devices, sessions, day)
+        assertEquals(listOf(200L), groups.subscribed.map { it.first.clientId })
+        assertTrue(groups.unregistered.isEmpty())
+        assertTrue(DailyReconciliation.qualifiedUnregistered(devices, sessions, day, 5, now).isEmpty())
+    }
+
+    @Test
+    fun maskedMacsNeverMatchAcrossDevices() {
+        // Firmware masks MACs to the OUI ("60:74:f4:XX:XX:XX"): two same-vendor
+        // devices MUST NOT match one session by MAC.
+        val now = 10_000_000L
+        val devices = listOf(
+            DeviceAlerts.DayDevice(101, "a", "192.168.1.101", "60:74:f4:XX:XX:XX", IpLists.Category.UNKNOWN, now - 600_000L, now),
+            DeviceAlerts.DayDevice(102, "b", "192.168.1.102", "60:74:f4:XX:XX:XX", IpLists.Category.UNKNOWN, now - 600_000L, now),
+        )
+        val sessions = listOf(stampedSession("s1", 101L, "", "60:74:f4:XX:XX:XX"))
+        val groups = DailyReconciliation.confirmationGroups(devices, sessions, day)
+        assertEquals(listOf(101L), groups.subscribed.map { it.first.clientId })
+        assertEquals(listOf(102L), groups.unregistered.map { it.clientId })
+    }
+
+    @Test
+    fun realMacStillMatchesWhenClientIdChurned() {
+        // A full unmasked MAC is a stable identity: the session stored it at
+        // bind time and the device returns under a new clientId with the same MAC.
+        val now = 10_000_000L
+        val devices = listOf(
+            DeviceAlerts.DayDevice(200, "phone", "192.168.1.200", "60:74:f4:ab:cd:ef", IpLists.Category.UNKNOWN, now - 600_000L, now))
+        val sessions = listOf(stampedSession("s1", 100L, "", "60:74:f4:AB:CD:EF"))
+        val groups = DailyReconciliation.confirmationGroups(devices, sessions, day)
+        assertEquals(listOf(200L), groups.subscribed.map { it.first.clientId })
+        assertTrue(groups.unregistered.isEmpty())
+    }
+
+    @Test
+    fun wrongStampNeverMatchesAnotherSubscriber() {
+        val now = 10_000_000L
+        val devices = listOf(stampedDevice(200, "3", now - 600_000L, now))
+        val sessions = listOf(stampedSession("s1", 100L, "2"))
+        val groups = DailyReconciliation.confirmationGroups(devices, sessions, day)
+        assertTrue(groups.subscribed.isEmpty())
+        assertEquals(listOf(200L), groups.unregistered.map { it.clientId })
+    }
+
+    @Test
+    fun misboundSaleKeepsBothDevicesVisibleForRecovery() {
+        // Field case (2026-10-01 screenshots): sale #4 renamed M05 to
+        // "🌹٠٣:٠٠م [4]🌹 M05" but the old heuristic bound the session to
+        // realme-C55. Both records match the session now: the stamped device
+        // by stamp, the wrongly-bound one by clientId. Neither may leak into
+        // the unregistered list; the UI dedupes the amount by session id and
+        // flags the duplication so the user re-links from the recovery screen.
+        val now = 10_000_000L
+        val devices = listOf(
+            DeviceAlerts.DayDevice(200, "realme-C55", "192.168.1.200", "", IpLists.Category.UNKNOWN, now - 600_000L, now),
+            stampedDevice(300, "4", now - 600_000L, now),
+        )
+        val sessions = listOf(stampedSession("s4", 200L, "4"))
+        val groups = DailyReconciliation.confirmationGroups(devices, sessions, day)
+        assertEquals(setOf(200L, 300L), groups.subscribed.map { it.first.clientId }.toSet())
+        assertEquals(setOf("s4"), groups.subscribed.map { it.second.id }.toSet())
+        assertTrue(groups.unregistered.isEmpty())
+        // One sale = one amount even with two matching device rows.
+        assertEquals(50000L, groups.subscribed.distinctBy { it.second.id }.sumOf { it.second.amount })
+    }
+
+    @Test
+    fun staleStampFromAnotherDayNeverMatches() {
+        // References reset daily: yesterday's "[2]" still in the router name
+        // must NOT claim today's subscriber 2. The stamp fallback only matches
+        // sessions started on the confirmed day.
+        val now = 10_000_000L
+        val devices = listOf(stampedDevice(200, "2", now - 600_000L, now))
+        val yesterdayStarted = sessionStarted - 24 * 3_600_000L
+        val yesterday = DeviceAlerts.dayKey(yesterdayStarted)
+        val oldSession = com.example.db.Session(id = "s0", client = "c", plan = "p",
+            started = yesterdayStarted, resumed = yesterdayStarted,
+            duration = 3600000L, amount = 50000L, cashEquivalent = 50000L, payment = "CASH",
+            premiumBps = 2500, home = false, grace = 300000L, state = "ENDED",
+            deviceClientId = 100L, reference = "2")
+        // Sanity: the days really differ (timezone-safe, computed both sides).
+        assertNotEquals(yesterday, day)
+        val groups = DailyReconciliation.confirmationGroups(devices, listOf(oldSession), day)
+        assertTrue(groups.subscribed.isEmpty())
+        assertEquals(listOf(200L), groups.unregistered.map { it.clientId })
+        // But the same session DOES match when confirming its own day.
+        val ownDay = DailyReconciliation.confirmationGroups(devices, listOf(oldSession), yesterday)
+        assertEquals(listOf(200L), ownDay.subscribed.map { it.first.clientId })
+    }
+
+    // ---- Unregistered tracking window + manual dismissal ----
+
+    @Test
+    fun unregisteredWindowStartsDwellAtWindowOpen() {
+        // Window opens 18:00, dwell 5 min. Device present since 10:00: at 18:04
+        // it has NOT dwelled 5 min inside the window; at 18:06 it has.
+        val dayStart = DeviceAlerts.dayStart(1_800_000_000_000L)
+        val windowStart = 18 * 60
+        val at1804 = dayStart + 18 * 3_600_000L + 4 * 60_000L
+        val at1806 = dayStart + 18 * 3_600_000L + 6 * 60_000L
+        val devices = listOf(dwellDevice(1, dayStart + 10 * 3_600_000L, at1806))
+        assertTrue(DailyReconciliation.qualifiedUnregistered(devices, emptyList(), day, 5, at1804, windowStart).isEmpty())
+        assertEquals(listOf(1L),
+            DailyReconciliation.qualifiedUnregistered(devices, emptyList(), day, 5, at1806, windowStart).map { it.clientId })
+    }
+
+    @Test
+    fun deviceArrivingAfterWindowOpenDwellsFromFirstSeen() {
+        val dayStart = DeviceAlerts.dayStart(1_800_000_000_000L)
+        val windowStart = 18 * 60
+        val at1906 = dayStart + 19 * 3_600_000L + 6 * 60_000L
+        val devices = listOf(dwellDevice(1, dayStart + 19 * 3_600_000L, at1906))
+        assertEquals(listOf(1L),
+            DailyReconciliation.qualifiedUnregistered(devices, emptyList(), day, 5, at1906, windowStart).map { it.clientId })
+    }
+
+    @Test
+    fun dismissedDevicesStayOutOfUnregistered() {
+        val now = 10_000_000L
+        val devices = listOf(dwellDevice(1, now - 60 * 60_000L, now))
+        val key = DeviceAlerts.deviceKey("aa:bb:cc:dd:ee:1", 1)
+        assertEquals(listOf(1L),
+            DailyReconciliation.qualifiedUnregistered(devices, emptyList(), day, 5, now, 0, emptySet()).map { it.clientId })
+        assertTrue(DailyReconciliation.qualifiedUnregistered(devices, emptyList(), day, 5, now, 0, setOf(key)).isEmpty())
     }
 }

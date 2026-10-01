@@ -121,17 +121,43 @@ object DailyReconciliation {
         val watch: List<DeviceAlerts.DayDevice>,
     )
 
+    /**
+     * Splits one day's device history into the financial confirmation groups.
+     * [dayKey] is the history day being confirmed: the subscriber stamp "[N]"
+     * is only unique within its day (references reset daily), so the stamp
+     * fallback matches ONLY sessions started that day — yesterday's "[2]"
+     * must never claim today's subscriber 2. clientId and real-MAC matches are
+     * physical identity and need no day scoping.
+     */
     fun confirmationGroups(
         devices: List<DeviceAlerts.DayDevice>,
         sessions: List<com.example.db.Session>,
+        dayKey: String,
     ): ConfirmationGroups {
         // HOME devices never enter financial confirmation, even if a session
         // somehow references their clientId (mergeSnapshot already keeps them
         // out of history; this is defense in depth).
         val billable = devices.filter { it.category != IpLists.Category.HOME }
+        // Session↔device matching. clientId is the primary key, but the router
+        // reassigns it on reconnect/lease churn — so a subscribed device seen
+        // under a NEW clientId must still match its session. Two churn-proof
+        // fallbacks, both deterministic:
+        //  1. a REAL (unmasked) MAC stored at bind time — masked/blank never match;
+        //  2. the subscriber stamp "[N]": unique per day, embedded in the router
+        //     device name by the sale itself ("🌹٠٢:٢٨م [2]🌹 M05"), matched only
+        //     against sessions started on [dayKey].
+        // Without this, a subscribed device leaked into the unregistered list
+        // under its new id while its session pointed at the old one.
         val subscribed = billable.mapNotNull { device ->
-            sessions.firstOrNull { !it.home && it.deviceClientId == device.clientId && it.state in listOf("ACTIVE", "PAUSED", "ENDED") }
-                ?.let { device to it }
+            val deviceMac = DeviceAlerts.usableMac(device.mac)
+            val deviceStamp = DeviceAlerts.stampOf(device.name)
+            sessions.firstOrNull { session ->
+                !session.home && session.state in listOf("ACTIVE", "PAUSED", "ENDED") &&
+                    ((session.deviceClientId != null && session.deviceClientId == device.clientId) ||
+                        (deviceMac != null && DeviceAlerts.usableMac(session.deviceMac) == deviceMac) ||
+                        (deviceStamp != null && session.reference.isNotBlank() && deviceStamp == session.reference &&
+                            DeviceAlerts.dayKey(session.started) == dayKey))
+            }?.let { device to it }
         }
         val subscribedIds = subscribed.map { it.first.clientId }.toSet()
         val others = billable.filter { it.clientId !in subscribedIds }
@@ -198,16 +224,34 @@ object DailyReconciliation {
      * A device that later gets a subscription is already excluded upstream by
      * the binding match in [confirmationGroups].
      */
+    /**
+     * Devices that dwelled [delayMinutes] without a subscription AND inside the
+     * owner's unregistered window. Dwell only accrues from [windowStartMinute]
+     * (minutes since midnight, e.g. 1080 = 18:00): a device first seen before
+     * the window starts counting at the window start; a device gone before the
+     * window never qualifies. [dismissedKeys] are deviceKeys the owner removed
+     * by hand (e.g. a free short connection that must not be billed).
+     */
     fun qualifiedUnregistered(
         devices: List<DeviceAlerts.DayDevice>,
         sessions: List<com.example.db.Session>,
+        dayKey: String,
         delayMinutes: Int,
         now: Long,
+        windowStartMinute: Int = 0,
+        dismissedKeys: Set<String> = emptySet(),
     ): List<DeviceAlerts.DayDevice> {
         val dwellMs = delayMinutes.coerceAtLeast(1) * 60_000L
-        return confirmationGroups(devices, sessions).unregistered.filter { device ->
-            device.lastSeen - device.firstSeen >= dwellMs
-        }
+        val windowStart = DeviceAlerts.dayStart(now) + windowStartMinute.coerceIn(0, 1439) * 60_000L
+        return confirmationGroups(devices, sessions, dayKey).unregistered
+            .filter { device -> DeviceAlerts.deviceKey(device.mac, device.clientId) !in dismissedKeys }
+            .filter { device ->
+                // Dwell is measured inside the window only, up to now: a device
+                // present since the morning starts accruing at the window's
+                // opening, not at its first sighting.
+                val effectiveFirst = maxOf(device.firstSeen, windowStart)
+                minOf(now, device.lastSeen) - effectiveFirst >= dwellMs
+            }
     }
 
     /**

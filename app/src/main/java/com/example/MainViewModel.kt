@@ -139,7 +139,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val busy = MutableStateFlow(false)
     private val commands = Mutex()
     init { work { repo.initialize() } }
-    private fun work(block: suspend () -> Unit) {
+    private fun work(block: suspend () -> Unit): kotlinx.coroutines.Job =
         viewModelScope.launch { commands.withLock {
             busy.value = true
             try { withContext(Dispatchers.IO) { block(); SubscriptionAlarms.refresh(getApplication()) } }
@@ -147,7 +147,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             catch (e: Exception) { message.value = e.message ?: "تعذّر الحفظ؛ حاول مرة أخرى" }
             finally { clock.value = System.currentTimeMillis(); busy.value = false }
         } }
-    }
     fun refresh() {
         clock.value = System.currentTimeMillis()
         viewModelScope.launch {
@@ -247,6 +246,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         DeviceAlertsCoordinator.setDelayMinutes(getApplication(), minutes)
         message.value = "سيدخل الجهاز غير المرتبط قائمة غير المسجل بعد $minutes دقيقة من ظهوره"
     }
+    /**
+     * Start of the unregistered-tracking window (default 18:00). Before it, an
+     * unknown device raises only a daytime heads-up and never enters the
+     * unregistered bookkeeping; work{} re-schedules via refresh().
+     */
+    fun setUnregisteredStartMinute(minute: Int) = work {
+        DeviceAlertsCoordinator.setUnregisteredStartMinute(getApplication(), minute)
+        message.value = "ستبدأ قائمة غير المسجل من الساعة ${String.format("%02d:%02d", minute / 60, minute % 60)}؛ قبلها تنبيه فقط"
+    }
+    /**
+     * Manual removal of one device from the unregistered list of [dayKey].
+     * Financial only for that day (e.g. a free 10–20 minute connection the
+     * owner grants): the device keeps its history and is tracked normally
+     * again the next day.
+     */
+    fun dismissUnregistered(device: DeviceAlerts.DayDevice, dayKey: String) = work {
+        val app = getApplication<Application>()
+        DeviceAlertsCoordinator.dismissUnregistered(app, dayKey, DeviceAlerts.deviceKey(device.mac, device.clientId))
+        message.value = "أُزيل الجهاز من قائمة غير المسجل لهذا اليوم"
+    }
     /** Daily device confirmation time; work{} re-schedules via refresh() (spec 44). */
     fun setDeviceSummaryTime(minute: Int) = work {
         DeviceAlertsCoordinator.setSummaryMinute(getApplication(), minute)
@@ -277,7 +296,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 snapshotOk = ok,
                 candidates = DeviceRecovery.candidates(sessions, System.currentTimeMillis(), liveIds, ok),
                 options = DeviceRecovery.options(tracker.lastSnapshot, homeIds.homeClientIds, homeIds.legacyHomeIps, bound,
-                    IpLists.homeMacs(homeIds.identities))
+                    IpLists.homeMacs(homeIds.identities)),
+                homeCandidates = DeviceRecovery.homeCandidates(homeIds.identities, liveIds, ok),
             )
         } }
         catch (e: CancellationException) { throw e }
@@ -289,7 +309,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         repo.relinkDevice(sessionId, device, deviceIsLive)
         message.value = "تم إعادة ربط الاشتراك بنفس الوقت المتبقي دون إنشاء اشتراك جديد"
     }
-
+    /**
+     * Re-links a HOME identity to its new clientId after an id churn (e.g. a
+     * Wi-Fi password change): the old record is replaced so the app keeps
+     * ignoring the home device fully — no tracking, no alerts, no bookkeeping.
+     */
+    fun relinkHomeIdentity(oldDeviceId: Long, option: DeviceRecovery.Option) = work {
+        lists.relinkHomeIdentity(oldDeviceId, option.clientId, option.name, option.mac, option.ip)
+        message.value = "أُعيد ربط جهاز أهل البيت بمعرّفه الجديد وسيتجاهله التطبيق تمامًا"
+    }
     /** Recovery shortcut keyword, configurable in Settings (never a hard-coded letter). */
     private val recoveryPrefs = getApplication<Application>().getSharedPreferences("expander", Context.MODE_PRIVATE)
     val recoveryKeyword: StateFlow<String> = ExpanderHealth.recoveryKeywordFlow(recoveryPrefs)

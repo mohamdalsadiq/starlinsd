@@ -75,6 +75,50 @@ object DeviceAlertsCoordinator {
     const val DEFAULT_SUMMARY_MINUTE = 22 * 60
 
     /**
+     * Start of the owner's unregistered-tracking window, minutes since midnight.
+     * Default 18:00: before this time no UNKNOWN device enters the unregistered
+     * bookkeeping — a daytime connection only raises a heads-up notification.
+     * The operator sets it from settings; 0 = track the whole day.
+     */
+    const val DEFAULT_UNREGISTERED_START_MINUTE = 18 * 60
+    fun unregisteredStartMinute(context: Context): Int =
+        context.getSharedPreferences(PREFS, 0).getInt("unregistered_start_minute", -1)
+    fun knownUnregisteredStartMinute(context: Context): Int =
+        unregisteredStartMinute(context).takeIf { it >= 0 } ?: DEFAULT_UNREGISTERED_START_MINUTE
+    fun setUnregisteredStartMinute(context: Context, minute: Int?) {
+        require(minute == null || minute in 0..1439) { "الوقت من 00:00 إلى 23:59، أو ألغِه" }
+        context.getSharedPreferences(PREFS, 0).edit().putInt("unregistered_start_minute", minute ?: -1).apply()
+    }
+    /** True when [now] is inside today's unregistered-tracking window. */
+    fun insideUnregisteredWindow(now: Long, windowStartMinute: Int): Boolean {
+        val start = DeviceAlerts.dayStart(now) + windowStartMinute.coerceIn(0, 1439) * 60_000L
+        return now >= start
+    }
+
+    // ---- Per-day operator lists (dismissed unregistered, daytime heads-up) ----
+
+    private fun dismissedKey(dayKey: String) = "dismissed_unregistered_$dayKey"
+    private fun daytimeNotifiedKey(dayKey: String) = "daytime_notified_$dayKey"
+
+    /** DeviceKeys the owner removed by hand from today's unregistered list. */
+    fun dismissedUnregistered(context: Context, dayKey: String): Set<String> =
+        context.getSharedPreferences(PREFS, 0).getStringSet(dismissedKey(dayKey), emptySet()).orEmpty()
+    fun dismissUnregistered(context: Context, dayKey: String, deviceKey: String) {
+        val prefs = context.getSharedPreferences(PREFS, 0)
+        val updated = dismissedUnregistered(context, dayKey).toMutableSet().apply { add(deviceKey) }
+        prefs.edit().putStringSet(dismissedKey(dayKey), updated).apply()
+    }
+
+    /** DeviceKeys already given the daytime heads-up notification today. */
+    internal fun daytimeNotified(context: Context, dayKey: String): Set<String> =
+        context.getSharedPreferences(PREFS, 0).getStringSet(daytimeNotifiedKey(dayKey), emptySet()).orEmpty()
+    internal fun markDaytimeNotified(context: Context, dayKey: String, deviceKey: String) {
+        val prefs = context.getSharedPreferences(PREFS, 0)
+        val updated = daytimeNotified(context, dayKey).toMutableSet().apply { add(deviceKey) }
+        prefs.edit().putStringSet(daytimeNotifiedKey(dayKey), updated).apply()
+    }
+
+    /**
      * Idempotent: writes each default only until the first user change.
      * v2 re-seeds the dwell delay to 5 minutes for anyone who never chose a
      * value explicitly (the old 3-minute default was the notification delay;
@@ -248,6 +292,31 @@ object DeviceAlertsCoordinator {
 
     private fun truncate(value: String): String = value.take(32)
 
+    /**
+     * Daytime heads-up: a plain (non-urgent) notification that an unknown device
+     * joined the network outside the unregistered-tracking window. It is purely
+     * informational — the device is NOT added to the unregistered list.
+     */
+    @SuppressLint("MissingPermission")
+    internal fun notifyDaytime(context: Context, device: TrackedDevice): Boolean = try {
+        ensureChannels(context)
+        val open = PendingIntent.getActivity(context, 2103, Intent(context, MainActivity::class.java)
+            .setData(Uri.parse("slotra://devices")), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val label = device.name.ifBlank { "جهاز ${device.clientId}" }
+        val notification = NotificationCompat.Builder(context, CHANNEL_DEVICE_ALERTS)
+            .setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle("جهاز جديد على الشبكة")
+            .setContentText("$label متصل الآن بدون اشتراك")
+            .setStyle(NotificationCompat.BigTextStyle().bigText(
+                "$label متصل الآن بدون اشتراك (IP ${truncate(device.ip)}). خارج وقت تتبع غير المسجل؛ لم يُسجَّل في القائمة."))
+            .setContentIntent(open).setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .build()
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val key = DeviceAlerts.deviceKey(device.mac, device.clientId)
+        manager.notify(2300 + ((key.hashCode() and 0x7fffffff) % 600), notification)
+        true
+    } catch (e: SecurityException) { false }
+
     @SuppressLint("MissingPermission")
     internal fun notifySummary(context: Context, summary: DeviceAlerts.Summary, now: Long): Boolean = try {
         ensureChannels(context)
@@ -309,10 +378,12 @@ object DeviceAlertsCoordinator {
     private val STAMP_PATTERN = Regex("""\[(\d+)]""")
 
     /**
-     * "$dayKey:$clientId:$reference" -> first epoch ms the "[N]" stamp was seen
-     * in that device's router name. Entries are pruned to the current day on
-     * every read because reference numbers reset daily — yesterday's "[2]" must
-     * never match today's subscriber 2.
+     * "$dayKey:$reference" -> first epoch ms the "[N]" stamp was seen on the
+     * network. Keyed by the STAMP NUMBER, not the clientId: the stamp is unique
+     * per day (one session per reference), and the clientId may churn between
+     * the sighting pass and the bind pass. Entries are pruned to the current
+     * day on every read because reference numbers reset daily — yesterday's
+     * "[2]" must never match today's subscriber 2.
      */
     internal fun stampSightings(context: Context, now: Long): Map<String, Long> {
         val raw = context.getSharedPreferences(PREFS, 0).getString(KEY_STAMPS, null) ?: return emptyMap()
@@ -332,7 +403,9 @@ object DeviceAlertsCoordinator {
         var changed = false
         for (device in tracked) {
             for (match in STAMP_PATTERN.findAll(device.name)) {
-                val key = "$dayKey:${device.clientId}:${match.groupValues[1]}"
+                // Stamp number is the key (unique per day); clientId churn
+                // between passes must not lose the sighting.
+                val key = "$dayKey:${match.groupValues[1]}"
                 if (existing.putIfAbsent(key, now) == null) changed = true
             }
         }
@@ -397,6 +470,26 @@ object DeviceAlertsCoordinator {
     /** In-memory + persisted review state for one event day. */
     data class ReviewState(val dayKey: String, val groups: List<DailyReconciliation.Group>, val confirmed: Boolean)
 
+    /**
+     * The churn-proof bound set: deviceKeys AND subscriber stamps of sessions
+     * currently ACTIVE/PAUSED. A subscribed device whose clientId churned since
+     * the bind still carries its "[N]" stamp in the router name, so the stamp
+     * match keeps it out of the daytime heads-up (and the unregistered list).
+     */
+    internal data class BoundSessions(val keys: Set<String>, val stamps: Set<String>)
+    internal fun boundSessions(context: Context): BoundSessions = try {
+        kotlinx.coroutines.runBlocking {
+            val sessions = com.example.db.AppDatabase.getDatabase(context).businessDao().sessions()
+                .filter { !it.home && it.state in listOf("ACTIVE", "PAUSED") }
+            BoundSessions(
+                keys = sessions.filter { it.deviceMac.isNotBlank() || it.deviceClientId != null }
+                    .map { com.example.data.DeviceAlerts.deviceKey(it.deviceMac, it.deviceClientId ?: -1) }
+                    .toSet(),
+                stamps = sessions.mapNotNull { it.reference.takeIf { r -> r.isNotBlank() } }.toSet(),
+            )
+        }
+    } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { BoundSessions(emptySet(), emptySet()) }
+
     fun activeBindingsFor(context: Context): Map<Long, String> = try {
         kotlinx.coroutines.runBlocking {
             com.example.db.AppDatabase.getDatabase(context).businessDao().sessions()
@@ -427,6 +520,28 @@ object DeviceAlertsCoordinator {
             result.due.forEach { alert ->
                 if (notifyAlert(context, alert, historyById[alert.clientId]?.ip ?: ""))
                     markNotified(context, now, alert.clientId) // only on success (spec 42)
+            }
+        }
+        // Daytime heads-up: OUTSIDE the unregistered window a newly-seen UNKNOWN
+        // device (not home, not bound, not WATCH) raises one plain notification
+        // per day and NEVER enters the unregistered bookkeeping. Inside the
+        // window the device quietly accrues dwell toward the unregistered list.
+        val windowStart = knownUnregisteredStartMinute(context)
+        if (!insideUnregisteredWindow(now, windowStart) && SubscriptionAlarms.notificationsAllowed(context)) {
+            val live = tracked.orEmpty()
+            if (live.isNotEmpty()) {
+                val dayKey = DeviceAlerts.dayKey(now)
+                val bound = boundSessions(context)
+                live.forEach { device ->
+                    val key = DeviceAlerts.deviceKey(device.mac, device.clientId)
+                    val stamp = DeviceAlerts.stampOf(device.name)
+                    if (device.category == com.example.data.IpLists.Category.UNKNOWN &&
+                        key !in bound.keys && (stamp == null || stamp !in bound.stamps) &&
+                        key !in daytimeNotified(context, dayKey)
+                    ) {
+                        if (notifyDaytime(context, device)) markDaytimeNotified(context, dayKey, key)
+                    }
+                }
             }
         }
         val summaryMinute = knownSummaryMinute(context)
