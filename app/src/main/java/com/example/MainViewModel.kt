@@ -189,6 +189,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         repo.confirmDailyDevices(dayKey, devices, payment)
         message.value = "تم تأكيد إيراد $dayKey وإضافته إلى المالية"
     }
+    /**
+     * Aggregate unregistered confirmation: count × tariff − unpaid, one summary
+     * row and one ledger row per day. Idempotent — re-confirming rewrites both.
+     */
+    fun confirmUnregisteredSummary(dayKey: String, deviceCount: Int, tariff: Long, unpaidCount: Int, payment: String) = work {
+        repo.confirmUnregisteredSummary(dayKey, deviceCount, tariff, unpaidCount, payment)
+        message.value = "تم تأكيد أجهزة غير المسجل لليوم"
+    }
+    fun unregisteredSummary(dayKey: String, onResult: (com.example.db.UnregisteredDaySummary?) -> Unit) = work {
+        onResult(repo.unregisteredSummary(dayKey))
+    }
+    /**
+     * One-save daily confirmation: locked subscribed amounts (per-device audit
+     * rows) plus the aggregate unregistered summary (one summary row, one ledger
+     * row). Sequential inside a single work{} so the ledger rebuild order is
+     * deterministic: the subscribed pass first, then the summary rebuilds the
+     * day's single ledger row from the aggregate.
+     */
+    fun confirmDay(
+        dayKey: String,
+        subscribed: List<SubscriptionRepository.DailyDeviceAmount>,
+        unregisteredCount: Int,
+        tariff: Long,
+        unpaidCount: Int,
+        payment: String,
+    ) = work {
+        repo.confirmDailyDevices(dayKey, subscribed, payment)
+        repo.confirmUnregisteredSummary(dayKey, unregisteredCount, tariff, unpaidCount, payment)
+        DeviceAlertsCoordinator.setUnregisteredTariff(getApplication(), tariff)
+        message.value = "تم تأكيد إيراد $dayKey وإضافته إلى المالية"
+    }
     fun change(id: String, action: String) = work {
         repo.changeState(id, action)
     }
@@ -214,7 +245,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** Unknown-device alert delay (1/3/5 minutes); work{} re-schedules via refresh(). */
     fun setDeviceAlertDelay(minutes: Int) = work {
         DeviceAlertsCoordinator.setDelayMinutes(getApplication(), minutes)
-        message.value = "سيتم تنبيهك بعد $minutes دقيقة من ظهور جهاز غير مرتبط"
+        message.value = "سيدخل الجهاز غير المرتبط قائمة غير المسجل بعد $minutes دقيقة من ظهوره"
     }
     /** Daily device confirmation time; work{} re-schedules via refresh() (spec 44). */
     fun setDeviceSummaryTime(minute: Int) = work {

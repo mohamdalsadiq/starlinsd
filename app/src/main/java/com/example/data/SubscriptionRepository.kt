@@ -177,6 +177,44 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
     /** One editable device amount for [confirmDailyDevices]. */
     data class DailyDeviceAmount(val deviceId: Long, val sessionId: String, val confirmed: Long)
 
+    /**
+     * Confirms the day's unregistered devices as ONE aggregate: [deviceCount] ×
+     * [tariff], minus [unpaidCount] non-paying devices. Rewrites the same summary
+     * row and the same single ledger row on every save (idempotent). Subscribed
+     * devices are confirmed separately via [confirmDailyDevices]; their revenue
+     * already exists as session revenue and never becomes ledger money here.
+     */
+    suspend fun confirmUnregisteredSummary(
+        dayKey: String,
+        deviceCount: Int,
+        tariff: Long,
+        unpaidCount: Int,
+        payment: String,
+    ) = db.withTransaction {
+        val settings = dao.settings() ?: BusinessSettings()
+        DailyReconciliation.validateUnregisteredSummary(deviceCount, tariff, unpaidCount, payment)
+        val net = DailyReconciliation.unregisteredNet(deviceCount, tariff, unpaidCount)
+        val now = time()
+        dao.upsertUnregisteredSummary(UnregisteredDaySummary(
+            dayKey = dayKey, tariff = tariff, deviceCount = deviceCount,
+            unpaidCount = unpaidCount, netTotal = net, payment = payment, updated = now))
+        // Drop any legacy per-device unregistered rows for the day (sessionId == ""):
+        // the aggregate is the single source of truth now.
+        dao.dayConfirmations(dayKey).filter { it.sessionId.isBlank() }
+            .forEach { dao.deleteConfirmations(dayKey, listOf(it.deviceId)) }
+        // Rebuild the day's single ledger row from the summary.
+        val ledger = DailyReconciliation.summaryLedgerRow(dayKey,
+            requireNotNull(dao.unregisteredSummary(dayKey)), now, settings.premiumBps)
+        val existing = DailyReconciliation.rowsFor(dao.manualSales(), dayKey)
+        if (ledger == null) existing.forEach { dao.deleteManualSale(it) }
+        else {
+            existing.filter { it.id != ledger.id }.forEach { dao.deleteManualSale(it) }
+            dao.upsertManualSale(ledger)
+        }
+    }
+
+    suspend fun unregisteredSummary(dayKey: String): UnregisteredDaySummary? = dao.unregisteredSummary(dayKey)
+
     suspend fun expansionPlan(id: Long): Plan = requireNotNull(dao.plan(id)).also { require(it.enabled) { "هذه الباقة متوقفة" } }
 
     private fun advance(s: Session, now: Long): Session {

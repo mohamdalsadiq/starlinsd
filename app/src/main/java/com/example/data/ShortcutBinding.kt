@@ -9,78 +9,144 @@ import com.example.network.StarlinkProtocol
 import com.example.notifications.DeviceAlertsCoordinator
 import com.example.notifications.DeviceTrackerBridge
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 
 /**
- * Auto-binding for subscription shortcuts (spec sections 1/15/22).
+ * Deterministic auto-binding for subscription shortcuts.
  *
- * A shortcut-created session previously stayed unbound (`deviceClientId == null`),
- * so the just-sold device was classified as *unregistered* in daily reconciliation
- * and the owner could even receive an "unknown device" alert for a paying customer.
- * The shortcut IS the subscription workflow, so firing a shortcut must bind the new
- * session to the device being sold to — without a second manual registration step.
+ * The shortcut IS the subscription workflow: when it fires, the operator's text
+ * is expanded to include the subscriber number as a stamp ("[N]", appended by
+ * [com.example.domain.TextRules.withReference]) and the operator saves that text
+ * as the router device name (e.g. "🌹٠٢:٢٨م [2]🌹 M05"). That stamp is the ONLY
+ * signal used here — no heuristics, no guessing:
  *
- * Binding rules (pure, testable, in [choose]):
- * - Discovery failure (null snapshot) → never bind. No guessing.
- * - Only currently live, non-HOME (identity-based), currently unbound devices are
- *   candidates. Name/IP are display data, never identity.
- * - Preference goes to devices under unregistered-delay monitoring (the pending
- *   unregistered candidates): binding one of them also cancels its pending alert
- *   via [DeviceAlerts.evaluate], which drops pending candidates once bound.
- *   Among them the most recently arrived device wins — the customer who just
- *   walked in is the one the owner is selling to right now.
- * - With no pending candidate, exactly one free candidate is unambiguous and binds.
- * - Several free candidates with no monitoring signal is ambiguous: leave the
- *   session unbound and let the owner bind from the devices screen. Session
- *   creation is never blocked or failed by binding.
+ * - The device whose live router name carries "[N]" for today's subscriber N is
+ *   the device the session was sold to. Exactly one such device must exist.
+ * - The stamp must be FRESH: first sighted at/after the session was created.
+ *   Reference numbers reset daily, so yesterday's "[2]" can never match today's
+ *   subscriber 2 (sightings are keyed per day in DeviceAlertsCoordinator).
+ * - Discovery failure (null snapshot) → never bind. No stamp → the session stays
+ *   unbound and the owner binds it manually from the devices screen. Binding must
+ *   never break or block a sale.
+ *
+ * Why not a single immediate snapshot: the operator saves the router rename
+ * AFTER the text expansion, so the stamp is usually not visible yet when the
+ * shortcut fires. Binding therefore retries on a bounded schedule
+ * ([bindShortcutWithRetry]) and a safety-net sweep rides the single existing
+ * scheduler ([sweepUnbound], called from SubscriptionAlarms.refresh()).
  */
 object ShortcutBinding {
 
-    /** A device currently under unregistered-delay monitoring (pending alert). */
-    data class PendingCandidate(val clientId: Long, val firstSeen: Long)
+    /** Tolerance for the stamp-freshness check (operator save delay vs our clock). */
+    const val STAMP_TOLERANCE_MS = 60_000L
 
     /**
-     * Pure choice of which live device a just-fired shortcut belongs to, or null
-     * when there is no safe unambiguous choice.
+     * Pure choice of which live device a shortcut session belongs to, or null.
+     *
+     * @param snapshot live reconciled devices, or null on discovery failure.
+     * @param reference the session's subscriber number (e.g. "2" matches "[2]").
+     * @param sessionStartedAt epoch ms when the session was created.
+     * @param stampFirstSeen "$dayKey:$clientId:$reference" -> first stamp sighting.
+     * @param now current epoch ms (lookup key day + freshness fallback).
      */
-    fun choose(
+    fun matchStamp(
         snapshot: List<TrackedDevice>?,
+        reference: String,
+        sessionStartedAt: Long,
+        stampFirstSeen: Map<String, Long>,
+        now: Long,
         boundClientIds: Set<Long>,
-        pending: List<PendingCandidate>,
         homeClientIds: Set<Long>,
         homeMacs: Set<String>,
         legacyHomeIps: Set<String>,
     ): TrackedDevice? {
-        if (snapshot == null) return null
-        val eligible = snapshot.filter { device ->
+        if (snapshot == null || reference.isBlank()) return null
+        val stamp = "[$reference]"
+        val candidates = snapshot.filter { device ->
             device.clientId in 1..4294967295L &&
                 device.clientId !in boundClientIds &&
                 device.clientId !in homeClientIds &&
                 (device.mac.isBlank() || device.mac !in homeMacs) &&
-                device.ip !in legacyHomeIps
+                device.ip !in legacyHomeIps &&
+                stamp in device.name
         }
-        if (eligible.isEmpty()) return null
-        val pendingById = pending.associateBy { it.clientId }
-        val monitored = eligible.filter { it.clientId in pendingById }
-        if (monitored.isNotEmpty()) {
-            return monitored.maxByOrNull { pendingById.getValue(it.clientId).firstSeen }
+        if (candidates.isEmpty()) return null
+        // Freshness: the stamp must have appeared at/after the session started.
+        // A sighting recorded under either the session's day or today is accepted
+        // (midnight-boundary sales); anything older is a stale stamp from a
+        // previous day and must never match.
+        val fresh = candidates.filter { device ->
+            val keys = listOf(
+                "${DeviceAlerts.dayKey(sessionStartedAt)}:${device.clientId}:$reference",
+                "${DeviceAlerts.dayKey(now)}:${device.clientId}:$reference",
+            )
+            val firstSeen = keys.firstNotNullOfOrNull { stampFirstSeen[it] } ?: now
+            firstSeen >= sessionStartedAt - STAMP_TOLERANCE_MS
         }
-        return eligible.singleOrNull()
+        return fresh.singleOrNull()
+    }
+
+    /**
+     * Safety-net sweep: bind every still-unbound, non-home shortcut session from
+     * today against an already-fresh snapshot. Performs no discovery of its own;
+     * called from SubscriptionAlarms.refresh() after the poll. Returns the number
+     * of sessions bound. Never throws.
+     */
+    suspend fun sweepUnbound(context: Context, tracked: List<TrackedDevice>): Int = withContext(Dispatchers.IO) {
+        try {
+            val app = context.applicationContext
+            val repo = SubscriptionRepository(app)
+            val now = System.currentTimeMillis()
+            val dayStart = DeviceAlerts.dayStart(now)
+            val sessions = repo.dao.sessions()
+            val unbound = sessions.filter { s ->
+                !s.home && s.deviceClientId == null && s.reference.isNotBlank() &&
+                    s.state in listOf("ACTIVE", "PAUSED", "ENDED") && s.started >= dayStart
+            }
+            if (unbound.isEmpty()) return@withContext 0
+            val lists = IpListStore(app)
+            val identity = lists.identitySnapshot()
+            val homeMacs = IpLists.homeMacs(identity.identities)
+            val stamps = DeviceAlertsCoordinator.stampSightings(app, now)
+            val bound = sessions
+                .filter { !it.home && it.state in listOf("ACTIVE", "PAUSED") && it.deviceClientId != null }
+                .mapNotNull { it.deviceClientId }
+                .toMutableSet()
+            var count = 0
+            for (session in unbound) {
+                val choice = matchStamp(
+                    snapshot = tracked,
+                    reference = session.reference,
+                    sessionStartedAt = session.started,
+                    stampFirstSeen = stamps,
+                    now = now,
+                    boundClientIds = bound,
+                    homeClientIds = identity.homeClientIds,
+                    homeMacs = homeMacs,
+                    legacyHomeIps = identity.legacyHomeIps,
+                ) ?: continue
+                repo.bindDevice(session.id, choice)
+                bound.add(choice.clientId)
+                count++
+            }
+            count
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (_: Exception) { 0 }
     }
 }
 
 /**
- * Best-effort orchestration: take one bounded CLIENTS snapshot and bind [sessionId]
- * to the chosen device. Returns the bound device, or null when nothing was bound.
- *
- * Never throws: binding must never break or block a shortcut subscription. On any
- * failure (no Wi-Fi, discovery failure, timeout) the session simply stays unbound,
- * exactly as before this change.
+ * One bounded CLIENTS snapshot followed by a stamp-only bind attempt for
+ * [sessionId]. Returns the bound device, or null when nothing was bound.
+ * Never throws.
  */
-suspend fun bindShortcutSession(
+suspend fun bindShortcutSessionByStamp(
     context: Context,
     sessionId: String,
+    reference: String,
+    sessionStartedAt: Long,
     timeoutMs: Long = 8000L,
 ): TrackedDevice? = withContext(Dispatchers.IO) {
     try {
@@ -97,7 +163,8 @@ suspend fun bindShortcutSession(
         } ?: return@withContext null
         val now = System.currentTimeMillis()
         // Keep the same pipeline as the periodic poll: refresh the in-memory
-        // snapshot used by alerts and record today's sightings for reconciliation.
+        // snapshot used by alerts and record today's sightings for reconciliation
+        // (recordSnapshot also records subscriber-stamp sightings).
         DeviceTrackerBridge.updateSnapshot(tracked)
         DeviceAlertsCoordinator.recordSnapshot(app, now, tracked)
         val repo = SubscriptionRepository(app)
@@ -106,12 +173,14 @@ suspend fun bindShortcutSession(
             .mapNotNull { it.deviceClientId }
             .toSet()
         val identity = lists.identitySnapshot()
-        val pending = DeviceAlertsCoordinator.pending(app)
-            .map { ShortcutBinding.PendingCandidate(it.clientId, it.firstSeen) }
-        val choice = ShortcutBinding.choose(
+        val stamps = DeviceAlertsCoordinator.stampSightings(app, now)
+        val choice = ShortcutBinding.matchStamp(
             snapshot = tracked,
+            reference = reference,
+            sessionStartedAt = sessionStartedAt,
+            stampFirstSeen = stamps,
+            now = now,
             boundClientIds = bound,
-            pending = pending,
             homeClientIds = identity.homeClientIds,
             homeMacs = IpLists.homeMacs(identity.identities),
             legacyHomeIps = identity.legacyHomeIps,
@@ -120,6 +189,30 @@ suspend fun bindShortcutSession(
         choice
     } catch (e: kotlinx.coroutines.CancellationException) { throw e }
     catch (_: Exception) { null }
+}
+
+/**
+ * Bounded deferred binding: try now, then retry every [intervalMs] up to
+ * [attempts] times. The operator saves the router rename after the expansion,
+ * so the first attempt usually misses the stamp; retries catch it without any
+ * persistent scheduler. Returns the bound device or null. Never throws.
+ */
+suspend fun bindShortcutWithRetry(
+    context: Context,
+    sessionId: String,
+    reference: String,
+    sessionStartedAt: Long,
+    attempts: Int = 8,
+    intervalMs: Long = 15_000L,
+): TrackedDevice? {
+    repeat(attempts) { i ->
+        if (i > 0) {
+            try { delay(intervalMs) } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        }
+        val bound = bindShortcutSessionByStamp(context, sessionId, reference, sessionStartedAt)
+        if (bound != null) return bound
+    }
+    return null
 }
 
 private fun wifiNetwork(context: Context): Network? {

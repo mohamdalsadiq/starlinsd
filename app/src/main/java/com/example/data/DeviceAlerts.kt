@@ -107,11 +107,15 @@ object DeviceAlerts {
 
     /**
      * One evaluation pass. Pending deadlines are recalculated from firstSeen + the
-     * current delay (spec 45), so a changed setting applies to waiting devices too.
+     * current delay, so a changed setting applies to waiting devices too.
      * A device that vanished before its deadline loses its window; when it returns
-     * the same day it starts a fresh connection cycle (spec 9) because it is no
-     * longer pending. At the deadline everything is re-checked (spec 41): still
-     * connected, not HOME (upstream), not bound to a live session, not notified.
+     * the same day it starts a fresh connection cycle because it is no longer
+     * pending. At the deadline everything is re-checked: still connected, not
+     * HOME (upstream), not bound to a live session, not notified.
+     *
+     * Only WATCH devices ever notify. UNKNOWN devices stay silent: after the
+     * dwell delay they quietly qualify for the unregistered-devices list
+     * (see DailyReconciliation.qualifiedUnregistered) without a notification.
      */
     fun evaluate(input: EvalInput): EvalResult {
         val live = input.live ?: return EvalResult(emptyList(), input.pending) // discovery failed: freeze (spec 32)
@@ -121,18 +125,19 @@ object DeviceAlerts {
         val pending = mutableListOf<PendingAlert>()
         input.pending.forEach { alert ->
             val device = liveById[alert.clientId]
-            val eligible = device != null && device.category != IpLists.Category.HOME &&
+            val eligible = alert.category == IpLists.Category.WATCH && device != null &&
+                device.category != IpLists.Category.HOME &&
                 !input.activeBindings.containsKey(alert.clientId) && !input.notifiedToday.contains(alert.clientId)
             when {
-                !eligible -> Unit // vanished, became HOME, got bound, or already notified: no alert (spec 9/14)
+                !eligible -> Unit // vanished, became HOME, got bound, already notified, or legacy UNKNOWN: no alert
                 alert.firstSeen + delay <= input.now -> due += alert
                 else -> pending += alert.copy(deadline = alert.firstSeen + delay)
             }
         }
-        // New connection cycles: live, UNKNOWN/WATCH, unbound, unnotified, not already pending.
+        // New connection cycles: live WATCH devices, unbound, unnotified, not already pending.
         val carried = (pending + due).map { it.clientId }.toSet()
         pending += live.filter { device ->
-            (device.category == IpLists.Category.UNKNOWN || device.category == IpLists.Category.WATCH) &&
+            device.category == IpLists.Category.WATCH &&
                 !input.activeBindings.containsKey(device.clientId) && !input.notifiedToday.contains(device.clientId) &&
                 device.clientId !in carried
         }.map { PendingAlert(it.clientId, input.now, input.now + delay, it.category) }

@@ -187,4 +187,69 @@ object DailyReconciliation {
     /** Confirmed device total for [dayKey] (sum of per-device confirmed amounts). */
     fun confirmedDeviceTotal(devices: List<com.example.db.DailyDeviceConfirmation>): Long =
         devices.sumOf { it.confirmed }
+
+    // ---- Aggregate unregistered confirmation (deterministic binding v2) ----
+
+    /**
+     * Qualified unregistered devices: the confirmationGroups unregistered split,
+     * further gated by DWELL time — a device only counts after it has been seen
+     * for at least [delayMinutes] (lastSeen - firstSeen). Passing phones that
+     * briefly appear never reach the list; evening customers who stay do.
+     * A device that later gets a subscription is already excluded upstream by
+     * the binding match in [confirmationGroups].
+     */
+    fun qualifiedUnregistered(
+        devices: List<DeviceAlerts.DayDevice>,
+        sessions: List<com.example.db.Session>,
+        delayMinutes: Int,
+        now: Long,
+    ): List<DeviceAlerts.DayDevice> {
+        val dwellMs = delayMinutes.coerceAtLeast(1) * 60_000L
+        return confirmationGroups(devices, sessions).unregistered.filter { device ->
+            device.lastSeen - device.firstSeen >= dwellMs
+        }
+    }
+
+    /**
+     * Net unregistered revenue: (deviceCount − unpaidCount) × tariff.
+     * unpaidCount is clamped to [0, deviceCount]; all amounts in minor units.
+     */
+    fun unregisteredNet(deviceCount: Int, tariff: Long, unpaidCount: Int): Long {
+        val paid = (deviceCount - unpaidCount.coerceIn(0, deviceCount)).coerceAtLeast(0)
+        return Math.multiplyExact(paid.toLong(), tariff.coerceAtLeast(0))
+    }
+
+    /** Validates an aggregate unregistered confirmation before it is saved. */
+    fun validateUnregisteredSummary(deviceCount: Int, tariff: Long, unpaidCount: Int, payment: String) {
+        require(payment == "CASH" || payment == "BANK") { "اختر طريقة الدفع" }
+        require(deviceCount in 0..100000) { "عدد الأجهزة غير صالح" }
+        require(tariff in 1..99999999999) { "التعرفة غير صالحة" }
+        require(unpaidCount in 0..deviceCount) { "عدد غير الدافعين يجب أن يكون بين صفر وعدد الأجهزة" }
+    }
+
+    /**
+     * The day's single ledger row for the aggregate unregistered summary,
+     * REBUILT on every save under the same deterministic id [dailyRowId] so
+     * re-confirming rewrites it in place. `at` is pinned inside the event day.
+     * Returns null when the net total is zero (no row should exist).
+     */
+    fun summaryLedgerRow(
+        dayKey: String,
+        summary: com.example.db.UnregisteredDaySummary,
+        at: Long,
+        premiumBps: Int,
+    ): com.example.db.ManualSale? {
+        if (summary.netTotal <= 0) return null
+        val method = if (summary.payment == "BANK") "BANK" else "CASH"
+        val rowTime = try {
+            val format = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+            format.isLenient = false
+            format.parse(dayKey)!!.time + 12 * 60 * 60_000L
+        } catch (_: Exception) { Revenue.day(at) + 12 * 60 * 60_000L }
+        return com.example.db.ManualSale(
+            id = dailyRowId(dayKey), at = rowTime, count = summary.deviceCount - summary.unpaidCount,
+            unitPrice = summary.tariff, amount = summary.netTotal,
+            cashEquivalent = if (method == "BANK") Money.bankToCash(summary.netTotal, premiumBps) else summary.netTotal,
+            payment = method, premiumBps = premiumBps)
+    }
 }
