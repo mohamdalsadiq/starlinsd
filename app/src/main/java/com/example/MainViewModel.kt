@@ -9,6 +9,7 @@ import com.example.data.SubscriptionRepository
 import com.example.data.BackupData
 import com.example.data.ClientTracker
 import com.example.data.DailyReconciliation
+import com.example.data.DeviceAlerts
 import com.example.data.DeviceRecovery
 import com.example.data.DeviceSelection
 import com.example.data.IpListStore
