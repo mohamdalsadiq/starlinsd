@@ -144,8 +144,7 @@ class DailyConfirmationRepositoryTest {
             TrackedDevice(102L, "[9] free", "192.168.1.51", "aa:bb:cc:dd:ee:00", IpLists.Category.UNKNOWN),
         )
         val sighted = mapOf(
-            "${DeviceAlerts.dayKey(now)}:101:9" to now,
-            "${DeviceAlerts.dayKey(now)}:102:9" to now,
+            "${DeviceAlerts.dayKey(now)}:9" to now,
         )
         val picked = ShortcutBinding.matchStamp(live, "9", now - 60_000L, sighted, now,
             bound, emptySet(), emptySet(), emptySet())
