@@ -83,6 +83,14 @@ object SubscriptionAlarms {
         try {
             if (DeviceTrackerBridge.needsPoll(app)) withTimeout(5000) { DeviceTrackerBridge.poll(app) }
         } catch (e: CancellationException) { throw e } catch (_: Exception) { /* monitoring is best-effort */ }
+        // Deterministic stamp-binding safety net: bind today's still-unbound
+        // shortcut sessions against the fresh snapshot (no discovery of its own).
+        // Catches sales whose rename landed after the service's retry window.
+        try {
+            DeviceTrackerBridge.freshSnapshot()?.let { snap ->
+                com.example.data.ShortcutBinding.sweepUnbound(app, snap)
+            }
+        } catch (e: CancellationException) { throw e } catch (_: Exception) { /* binding is best-effort */ }
         val closePrefs = app.getSharedPreferences(DAILY_CLOSE_PREFS, 0)
         todayClose(now, closeMinute)?.let { close ->
             if (now >= close && closePrefs.getLong("applied", 0L) < close) {

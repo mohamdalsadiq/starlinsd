@@ -39,12 +39,26 @@ object DeviceAlertsCoordinator {
 
     // ---- Settings (spec 36: same prefs architecture as the daily close time) ----
 
-    /** Unknown-device alert delay in minutes; 0 means not yet set. Only 1/3/5 are offered (spec 7). */
+    /** Unknown-device alert delay in minutes; 0 means not yet set. Only 1/3/5/10 are offered. */
     fun delayMinutes(context: Context): Int = context.getSharedPreferences(PREFS, 0).getInt("delay_minutes", 0)
     fun setDelayMinutes(context: Context, minutes: Int) {
-        require(minutes in listOf(1, 3, 5)) { "المدة دقيقة أو 3 أو 5 دقائق" }
-        context.getSharedPreferences(PREFS, 0).edit().putInt("delay_minutes", minutes).apply()
+        require(minutes in listOf(1, 3, 5, 10)) { "المدة 1 أو 3 أو 5 أو 10 دقائق" }
+        context.getSharedPreferences(PREFS, 0).edit().putInt("delay_minutes", minutes)
+            .putBoolean("delay_minutes_custom", true).apply()
     }
+
+    /**
+     * Per-device tariff for unregistered devices, in minor units.
+     * Default 500 ج.س; the operator can raise it later (e.g. 1000) from settings.
+     */
+    fun unregisteredTariff(context: Context): Long =
+        context.getSharedPreferences(PREFS, 0).getLong("unregistered_tariff", 0).takeIf { it > 0 }
+            ?: DEFAULT_UNREGISTERED_TARIFF
+    fun setUnregisteredTariff(context: Context, tariffMinor: Long) {
+        require(tariffMinor in 1..99999999999) { "التعرفة غير صالحة" }
+        context.getSharedPreferences(PREFS, 0).edit().putLong("unregistered_tariff", tariffMinor).apply()
+    }
+    const val DEFAULT_UNREGISTERED_TARIFF = 50000L
 
     /** Daily summary minute-of-day; null when not yet set. */
     fun summaryMinute(context: Context): Int? = context.getSharedPreferences(PREFS, 0).getInt("summary_minute", -1).takeIf { it >= 0 }
@@ -56,11 +70,16 @@ object DeviceAlertsCoordinator {
     fun knownDelayMinutes(context: Context): Int = delayMinutes(context).takeIf { it > 0 } ?: DEFAULT_DELAY_MINUTES
     fun knownSummaryMinute(context: Context): Int = summaryMinute(context) ?: DEFAULT_SUMMARY_MINUTE
 
-    /** App-facing defaults (spec 7/15: 3 minutes, 22:00). */
-    const val DEFAULT_DELAY_MINUTES = 3
+    /** App-facing defaults (5 minutes dwell, 22:00 summary). */
+    const val DEFAULT_DELAY_MINUTES = 5
     const val DEFAULT_SUMMARY_MINUTE = 22 * 60
 
-    /** Idempotent: writes each default only until the first user change. */
+    /**
+     * Idempotent: writes each default only until the first user change.
+     * v2 re-seeds the dwell delay to 5 minutes for anyone who never chose a
+     * value explicitly (the old 3-minute default was the notification delay;
+     * the setting now gates the unregistered-device list instead).
+     */
     fun seedDefaults(context: Context) {
         val prefs = context.getSharedPreferences(PREFS, 0)
         if (!prefs.getBoolean("seeded", false)) {
@@ -69,6 +88,13 @@ object DeviceAlertsCoordinator {
                 .putInt("summary_minute", DEFAULT_SUMMARY_MINUTE)
                 .putBoolean("seeded", true)
                 .apply()
+        }
+        if (!prefs.getBoolean("seeded_v2", false)) {
+            val editor = prefs.edit()
+            if (!prefs.getBoolean("delay_minutes_custom", false)) {
+                editor.putInt("delay_minutes", DEFAULT_DELAY_MINUTES)
+            }
+            editor.putBoolean("seeded_v2", true).apply()
         }
     }
 
@@ -184,7 +210,7 @@ object DeviceAlertsCoordinator {
         if (Build.VERSION.SDK_INT < 26) return
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         manager.createNotificationChannel(NotificationChannel(CHANNEL_DEVICE_ALERTS, "تنبيهات الأجهزة", NotificationManager.IMPORTANCE_HIGH).apply {
-            description = "تنبيه عند اتصال جهاز غير معروف أو في قائمة المراقبة"
+            description = "تنبيه عند اتصال جهاز في قائمة المراقبة"
         })
         manager.createNotificationChannel(NotificationChannel(CHANNEL_DAILY_SUMMARY, "تأكيد الأجهزة اليومية", NotificationManager.IMPORTANCE_DEFAULT).apply {
             description = "ملخص يومي للأجهزة التي اتصلت بالشبكة"
@@ -274,6 +300,47 @@ object DeviceAlertsCoordinator {
             homeClientIds = lists.homeClientIds, homeMacs = com.example.data.IpLists.homeMacs(lists.identities),
             legacyHomeIps = lists.legacyHomeIps)
         saveHistory(context, now, updated)
+        recordStampSightings(context, now, tracked)
+    }
+
+    // ---- Subscriber-stamp sightings (deterministic shortcut binding) ----
+
+    private const val KEY_STAMPS = "stamp_sightings"
+    private val STAMP_PATTERN = Regex("""\[(\d+)]""")
+
+    /**
+     * "$dayKey:$clientId:$reference" -> first epoch ms the "[N]" stamp was seen
+     * in that device's router name. Entries are pruned to the current day on
+     * every read because reference numbers reset daily — yesterday's "[2]" must
+     * never match today's subscriber 2.
+     */
+    internal fun stampSightings(context: Context, now: Long): Map<String, Long> {
+        val raw = context.getSharedPreferences(PREFS, 0).getString(KEY_STAMPS, null) ?: return emptyMap()
+        val prefix = "${DeviceAlerts.dayKey(now)}:"
+        return runCatching {
+            val obj = JSONObject(raw)
+            obj.keys().asSequence()
+                .filter { it.startsWith(prefix) }
+                .associateWith { obj.getLong(it) }
+        }.getOrDefault(emptyMap())
+    }
+
+    /** Records first-sightings of "[N]" stamps in live device names. */
+    private fun recordStampSightings(context: Context, now: Long, tracked: List<TrackedDevice>) {
+        val dayKey = DeviceAlerts.dayKey(now)
+        val existing = stampSightings(context, now).toMutableMap()
+        var changed = false
+        for (device in tracked) {
+            for (match in STAMP_PATTERN.findAll(device.name)) {
+                val key = "$dayKey:${device.clientId}:${match.groupValues[1]}"
+                if (existing.putIfAbsent(key, now) == null) changed = true
+            }
+        }
+        if (changed) {
+            val obj = JSONObject()
+            existing.forEach { (k, v) -> obj.put(k, v) }
+            context.getSharedPreferences(PREFS, 0).edit().putString(KEY_STAMPS, obj.toString()).apply()
+        }
     }
 
     /** Clears the day's history (used by tests to reset state). */

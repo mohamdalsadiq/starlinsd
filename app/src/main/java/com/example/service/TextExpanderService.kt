@@ -133,12 +133,26 @@ class TextExpanderService : AccessibilityService() {
                 if (session != null) {
                     repo.insert(session)
                     // The shortcut IS the subscription workflow: bind the new session to the
-                    // device being sold to (best-effort, never throws). An unbound session
-                    // would classify the customer's device as unregistered in reconciliation.
-                    val bound = runCatching { com.example.data.bindShortcutSession(this@TextExpanderService, session.id) }.getOrNull()
+                    // device being sold to (best-effort, never throws). Binding is
+                    // DETERMINISTIC: the session's subscriber stamp "[N]" (saved by the
+                    // operator as the router device name right after this expansion)
+                    // is matched against live device names — never guessed.
+                    // The rename is saved after the expansion, so the first attempt
+                    // usually misses; a bounded retry catches it, and the periodic
+                    // sweep in SubscriptionAlarms keeps trying afterwards.
                     SubscriptionAlarms.refresh(this@TextExpanderService)
-                    val bindingNote = if (bound != null) " · تم ربط الجهاز تلقائيًا" else ""
-                    Toast.makeText(this@TextExpanderService, "تم تسجيل ${session.client}$bindingNote", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@TextExpanderService, "تم تسجيل ${session.client}", Toast.LENGTH_SHORT).show()
+                    val service = this@TextExpanderService
+                    val boundSession = session
+                    scope.launch {
+                        val bound = runCatching {
+                            com.example.data.bindShortcutWithRetry(service, boundSession.id, boundSession.reference, boundSession.started)
+                        }.getOrNull()
+                        if (bound != null) {
+                            Toast.makeText(service, "تم ربط ${boundSession.client} بالجهاز", Toast.LENGTH_SHORT).show()
+                            SubscriptionAlarms.refresh(service)
+                        }
+                    }
                 }
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) {

@@ -98,6 +98,29 @@ data class BalanceUpdate(@PrimaryKey(autoGenerate = true) val id: Long = 0, val 
     val cash: Long, val bank: Long, val cashReceived: Long, val bankReceived: Long,
     val premiumBps: Int, val reason: String, val expectedCash: Long = 0, val expectedBank: Long = 0)
 
+/**
+ * Daily unregistered-device summary (schema v9): the operator confirms the day's
+ * unregistered devices as ONE aggregate — qualified device count × per-device
+ * tariff, minus the devices marked as not paid. One row per event day (dayKey
+ * primary key), so re-confirming rewrites the SAME row and its single ledger
+ * row, never a duplicate. Subscribed devices need no row here: their revenue
+ * already exists as session revenue in the finance ledger.
+ */
+@Entity(tableName = "unregistered_day_summary")
+data class UnregisteredDaySummary(
+    @PrimaryKey val dayKey: String,
+    /** Per-device tariff in minor units (e.g. 50000 = 500 ج.س), captured at confirm time. */
+    val tariff: Long,
+    /** Qualified unregistered devices that day (dwell >= the configured delay). */
+    val deviceCount: Int,
+    /** Devices the operator marked as not paid. */
+    val unpaidCount: Int,
+    /** Net amount = (deviceCount - unpaidCount) × tariff, in minor units. */
+    val netTotal: Long,
+    val payment: String,
+    val updated: Long,
+)
+
 @Dao
 interface BusinessDao {
     @Query("SELECT * FROM balance_updates ORDER BY at, id") fun observeBalanceUpdates(): Flow<List<BalanceUpdate>>
@@ -167,4 +190,7 @@ interface BusinessDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun upsertConfirmation(entry: DailyDeviceConfirmation)
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertConfirmation(entry: DailyDeviceConfirmation): Long
     @Query("DELETE FROM daily_device_confirmations WHERE dayKey = :dayKey AND deviceId IN (:deviceIds)") suspend fun deleteConfirmations(dayKey: String, deviceIds: List<Long>)
+
+    @Query("SELECT * FROM unregistered_day_summary WHERE dayKey = :dayKey") suspend fun unregisteredSummary(dayKey: String): UnregisteredDaySummary?
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun upsertUnregisteredSummary(entry: UnregisteredDaySummary)
 }
