@@ -132,7 +132,7 @@ class DeviceAlertsTest {
     @Test fun historyMergesByClientIdKeepsGoneAndDropsHome() {
         val now = at(600)
         val existing = listOf(
-            DeviceAlerts.DayDevice(7, "old", "192.168.1.9", "mac7", IpLists.Category.UNKNOWN, at(500), at(500)),
+            DeviceAlerts.DayDevice(7, "old", "192.168.1.9", "aa:bb:cc:00:00:07", IpLists.Category.UNKNOWN, at(500), at(500)),
             DeviceAlerts.DayDevice(10, "gone", "192.168.1.30", "mac10", IpLists.Category.UNKNOWN, at(510), at(515)))
         // 7 still live with a new IP (same device), 8 is new, 9 is HOME by identity, 10 left.
         val seen = listOf(
@@ -204,5 +204,60 @@ class DeviceAlertsTest {
         assertEquals(at(620), wakeups[0])
         assertEquals(DeviceAlerts.nextDaily(now, 22 * 60), wakeups[1])
         assertNull(wakeups[2])
+    }
+
+    // ---- Masked-MAC-safe identity (measured 2026-08-15: the firmware masks the
+    // low three MAC octets, so a masked MAC must NEVER identify a device) ----
+
+    @Test fun usableMacRejectsMaskedBlankAndZero() {
+        assertNull(DeviceAlerts.usableMac(""))
+        assertNull(DeviceAlerts.usableMac("   "))
+        assertNull(DeviceAlerts.usableMac("60:74:f4:XX:XX:XX"))
+        assertNull(DeviceAlerts.usableMac("60:74:f4:xx:xx:xx"))
+        assertNull(DeviceAlerts.usableMac("00:00:00:00:00:00"))
+        assertNull(DeviceAlerts.usableMac("not-a-mac"))
+        assertNull(DeviceAlerts.usableMac("aa:bb:cc:dd:ee:101")) // not 6 hex octets
+        assertEquals("60:74:f4:ab:cd:ef", DeviceAlerts.usableMac("60:74:F4:AB:CD:EF"))
+        assertEquals("60:74:f4:ab:cd:ef", DeviceAlerts.usableMac("60-74-F4-AB-CD-EF"))
+    }
+
+    @Test fun deviceKeyFallsBackToClientIdWhenMacUnusable() {
+        assertEquals("mac:60:74:f4:ab:cd:ef", DeviceAlerts.deviceKey("60:74:F4:AB:CD:EF", 7))
+        assertEquals("id:7", DeviceAlerts.deviceKey("60:74:f4:XX:XX:XX", 7))
+        assertEquals("id:7", DeviceAlerts.deviceKey("", 7))
+    }
+
+    @Test fun maskedMacsNeverMergeDifferentDevicesInHistory() {
+        // Two same-vendor devices share the masked MAC "60:74:f4:XX:XX:XX":
+        // history must keep two entries (keyed by clientId), never merge them.
+        val now = at(600)
+        val seen = listOf(
+            TrackedDevice(7, "a", "192.168.1.7", "60:74:f4:XX:XX:XX", IpLists.Category.UNKNOWN),
+            TrackedDevice(8, "b", "192.168.1.8", "60:74:f4:XX:XX:XX", IpLists.Category.UNKNOWN),
+        )
+        val merged = DeviceAlerts.mergeSnapshot(now, seen, emptyList())
+        assertEquals(setOf(7L, 8L), merged.map { it.clientId }.toSet())
+    }
+
+    @Test fun historyMergesStampLineageAcrossClientIdChurn() {
+        // The sold device kept its "[2]" stamp in the router name but the router
+        // reassigned its clientId (7 -> 9): one history entry, lineage kept.
+        val now = at(600)
+        val existing = listOf(
+            DeviceAlerts.DayDevice(7, "🌹٠٢:٢٨م [2]🌹 M05", "192.168.1.7", "", IpLists.Category.UNKNOWN, at(500), at(550)))
+        val seen = listOf(
+            TrackedDevice(9, "🌹٠٢:٢٨م [2]🌹 M05", "192.168.1.9", "", IpLists.Category.UNKNOWN))
+        val merged = DeviceAlerts.mergeSnapshot(now, seen, existing)
+        assertEquals(1, merged.size)
+        assertEquals(9L, merged.single().clientId)
+        assertEquals(at(500), merged.single().firstSeen)
+        assertEquals("192.168.1.9", merged.single().ip)
+    }
+
+    @Test fun stampOfExtractsSubscriberNumber() {
+        assertEquals("2", DeviceAlerts.stampOf("🌹٠٢:٢٨م [2]🌹 M05"))
+        assertEquals("12", DeviceAlerts.stampOf("[12] phone"))
+        assertNull(DeviceAlerts.stampOf("plain name"))
+        assertNull(DeviceAlerts.stampOf(""))
     }
 }

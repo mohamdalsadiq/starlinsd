@@ -39,13 +39,17 @@ object IpLists {
     fun watchClientIds(identities: Collection<com.example.db.DeviceIdentity>): Set<Long> =
         identities.filter { it.list == "WATCH" }.map { it.deviceId }.toSet()
 
-    /** MACs bound to HOME identity records (secondary identity). */
+    /**
+     * MACs bound to HOME identity records (secondary identity). Only REAL
+     * (unmasked) MACs are returned — masked values ("60:74:f4:XX:XX:XX") would
+     * match every same-vendor device and must never identify anyone.
+     */
     fun homeMacs(identities: Collection<com.example.db.DeviceIdentity>): Set<String> =
-        identities.filter { it.list == "HOME" && it.mac.isNotBlank() }.map { it.mac }.toSet()
+        identities.filter { it.list == "HOME" }.mapNotNull { DeviceAlerts.usableMac(it.mac) }.toSet()
 
-    /** MACs bound to WATCH identity records (secondary identity). */
+    /** MACs bound to WATCH identity records (secondary identity); usable only. */
     fun watchMacs(identities: Collection<com.example.db.DeviceIdentity>): Set<String> =
-        identities.filter { it.list == "WATCH" && it.mac.isNotBlank() }.map { it.mac }.toSet()
+        identities.filter { it.list == "WATCH" }.mapNotNull { DeviceAlerts.usableMac(it.mac) }.toSet()
 
     /**
      * Identity-based classification: stored clientId record wins, then a stored MAC

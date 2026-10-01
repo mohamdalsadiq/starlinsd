@@ -48,10 +48,15 @@ object DeviceIdentityEngine {
         legacyWatch: Set<String>,
     ): List<Resolved> {
         val byId = identities.associateBy { it.deviceId }
-        val macToId = identities.filter { it.mac.isNotBlank() }.associateBy { it.mac }
+        // MAC fallback uses ONLY real (unmasked) MACs: the firmware masks the
+        // low three octets ("60:74:f4:XX:XX:XX"), so a raw MAC match would
+        // classify every same-vendor device as HOME/WATCH (measured 2026-08-15).
+        val macToId = identities.mapNotNull { identity ->
+            DeviceAlerts.usableMac(identity.mac)?.let { it to identity }
+        }.toMap()
         return snapshot.map { device ->
             val stored = byId[device.clientId]
-                ?: device.mac.takeIf { it.isNotBlank() }?.let { macToId[it] }
+                ?: DeviceAlerts.usableMac(device.mac)?.let { macToId[it] }
             var promoted = false
             val category = when {
                 stored != null && stored.list == "HOME" -> IpLists.Category.HOME

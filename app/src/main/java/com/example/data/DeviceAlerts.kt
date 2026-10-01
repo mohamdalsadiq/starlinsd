@@ -44,7 +44,7 @@ object DeviceAlerts {
     /** Next future occurrence of a daily minute-of-day: today if ahead, else tomorrow. */
     fun nextDaily(now: Long, minute: Int?): Long? = todayAt(now, minute)?.let { if (it > now) it else it + 24 * 60 * Rules.MINUTE }
 
-    /** One device as seen during the day, merged across sightings by clientId. */
+    /** One device as seen during the day, merged across sightings by stable identity. */
     data class DayDevice(
         val clientId: Long,
         val name: String,
@@ -56,6 +56,42 @@ object DeviceAlerts {
     )
 
     /**
+     * A MAC usable as device identity — or null. The Starlink firmware masks the
+     * low three octets of reported MACs (e.g. "60:74:f4:XX:XX:XX"), so masked,
+     * blank, or all-zero values MUST never identify a device: keying on them
+     * would merge every same-vendor device into one (measured 2026-08-15:
+     * a MAC-keyed rename renamed four devices). Only a full 6-octet hex MAC
+     * counts; anything else behaves as "no MAC reported".
+     */
+    fun usableMac(mac: String): String? {
+        val m = mac.trim().lowercase(java.util.Locale.ROOT).replace('-', ':')
+        if (!m.matches(Regex("[0-9a-f]{2}(:[0-9a-f]{2}){5}"))) return null
+        return m.takeIf { it != "00:00:00:00:00:00" }
+    }
+
+    /**
+     * Stable device identity. clientId is the primary key (the router reassigns
+     * it only on reconnect/lease churn — the best available signal per field
+     * research); a REAL (unmasked) MAC, when the firmware reports one, is even
+     * more stable and takes precedence. Masked/blank MACs never participate.
+     */
+    fun deviceKey(mac: String, clientId: Long): String {
+        val m = usableMac(mac)
+        return if (m != null) "mac:$m" else "id:$clientId"
+    }
+
+    private val STAMP_PATTERN = Regex("""\[(\d+)]""")
+
+    /**
+     * The subscriber stamp "[N]" embedded in a router device name by a shortcut
+     * sale (e.g. "🌹٠٢:٢٨م [2]🌹 M05" → "2"), or null. Stamps are unique per
+     * day (references reset daily, one session per reference), so within a
+     * day's history a stamp identifies the sold device even if its clientId
+     * churned between polls.
+     */
+    fun stampOf(name: String): String? = STAMP_PATTERN.find(name)?.groupValues?.get(1)
+
+    /**
      * Merges one successful snapshot into the day's history and returns the full
      * updated list. Callers pass null snapshot results straight through as no call
      * at all: only successful answers touch history (spec 32). HOME exclusion is
@@ -63,26 +99,53 @@ object DeviceAlerts {
      * HOME-classified never enters history, and a HISTORY entry whose device is
      * HOME by identity disappears entirely — the legacy homeIps set is only a
      * pre-promotion fallback keyed to the IP the device held when seen.
+     *
+     * Merge key is [deviceKey]: a real (unmasked) MAC when the firmware reports
+     * one, otherwise the router clientId; plus stamp lineage — a device whose
+     * numeric clientId changed between polls merges into its ONE history entry
+     * (via its "[N]" stamp) instead of appearing twice (which used to
+     * double-count it in the unregistered list and leak subscribed devices
+     * into it). A masked MAC never merges: two same-vendor devices stay two.
      */
     fun mergeSnapshot(now: Long, seen: List<TrackedDevice>, existing: List<DayDevice>,
         homeClientIds: Set<Long> = emptySet(), homeMacs: Set<String> = emptySet(),
         legacyHomeIps: Set<String> = emptySet()): List<DayDevice> {
+        // Only REAL (unmasked) MACs participate in home matching — masked values
+        // would wrongly exclude every same-vendor device.
+        val homeMacsUsable = homeMacs.mapNotNull { usableMac(it) }.toSet()
+        fun isHomeMac(mac: String): Boolean = usableMac(mac)?.let { it in homeMacsUsable } == true
+        val byKey = existing.associateBy { deviceKey(it.mac, it.clientId) }
         val byId = existing.associateBy { it.clientId }
+        // Stamp lineage: a sold device keeps its "[N]" stamp in the router name
+        // even when its clientId churns, so both sightings are one history entry.
+        val byStamp = existing.mapNotNull { entry -> stampOf(entry.name)?.let { it to entry } }.toMap()
+        // Entries already folded into `updated` (by any lookup path) must not
+        // survive as duplicates in the tail below.
+        val consumed = mutableSetOf<DayDevice>()
         val updated = seen.filter { device ->
-            device.clientId !in homeClientIds && (device.mac.isBlank() || device.mac !in homeMacs) &&
+            device.clientId !in homeClientIds && !isHomeMac(device.mac) &&
                 device.ip !in legacyHomeIps
         }.map { device ->
-            val previous = byId[device.clientId]
+            val previous = byKey[deviceKey(device.mac, device.clientId)]
+                ?: byId[device.clientId]
+                ?: stampOf(device.name)?.let { byStamp[it] }
             if (previous == null) DayDevice(device.clientId, device.name, device.ip, device.mac, device.category, now, now)
-            else previous.copy(name = device.name.ifBlank { previous.name }, ip = device.ip, mac = device.mac,
-                category = device.category, lastSeen = now)
+            else {
+                consumed.add(previous)
+                previous.copy(clientId = device.clientId,
+                    name = device.name.ifBlank { previous.name }, ip = device.ip,
+                    mac = device.mac.ifBlank { previous.mac },
+                    category = device.category, lastSeen = now)
+            }
         }
+        val liveKeys = updated.map { deviceKey(it.mac, it.clientId) }.toSet()
         val liveIds = updated.map { it.clientId }.toSet()
         // Devices sighted earlier today but absent now stay in history (their alert
         // window dies instead); a device whose identity became HOME disappears entirely.
         return updated + existing.filter { entry ->
-            entry.clientId !in liveIds && entry.clientId !in homeClientIds &&
-                (entry.mac.isBlank() || entry.mac !in homeMacs) && entry.ip !in legacyHomeIps
+            entry !in consumed &&
+                deviceKey(entry.mac, entry.clientId) !in liveKeys && entry.clientId !in liveIds &&
+                entry.clientId !in homeClientIds && !isHomeMac(entry.mac) && entry.ip !in legacyHomeIps
         }
     }
 

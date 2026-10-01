@@ -6,6 +6,7 @@ import com.example.db.DeviceIdentity
 import com.example.db.HomeIp
 import com.example.db.WatchIp
 import kotlinx.coroutines.flow.Flow
+import androidx.room.withTransaction
 
 /**
  * Storage for the home and watch lists AND the schema-v8 identity records.
@@ -45,6 +46,17 @@ class IpListStore(context: Context, private val db: AppDatabase = AppDatabase.ge
 
     /** Removes an identity record (owner un-listing a device); legacy IP rows untouched. */
     suspend fun removeIdentity(deviceId: Long) = dao.deleteIdentity(deviceId)
+
+    /**
+     * Atomically re-links a HOME identity to a new clientId (id churn after a
+     * Wi-Fi password change): delete + insert in one transaction, so a failure
+     * can never lose the HOME record.
+     */
+    suspend fun relinkHomeIdentity(oldDeviceId: Long, newDeviceId: Long, name: String, mac: String, ip: String) =
+        db.withTransaction {
+            dao.deleteIdentity(oldDeviceId)
+            dao.identity(DeviceIdentity(newDeviceId, "HOME", mac, name, ip, System.currentTimeMillis(), System.currentTimeMillis()))
+        }
 
     /**
      * The classification inputs at one instant: identity records plus the legacy

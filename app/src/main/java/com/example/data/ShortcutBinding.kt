@@ -68,7 +68,9 @@ object ShortcutBinding {
             device.clientId in 1..4294967295L &&
                 device.clientId !in boundClientIds &&
                 device.clientId !in homeClientIds &&
-                (device.mac.isBlank() || device.mac !in homeMacs) &&
+                // homeMacs holds usable (unmasked) MACs only; a masked/blank MAC
+                // can never prove "home" and must not exclude the device.
+                DeviceAlerts.usableMac(device.mac)?.let { it !in homeMacs } ?: true &&
                 device.ip !in legacyHomeIps &&
                 stamp in device.name
         }
@@ -80,9 +82,11 @@ object ShortcutBinding {
         // predates our observation — also stale, never a match. There is no
         // fallback: an unobserved stamp is not a fresh stamp.
         val fresh = candidates.filter { device ->
+            // Keyed by the stamp number (unique per day): the clientId may have
+            // churned between the sighting pass and this pass.
             val keys = listOf(
-                "${DeviceAlerts.dayKey(sessionStartedAt)}:${device.clientId}:$reference",
-                "${DeviceAlerts.dayKey(now)}:${device.clientId}:$reference",
+                "${DeviceAlerts.dayKey(sessionStartedAt)}:$reference",
+                "${DeviceAlerts.dayKey(now)}:$reference",
             )
             val firstSeen = keys.firstNotNullOfOrNull { stampFirstSeen[it] } ?: return@filter false
             firstSeen >= sessionStartedAt - STAMP_TOLERANCE_MS

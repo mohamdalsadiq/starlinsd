@@ -35,8 +35,16 @@ object DeviceRecovery {
     /** One live device available for re-linking. */
     data class Option(val clientId: Long, val name: String, val ip: String, val mac: String)
 
+    /** One home identity whose device is absent from the last successful snapshot. */
+    data class HomeCandidate(val deviceId: Long, val name: String, val ip: String)
+
     /** One recovery pass: everything the screen renders in a single read. */
-    data class Board(val snapshotOk: Boolean, val candidates: List<Candidate>, val options: List<Option>)
+    data class Board(
+        val snapshotOk: Boolean,
+        val candidates: List<Candidate>,
+        val options: List<Option>,
+        val homeCandidates: List<HomeCandidate> = emptyList(),
+    )
 
     /** Last octets of an IP for the visual "…145" match (display only). */
     fun ipTail(ip: String): String = ip.substringAfterLast('.', ip)
@@ -77,10 +85,28 @@ object DeviceRecovery {
         if (snapshot == null) return emptyList()
         return snapshot.filter { device ->
             device.clientId !in homeClientIds &&
-                (device.mac.isBlank() || device.mac !in homeMacs) &&
+                // homeMacs holds usable (unmasked) MACs only; a masked/blank
+                // MAC can never prove "home" and must not exclude the device.
+                DeviceAlerts.usableMac(device.mac)?.let { it !in homeMacs } ?: true &&
                 device.ip !in legacyHomeIps &&
                 device.clientId !in boundClientIds
         }.map { Option(it.clientId, it.name, it.ip, it.mac) }
+    }
+
+    /**
+     * Home identities needing re-link: marked HOME by the owner but their
+     * clientId is absent from the last successful snapshot (e.g. the router
+     * reassigned ids after a password change). Re-linking moves the HOME
+     * record to the live device's new id so the app keeps ignoring it fully.
+     */
+    fun homeCandidates(
+        identities: List<com.example.db.DeviceIdentity>,
+        liveClientIds: Set<Long>,
+        snapshotOk: Boolean,
+    ): List<HomeCandidate> {
+        if (!snapshotOk) return emptyList()
+        return identities.filter { it.list == "HOME" && it.deviceId !in liveClientIds }
+            .map { HomeCandidate(it.deviceId, it.name, it.ip) }
     }
 
     /**

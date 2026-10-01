@@ -144,4 +144,15 @@ class DeviceAlertsCoordinatorTest {
         // Exactly the window survivors remain: the kept past day and today.
         assertEquals(2, prefs.all.keys.count { it.startsWith("history_") })
     }
+
+    /** The unregistered-tracking window: before 18:00 no bookkeeping, after it dwell accrues. */
+    @Test fun insideUnregisteredWindowBoundsTheTrackingDay() {
+        val dayStart = DeviceAlerts.dayStart(now)
+        val at = { h: Int, m: Int -> dayStart + (h * 60 + m) * 60_000L }
+        assertFalse(DeviceAlertsCoordinator.insideUnregisteredWindow(at(17, 59), 18 * 60))
+        assertTrue(DeviceAlertsCoordinator.insideUnregisteredWindow(at(18, 0), 18 * 60))
+        assertTrue(DeviceAlertsCoordinator.insideUnregisteredWindow(at(23, 30), 18 * 60))
+        // 0 = the whole day is inside the window.
+        assertTrue(DeviceAlertsCoordinator.insideUnregisteredWindow(at(9, 0), 0))
+    }
 }
