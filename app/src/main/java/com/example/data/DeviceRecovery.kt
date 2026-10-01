@@ -106,7 +106,7 @@ object DeviceRecovery {
     ): List<HomeCandidate> {
         if (!snapshotOk) return emptyList()
         return identities.filter { it.list == "HOME" && it.deviceId !in liveClientIds }
-            .map { HomeCandidate(it.deviceId, it.name, it.ip) }
+            .map { HomeCandidate(it.deviceId, it.name, it.lastIp) }
     }
 
     /**
