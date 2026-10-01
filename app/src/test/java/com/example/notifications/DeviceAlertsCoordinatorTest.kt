@@ -38,12 +38,38 @@ class DeviceAlertsCoordinatorTest {
     }
 
     @Test fun seedingIsIdempotentAndStopsWhenUserChangesAValue() {
+        DeviceAlertsCoordinator.resetForTest(context)
         DeviceAlertsCoordinator.seedDefaults(context)
-        assertEquals(3, DeviceAlertsCoordinator.knownDelayMinutes(context))
+        assertEquals(5, DeviceAlertsCoordinator.knownDelayMinutes(context))
         assertEquals(DeviceAlertsCoordinator.DEFAULT_SUMMARY_MINUTE, DeviceAlertsCoordinator.knownSummaryMinute(context))
         DeviceAlertsCoordinator.setDelayMinutes(context, 1)
         DeviceAlertsCoordinator.seedDefaults(context) // must not overwrite the user choice
         assertEquals(1, DeviceAlertsCoordinator.knownDelayMinutes(context))
+    }
+
+    @Test fun v2SeedUpgradesTheOldDefaultUnlessTheUserChoseExplicitly() {
+        DeviceAlertsCoordinator.resetForTest(context)
+        // Simulate the old seed (3-minute notification delay, no explicit choice).
+        val prefs = context.getSharedPreferences("device_alerts", 0)
+        prefs.edit().putInt("delay_minutes", 3).putBoolean("seeded", true).apply()
+        DeviceAlertsCoordinator.seedDefaults(context)
+        assertEquals(5, DeviceAlertsCoordinator.knownDelayMinutes(context))
+        // An explicit user choice survives the upgrade.
+        DeviceAlertsCoordinator.resetForTest(context)
+        prefs.edit().putInt("delay_minutes", 3).putBoolean("seeded", true)
+            .putBoolean("delay_minutes_custom", true).apply()
+        DeviceAlertsCoordinator.seedDefaults(context)
+        assertEquals(3, DeviceAlertsCoordinator.knownDelayMinutes(context))
+    }
+
+    @Test fun unregisteredTariffRoundTripAndValidation() {
+        DeviceAlertsCoordinator.resetForTest(context)
+        assertEquals(50000L, DeviceAlertsCoordinator.unregisteredTariff(context))
+        DeviceAlertsCoordinator.setUnregisteredTariff(context, 100000L)
+        assertEquals(100000L, DeviceAlertsCoordinator.unregisteredTariff(context))
+        try {
+            DeviceAlertsCoordinator.setUnregisteredTariff(context, 0); fail("tariff 0 must be rejected")
+        } catch (expected: IllegalArgumentException) { }
     }
 
     @Test fun notifiedTodayPersistsPerClientPerDayAndCleansOldDays() {

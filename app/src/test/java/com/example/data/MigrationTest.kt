@@ -165,4 +165,31 @@ class MigrationTest {
         } finally { db.close(); context.deleteDatabase(name) }
     }
 
+    @Test fun versionEightUpgradeAddsUnregisteredSummaryTableWithoutLosingData() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val name = "migration-v8-${System.nanoTime()}"
+        val path = context.getDatabasePath(name); path.parentFile!!.mkdirs()
+        val schema = org.json.JSONObject(java.io.File("schemas/com.example.db.AppDatabase/8.json").readText()).getJSONObject("database").getJSONArray("entities")
+        SQLiteDatabase.openOrCreateDatabase(path, null).use { old ->
+            for (index in 0 until schema.length()) {
+                val entity = schema.getJSONObject(index)
+                old.execSQL(entity.getString("createSql").replace("\${TABLE_NAME}", entity.getString("tableName")))
+            }
+            old.execSQL("INSERT INTO sessions VALUES ('original', 'محمد', '3 ساعات', 1700000000000, 1700000000000, 10800000, 120000, 'PAUSED', 125000, 100000, 'BANK', 2500, 0, 1800000, 0, 0, 0, 'mm', '7', NULL, '', '', '')")
+            old.execSQL("INSERT INTO manual_sales VALUES ('rev-2026-09-28:devices', 1700000000000, 2, 50000, 100000, 100000, 'CASH', 2500)")
+            old.version = 8
+        }
+        val db = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_8_9).build()
+        try {
+            // Existing rows survive; the new summary table exists empty and is usable.
+            val row = db.businessDao().session("original")!!
+            assertEquals("PAUSED", row.state); assertEquals(125000L, row.amount)
+            assertEquals(1, db.businessDao().manualSales().size)
+            assertNull(db.businessDao().unregisteredSummary("2026-09-28"))
+            db.businessDao().upsertUnregisteredSummary(
+                com.example.db.UnregisteredDaySummary("2026-09-28", 50000L, 2, 0, 100000L, "CASH", 1))
+            assertEquals(100000L, db.businessDao().unregisteredSummary("2026-09-28")!!.netTotal)
+        } finally { db.close(); context.deleteDatabase(name) }
+    }
+
 }

@@ -13,11 +13,14 @@ class DeviceAlertsTest {
     private val dayStart = DeviceAlerts.dayStart(1_800_000_000_000L)
     private fun at(minute: Long) = dayStart + minute * 60_000L
 
-    private fun device(id: Long, ip: String = "192.168.1.5", category: IpLists.Category = IpLists.Category.UNKNOWN, mac: String = "aa:bb:cc:00:00:0$id") =
+    private fun device(id: Long, ip: String = "192.168.1.5", category: IpLists.Category = IpLists.Category.WATCH, mac: String = "aa:bb:cc:00:00:0$id") =
         TrackedDevice(id, "d$id", ip, mac, category)
 
-    private fun pending(id: Long, firstSeen: Long, deadline: Long, category: IpLists.Category = IpLists.Category.UNKNOWN) =
+    private fun pending(id: Long, firstSeen: Long, deadline: Long, category: IpLists.Category = IpLists.Category.WATCH) =
         DeviceAlerts.PendingAlert(id, firstSeen, deadline, category)
+
+    private fun unknownDevice(id: Long, ip: String = "192.168.1.5") =
+        TrackedDevice(id, "d$id", ip, "aa:bb:cc:00:00:0$id", IpLists.Category.UNKNOWN)
 
     private fun input(
         now: Long,
@@ -28,7 +31,7 @@ class DeviceAlertsTest {
         delay: Int = 3,
     ) = DeviceAlerts.EvalInput(now, delay, pending, live, bindings, notified)
 
-    // ---- Test 1: no alert before the delay, alert at/after it (spec 8) ----
+    // ---- Test 1: no alert before the delay, alert at/after it (WATCH only) ----
     @Test fun alertFiresOnlyAfterTheDelayElapses() {
         val firstSeen = at(600) // 10:00
         val p = listOf(pending(123, firstSeen, firstSeen + 3 * Rules.MINUTE))
@@ -76,15 +79,24 @@ class DeviceAlertsTest {
         assertTrue(result.due.isEmpty()); assertTrue(result.pending.isEmpty())
     }
 
-    // ---- Test 6/7: category carries through to the alert (WATCH vs UNKNOWN) ----
-    @Test fun watchAndUnknownCategoriesCarryToTheAlert() {
+    // ---- Only WATCH devices ever notify; UNKNOWN stays silent (it qualifies for
+    // the unregistered list after the dwell delay instead) ----
+    @Test fun onlyWatchDevicesNotifyUnknownStaysSilent() {
         val firstSeen = at(600)
-        val watch = listOf(pending(1, firstSeen, firstSeen + 3 * Rules.MINUTE, IpLists.Category.WATCH))
-        val unknown = listOf(pending(2, firstSeen, firstSeen + 3 * Rules.MINUTE, IpLists.Category.UNKNOWN))
-        val live = listOf(device(1, category = IpLists.Category.WATCH), device(2))
-        val result = DeviceAlerts.evaluate(input(firstSeen + 3 * Rules.MINUTE, pending = watch + unknown, live = live))
-        assertEquals(IpLists.Category.WATCH, result.due.first { it.clientId == 1L }.category)
-        assertEquals(IpLists.Category.UNKNOWN, result.due.first { it.clientId == 2L }.category)
+        val p = listOf(
+            pending(1, firstSeen, firstSeen + 3 * Rules.MINUTE, IpLists.Category.WATCH),
+            pending(2, firstSeen, firstSeen + 3 * Rules.MINUTE, IpLists.Category.UNKNOWN),
+        )
+        val live = listOf(device(1, category = IpLists.Category.WATCH), unknownDevice(2))
+        val result = DeviceAlerts.evaluate(input(firstSeen + 3 * Rules.MINUTE, pending = p, live = live))
+        assertEquals(listOf(1L), result.due.map { it.clientId })
+        assertEquals(IpLists.Category.WATCH, result.due.single().category)
+        assertTrue(result.pending.isEmpty()) // the UNKNOWN pending is dropped, never re-armed as an alert
+    }
+
+    @Test fun unknownDeviceNeverOpensAnAlertCycle() {
+        val result = DeviceAlerts.evaluate(input(at(600), live = listOf(unknownDevice(123))))
+        assertTrue(result.due.isEmpty()); assertTrue(result.pending.isEmpty())
     }
 
     // ---- Spec 32: failed discovery freezes pending and opens nothing ----
@@ -106,8 +118,8 @@ class DeviceAlertsTest {
         assertEquals(firstSeen + Rules.MINUTE, result.pending.single().deadline)
     }
 
-    // ---- Spec 8: a vanished device loses its window; it re-arms on return ----
-    @Test fun vanishedDeviceLosesItsWindowThenReArmsOnReturn() {
+    // ---- A vanished WATCH device loses its window; it re-arms on return ----
+    @Test fun vanishedWatchDeviceLosesItsWindowThenReArmsOnReturn() {
         val firstSeen = at(600)
         val p = listOf(pending(123, firstSeen, firstSeen + 3 * Rules.MINUTE))
         val gone = DeviceAlerts.evaluate(input(firstSeen + 4 * Rules.MINUTE, pending = p, live = emptyList()))

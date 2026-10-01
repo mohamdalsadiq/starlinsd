@@ -184,4 +184,75 @@ class DailyReconciliationTest {
         assertEquals(listOf(101L), groups.subscribed.map { it.first.clientId })
         assertTrue(groups.unregistered.isEmpty())
     }
+
+    // ---- Aggregate unregistered confirmation: dwell gate + tariff math ----
+
+    private fun dwellDevice(id: Long, firstSeen: Long, lastSeen: Long) =
+        DeviceAlerts.DayDevice(id, "d$id", "192.168.1.$id", "aa:bb:cc:dd:ee:$id",
+            IpLists.Category.UNKNOWN, firstSeen, lastSeen)
+
+    @Test
+    fun qualifiedUnregisteredRequiresDwell() {
+        val now = 10_000_000L
+        val devices = listOf(
+            dwellDevice(1, now - 6 * 60_000L, now), // 6 min: qualifies
+            dwellDevice(2, now - 5 * 60_000L, now), // exactly 5 min: qualifies
+            dwellDevice(3, now - 4 * 60_000L, now), // 4 min: passing phone, excluded
+            dwellDevice(4, now - 30 * 60_000L, now), // bound below: subscribed, never unregistered
+        )
+        val sessions = listOf(session("s4", 4L))
+        val qualified = DailyReconciliation.qualifiedUnregistered(devices, sessions, 5, now)
+        assertEquals(listOf(1L, 2L), qualified.map { it.clientId })
+    }
+
+    @Test
+    fun qualifiedUnregisteredFollowsTheConfiguredDelay() {
+        val now = 10_000_000L
+        val devices = listOf(dwellDevice(1, now - 4 * 60_000L, now))
+        assertEquals(listOf(1L), DailyReconciliation.qualifiedUnregistered(devices, emptyList(), 3, now).map { it.clientId })
+        assertTrue(DailyReconciliation.qualifiedUnregistered(devices, emptyList(), 5, now).isEmpty())
+    }
+
+    @Test
+    fun unregisteredNetMath() {
+        // 3 devices × 500 − 1 unpaid = 1000 (minor units ×100)
+        assertEquals(100000L, DailyReconciliation.unregisteredNet(3, 50000L, 1))
+        assertEquals(0L, DailyReconciliation.unregisteredNet(0, 50000L, 0))
+        assertEquals(0L, DailyReconciliation.unregisteredNet(3, 50000L, 3))
+        assertEquals(0L, DailyReconciliation.unregisteredNet(2, 50000L, 9)) // unpaid clamped
+    }
+
+    @Test
+    fun validateUnregisteredSummaryRejectsBadInputs() {
+        DailyReconciliation.validateUnregisteredSummary(3, 50000L, 1, "CASH") // ok
+        DailyReconciliation.validateUnregisteredSummary(0, 50000L, 0, "BANK") // empty day ok
+        try { DailyReconciliation.validateUnregisteredSummary(3, 50000L, 4, "CASH"); fail("unpaid > count") }
+        catch (expected: IllegalArgumentException) { }
+        try { DailyReconciliation.validateUnregisteredSummary(3, 0, 0, "CASH"); fail("zero tariff") }
+        catch (expected: IllegalArgumentException) { }
+        try { DailyReconciliation.validateUnregisteredSummary(3, 50000L, 0, "NOPE"); fail("bad payment") }
+        catch (expected: IllegalArgumentException) { }
+    }
+
+    @Test
+    fun summaryLedgerRowUsesDeterministicIdAndNetTotal() {
+        val summary = com.example.db.UnregisteredDaySummary("2026-09-28", 50000L, 3, 1, 100000L, "CASH", 999L)
+        val row = DailyReconciliation.summaryLedgerRow("2026-09-28", summary, 1_800_000_000_000L, 2500)!!
+        assertEquals(DailyReconciliation.dailyRowId("2026-09-28"), row.id)
+        assertEquals(100000L, row.amount)
+        assertEquals(2, row.count)
+        assertEquals(50000L, row.unitPrice)
+        assertEquals("CASH", row.payment)
+        // Zero net → no ledger row at all.
+        val zero = summary.copy(netTotal = 0L)
+        assertNull(DailyReconciliation.summaryLedgerRow("2026-09-28", zero, 1_800_000_000_000L, 2500))
+    }
+
+    @Test
+    fun summaryLedgerRowConvertsBankThroughPremium() {
+        val summary = com.example.db.UnregisteredDaySummary("2026-09-28", 50000L, 2, 0, 100000L, "BANK", 999L)
+        val row = DailyReconciliation.summaryLedgerRow("2026-09-28", summary, 1_800_000_000_000L, 2500)!!
+        assertEquals("BANK", row.payment)
+        assertEquals(80000L, row.cashEquivalent) // 1000 / 1.25
+    }
 }

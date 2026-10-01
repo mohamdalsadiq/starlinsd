@@ -4,86 +4,106 @@ import org.junit.Assert.*
 import org.junit.Test
 
 /**
- * Pure rules for shortcut auto-binding (spec 1/15/22): which live device a
- * just-fired subscription shortcut belongs to. No network, no database.
+ * Deterministic stamp binding: a shortcut session binds to the ONE live device
+ * whose router name carries its subscriber stamp "[N]" — never guessed.
+ * No network, no database.
  */
 class ShortcutBindingTest {
-    private fun device(id: Long, ip: String = "192.168.1.10", mac: String = "aa:bb:cc:dd:ee:ff") =
-        TrackedDevice(id, "d$id", ip, mac, IpLists.Category.UNKNOWN)
+    private val now = 1_700_000_000_000L
+    private val sessionStart = now - 60_000L
 
-    private fun choose(
+    private fun device(id: Long, name: String, ip: String = "192.168.1.10", mac: String = "aa:bb:cc:dd:ee:ff") =
+        TrackedDevice(id, name, ip, mac, IpLists.Category.UNKNOWN)
+
+    private fun key(at: Long, id: Long, ref: String) = "${DeviceAlerts.dayKey(at)}:$id:$ref"
+
+    private fun match(
         snapshot: List<TrackedDevice>? = emptyList(),
+        reference: String = "2",
+        sessionStartedAt: Long = sessionStart,
+        stampFirstSeen: Map<String, Long> = emptyMap(),
+        now: Long = this.now,
         bound: Set<Long> = emptySet(),
-        pending: List<ShortcutBinding.PendingCandidate> = emptyList(),
         homeIds: Set<Long> = emptySet(),
         homeMacs: Set<String> = emptySet(),
         legacyHome: Set<String> = emptySet(),
-    ) = ShortcutBinding.choose(snapshot, bound, pending, homeIds, homeMacs, legacyHome)
+    ) = ShortcutBinding.matchStamp(snapshot, reference, sessionStartedAt, stampFirstSeen, now,
+        bound, homeIds, homeMacs, legacyHome)
 
     // Discovery failure → never bind. No guessing on missing data.
     @Test fun failedDiscoveryNeverBinds() {
-        assertNull(choose(snapshot = null))
+        assertNull(match(snapshot = null))
     }
 
-    // Exactly one free candidate is unambiguous and binds.
-    @Test fun singleFreeCandidateBinds() {
-        val d = device(101)
-        assertEquals(d, choose(snapshot = listOf(d)))
+    // A blank reference can never match a stamp.
+    @Test fun blankReferenceNeverBinds() {
+        assertNull(match(snapshot = listOf(device(101, "🌹 [2]🌹 M05")), reference = ""))
     }
 
-    // Several free candidates with no monitoring signal is ambiguous: no bind.
-    @Test fun multipleFreeCandidatesWithoutSignalDoNotBind() {
-        assertNull(choose(snapshot = listOf(device(101), device(102))))
+    // The happy path: the sold device carries today's "[2]" stamp, freshly seen.
+    @Test fun freshStampMatchBinds() {
+        val d = device(101, "🌹٠٢:٢٨م [2]🌹 M05")
+        val sighted = mapOf(key(now, 101, "2") to now - 30_000L)
+        assertEquals(d, match(snapshot = listOf(d), stampFirstSeen = sighted))
     }
 
-    // A device under unregistered-delay monitoring is the customer who just
-    // arrived: binding it cancels its pending alert (evaluate drops bound ids).
-    @Test fun monitoredCandidateWinsOverUnmonitored() {
-        val monitored = device(101)
-        val other = device(102)
-        val picked = choose(
-            snapshot = listOf(monitored, other),
-            pending = listOf(ShortcutBinding.PendingCandidate(102, firstSeen = 1000L),
-                ShortcutBinding.PendingCandidate(101, firstSeen = 2000L)),
+    // No stamp anywhere → no bind, even with a single free device. No guessing.
+    @Test fun noStampNoBind() {
+        val devices = listOf(
+            device(101, "🌹 [3]🌹 A"),
+            device(102, "plain phone"),
         )
-        assertEquals(monitored, picked)
+        assertNull(match(snapshot = devices))
     }
 
-    // Among monitored candidates the most recent arrival wins.
-    @Test fun mostRecentMonitoredCandidateWins() {
-        val picked = choose(
-            snapshot = listOf(device(101), device(102)),
-            pending = listOf(ShortcutBinding.PendingCandidate(101, firstSeen = 1000L),
-                ShortcutBinding.PendingCandidate(102, firstSeen = 9000L)),
-        )
-        assertEquals(102L, picked?.clientId)
+    // Yesterday's "[2]" must never match today's subscriber 2 (numbers reset daily).
+    @Test fun staleStampFromYesterdayNeverMatches() {
+        val d = device(101, "🌹 [2]🌹 M05")
+        val yesterday = now - 25 * 60 * 60_000L
+        val sighted = mapOf(key(yesterday, 101, "2") to yesterday)
+        assertNull(match(snapshot = listOf(d), stampFirstSeen = sighted))
+    }
+
+    // Two devices carrying the same stamp is ambiguous: manual binding instead.
+    @Test fun multipleStampedDevicesDoNotBind() {
+        val devices = listOf(device(101, "[2] A"), device(102, "[2] B"))
+        val sighted = mapOf(key(now, 101, "2") to now - 10_000L, key(now, 102, "2") to now - 10_000L)
+        assertNull(match(snapshot = devices, stampFirstSeen = sighted))
     }
 
     // Already-bound devices are never re-bound to a new session.
     @Test fun boundDeviceIsExcluded() {
-        assertNull(choose(snapshot = listOf(device(101)), bound = setOf(101L)))
-        val free = device(102)
-        assertEquals(free, choose(snapshot = listOf(device(101), free), bound = setOf(101L)))
+        val d = device(101, "[2] A")
+        val sighted = mapOf(key(now, 101, "2") to now - 10_000L)
+        assertNull(match(snapshot = listOf(d), stampFirstSeen = sighted, bound = setOf(101L)))
     }
 
-    // HOME by identity (clientId, MAC, or legacy IP) is never a subscription target.
+    // HOME by identity (clientId, MAC, or legacy IP) is never a binding target.
     @Test fun homeDevicesAreExcludedByIdentity() {
-        assertNull(choose(snapshot = listOf(device(101)), homeIds = setOf(101L)))
-        assertNull(choose(snapshot = listOf(device(101)), homeMacs = setOf("aa:bb:cc:dd:ee:ff")))
-        assertNull(choose(snapshot = listOf(device(101)), legacyHome = setOf("192.168.1.10")))
+        val sighted = mapOf(key(now, 101, "2") to now - 10_000L)
+        assertNull(match(snapshot = listOf(device(101, "[2] A")), stampFirstSeen = sighted, homeIds = setOf(101L)))
+        assertNull(match(snapshot = listOf(device(101, "[2] A")), stampFirstSeen = sighted, homeMacs = setOf("aa:bb:cc:dd:ee:ff")))
+        assertNull(match(snapshot = listOf(device(101, "[2] A")), stampFirstSeen = sighted, legacyHome = setOf("192.168.1.10")))
+    }
+
+    // Brackets delimit the reference exactly: "[12]" is not "[2]".
+    @Test fun bracketDelimitedReferenceIsExact() {
+        val d = device(101, "[12] A")
+        val sighted = mapOf(key(now, 101, "12") to now - 10_000L)
+        assertNull(match(snapshot = listOf(d), reference = "2", stampFirstSeen = sighted))
+        assertEquals(d, match(snapshot = listOf(d), reference = "12", stampFirstSeen = sighted))
     }
 
     // Out-of-range clientIds are not valid identities.
     @Test fun invalidClientIdsAreExcluded() {
-        assertNull(choose(snapshot = listOf(device(0), device(-5))))
+        val sighted = mapOf(key(now, 0, "2") to now - 10_000L)
+        assertNull(match(snapshot = listOf(device(0, "[2] A")), stampFirstSeen = sighted))
     }
 
-    // A monitored HOME device stays excluded even when it is the only candidate.
-    @Test fun monitoredHomeDeviceIsStillExcluded() {
-        assertNull(choose(
-            snapshot = listOf(device(101)),
-            pending = listOf(ShortcutBinding.PendingCandidate(101, firstSeen = 5000L)),
-            homeIds = setOf(101L),
-        ))
+    // A stamp sighted before the session started (minus tolerance) is stale.
+    @Test fun stampSightedBeforeSessionIsStale() {
+        val d = device(101, "[2] A")
+        val sighted = mapOf(key(now, 101, "2") to sessionStart - ShortcutBinding.STAMP_TOLERANCE_MS - 1)
+        assertNull(match(snapshot = listOf(d), stampFirstSeen = sighted))
     }
 }
