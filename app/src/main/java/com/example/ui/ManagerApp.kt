@@ -277,7 +277,7 @@ internal fun amount(minor: Long): String {
     }
     // Subscription chain + financial split (pure, unit-tested): HOME/WATCH never
     // enter the financial totals.
-    val groups = remember(devices, sessions) { DailyReconciliation.confirmationGroups(devices, sessions) }
+    val groups = remember(devices, sessions, dayKey) { DailyReconciliation.confirmationGroups(devices, sessions, dayKey) }
     val subscribed = groups.subscribed
     val unregistered = groups.unregistered
     val registeredTotal = remember(subscribed) { subscribed.sumOf { it.second.amount } }
@@ -570,18 +570,31 @@ private fun DeviceConfirmationScreen(vm: MainViewModel) {
     }
 
     // Financial split (pure, unit-tested): HOME/WATCH never enter the groups.
-    val groups = remember(devices, sessions) { DailyReconciliation.confirmationGroups(devices, sessions) }
+    val groups = remember(devices, sessions, dayKey) { DailyReconciliation.confirmationGroups(devices, sessions, dayKey) }
     val subscribed = groups.subscribed
     val watch = groups.watch
-    // Unregistered = binding-excluded devices that DWELLED past the delay.
-    // Passing phones never qualify; a later subscription moves the device out.
+    // Unregistered = binding-excluded devices that DWELLED past the delay,
+    // counted only inside the operator's tracking window and minus the devices
+    // he removed by hand today. Passing phones never qualify; a later
+    // subscription moves the device out.
     val delay = remember(now) { DeviceAlertsCoordinator.knownDelayMinutes(context) }
-    val qualifiedUnregistered = remember(devices, sessions, delay, now) {
-        DailyReconciliation.qualifiedUnregistered(devices, sessions, delay, now)
+    val windowStart = remember(now) { DeviceAlertsCoordinator.knownUnregisteredStartMinute(context) }
+    var dismissTick by remember { mutableStateOf(0) }
+    val dismissed = remember(context, dayKey, dismissTick) { DeviceAlertsCoordinator.dismissedUnregistered(context, dayKey) }
+    val qualifiedUnregistered = remember(devices, sessions, dayKey, delay, now, windowStart, dismissed) {
+        DailyReconciliation.qualifiedUnregistered(devices, sessions, dayKey, delay, now, windowStart, dismissed)
     }
 
     // Subscribed amounts are LOCKED to the shortcut plan prices — no per-device edits.
-    val subscribedTotal = remember(subscribed) { subscribed.sumOf { it.second.amount } }
+    // One sale = one amount: a session matched by two device records (misbinding
+    // aftermath — e.g. the stamped device AND the wrongly-bound one) must not
+    // double-count its amount. The session is the money identity.
+    val subscribedTotal = remember(subscribed) { subscribed.distinctBy { it.second.id }.sumOf { it.second.amount } }
+    // Sessions claimed by more than one device need the user's eye: re-link the
+    // right device from the recovery screen.
+    val duplicateSessionIds = remember(subscribed) {
+        subscribed.groupingBy { it.second.id }.eachCount().filter { it.value > 1 }.keys
+    }
     val tariff = remember(tariffText) { Money.parse(tariffText) ?: 0L }
     val unpaidCount = remember(unpaidText) { unpaidText.toIntOrNull()?.coerceAtLeast(0) ?: 0 }
     val paidCount = (qualifiedUnregistered.size - unpaidCount).coerceAtLeast(0)
@@ -613,14 +626,15 @@ private fun DeviceConfirmationScreen(vm: MainViewModel) {
                     Text(if (showSubscribedDetails) "إخفاء التفاصيل" else "عرض التفاصيل")
                 }
                 if (showSubscribedDetails) subscribed.forEach { (device, session) ->
-                    Text("· ${device.name.ifBlank { "جهاز ${device.clientId}" }} · ${session.client} #${session.reference.ifBlank { "?" }} · ${amount(session.amount)} (مقفول)",
+                    val dupMark = if (session.id in duplicateSessionIds) "⚠️ " else ""
+                    Text("· $dupMark${device.name.ifBlank { "جهاز ${device.clientId}" }} · ${session.client} #${session.reference.ifBlank { "?" }} · ${amount(session.amount)} (مقفول)",
                         style = MaterialTheme.typography.bodySmall)
                 }
             }
         } }
         item { Panel {
             SectionHeading(Icons.Default.HelpOutline, "غير المسجل", "${qualifiedUnregistered.size} أجهزة × ${amount(tariff)}")
-            Text("يدخل القائمة الجهاز الذي بقي بدون اشتراك $delay دقائق. من سُجّل لاحقًا باشتراك يُنقل تلقائيًا إلى المشترك.",
+            Text("يدخل القائمة الجهاز الذي بقي بدون اشتراك $delay دقائق بعد الساعة ${String.format(Locale.ROOT, "%02d:%02d", windowStart / 60, windowStart % 60)}. من سُجّل لاحقًا باشتراك يُنقل تلقائيًا إلى المشترك. زر «إزالة» يسقط الجهاز من حساب اليوم فقط.",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Field("التعرفة للجهاز (ج.س)", tariffText, { tariffText = it }, numeric = true)
             Field("عدد الأجهزة التي لم تدفع", unpaidText, { unpaidText = it }, numeric = true)
@@ -632,7 +646,14 @@ private fun DeviceConfirmationScreen(vm: MainViewModel) {
                     Text(if (showUnregisteredDetails) "إخفاء الأجهزة" else "عرض الأجهزة (${qualifiedUnregistered.size})")
                 }
                 if (showUnregisteredDetails) qualifiedUnregistered.forEach { device ->
-                    Text("· ${device.name.ifBlank { "جهاز ${device.clientId}" }}", style = MaterialTheme.typography.bodySmall)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("· ${device.name.ifBlank { "جهاز ${device.clientId}" }}",
+                            style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                        TextButton(enabled = !busy, onClick = {
+                            vm.dismissUnregistered(device, dayKey)
+                            dismissTick++
+                        }) { Text("إزالة") }
+                    }
                 }
             }
         } }
@@ -681,6 +702,7 @@ private fun RecoveryScreen(vm: MainViewModel) {
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     var pairing by remember { mutableStateOf<DeviceRecovery.Candidate?>(null) }
+    var homePairing by remember { mutableStateOf<DeviceRecovery.HomeCandidate?>(null) }
     var options by remember { mutableStateOf<List<DeviceRecovery.Option>>(emptyList()) }
     var selectedOption by remember { mutableStateOf<DeviceRecovery.Option?>(null) }
 
@@ -717,6 +739,24 @@ private fun RecoveryScreen(vm: MainViewModel) {
         }
         if (current != null && current.candidates.isNotEmpty() && current.options.isEmpty() && !loading) {
             item { Panel { Text("لا توجد أجهزة حية مرشحة الآن. تأكد أن الأجهزة أعادت الاتصال بالشبكة ثم اضغط تحديث.", color = MaterialTheme.colorScheme.error) } } }
+        val homeCurrent = current
+        if (homeCurrent != null && homeCurrent.homeCandidates.isNotEmpty()) {
+            item { Panel {
+                SectionHeading(Icons.Default.Home, "أهل البيت", "معرّفها غير ظاهر بعد تغيير كلمة المرور")
+                Text("هذه الأجهزة مسجلة أهل بيت لكن الراوتر أعاد ترقيمها؛ أعد ربط كل واحد بظهوره الجديد ليتجاهله التطبيق تمامًا (بلا تتبع أو تنبيه أو تسجيل).",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } }
+            items(homeCurrent.homeCandidates, key = { it.deviceId }) { h ->
+                Panel {
+                    Text(h.name.ifBlank { "جهاز بيت" }, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text("…${DeviceRecovery.ipTail(h.ip)} · معرّف قديم ${h.deviceId}",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    TextButton(enabled = !busy && homeCurrent.options.isNotEmpty(), onClick = {
+                        homePairing = h; options = homeCurrent.options; selectedOption = null
+                    }) { Text("إعادة الربط بجهاز") }
+                }
+            }
+        }
     }
     pairing?.let { candidate ->
         AlertDialog(onDismissRequest = { pairing = null; selectedOption = null }, title = { Text("اختر جهاز ${candidate.name}") }, text = {
@@ -736,6 +776,26 @@ private fun RecoveryScreen(vm: MainViewModel) {
             vm.relinkDevice(candidate.sessionId, device, deviceIsLive = true)
             pairing = null; selectedOption = null
         }) { Text("تأكيد الاستعادة") } }, dismissButton = { TextButton(onClick = { pairing = null; selectedOption = null }) { Text("إلغاء") } })
+    }
+    homePairing?.let { homeCandidate ->
+        AlertDialog(onDismissRequest = { homePairing = null; selectedOption = null }, title = { Text("اختر الظهور الجديد لجهاز البيت") }, text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("الأجهزة الحية المتاحة (الاسم · آخر مقاطع العنوان):", style = MaterialTheme.typography.bodySmall)
+                options.forEach { option ->
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(selected = selectedOption == option, onClick = { selectedOption = option })
+                        Text("${option.name.ifBlank { "جهاز ${option.clientId}" }} · …${DeviceRecovery.ipTail(option.ip)}")
+                    }
+                }
+                Text("إعادة الربط تنقل سجل أهل البيت إلى المعرّف الجديد؛ الجهاز القديم لا يبقى مسجلًا.",
+                    style = MaterialTheme.typography.bodySmall)
+            }
+        }, confirmButton = { Button(enabled = selectedOption != null && !busy, onClick = {
+            val job = vm.relinkHomeIdentity(homeCandidate.deviceId, selectedOption!!)
+            homePairing = null; selectedOption = null
+            // Reload only after the relink transaction commits — never on a stale board.
+            scope.launch { job.join(); load() }
+        }) { Text("تأكيد إعادة الربط") } }, dismissButton = { TextButton(onClick = { homePairing = null; selectedOption = null }) { Text("إلغاء") } })
     }
 }
 
@@ -859,7 +919,7 @@ private fun SettingsScreen(vm: MainViewModel, config: BusinessSettings?, now: Lo
                     Choice("$option دقائق", delay == option) { if (delay != option) vm.setDeviceAlertDelay(option) }
                 }
             }
-            Text("الأجهزة غير المعروفة لا تُرسل تنبيهًا؛ بعد هذه المدة تدخل قائمة غير المسجل في التأكيد اليومي. التنبيه الفوري مخصص لقائمة المراقبة فقط.", style = MaterialTheme.typography.bodySmall)
+            Text("بعد هذه المدة داخل نافذة التتبع يدخل الجهاز قائمة غير المسجل في التأكيد اليومي. خارج النافذة: تنبيه نهاري واحد فقط بلا تسجيل. التنبيه الفوري المخصص لقائمة المراقبة لا يتأثر.", style = MaterialTheme.typography.bodySmall)
             Text("ملخص تأكيد الأجهزة اليومي: ${String.format(Locale.ROOT, "%02d:%02d", summaryMin / 60, summaryMin % 60)}")
             var summaryTime by rememberSaveable(summaryMin) { mutableStateOf(String.format(Locale.ROOT, "%02d:%02d", summaryMin / 60, summaryMin % 60)) }
             Field("وقت الملخص اليومي · HH:mm", summaryTime, { summaryTime = it })
@@ -867,6 +927,16 @@ private fun SettingsScreen(vm: MainViewModel, config: BusinessSettings?, now: Lo
                 ?.let { m -> m.groupValues[1].toInt() * 60 + m.groupValues[2].toInt() }
             Button(enabled = !busy && parsedSummary != null, onClick = { vm.setDeviceSummaryTime(parsedSummary!!) }) { Text("حفظ وقت الملخص") }
             if (parsedSummary == null) Text("اكتب الوقت بصيغة HH:mm، مثل 22:00", color = MaterialTheme.colorScheme.error)
+            val windowMin = remember(now) { DeviceAlertsCoordinator.knownUnregisteredStartMinute(context) }
+            var windowTime by rememberSaveable(windowMin) { mutableStateOf(String.format(Locale.ROOT, "%02d:%02d", windowMin / 60, windowMin % 60)) }
+            Text("بداية تتبع غير المسجل: ${String.format(Locale.ROOT, "%02d:%02d", windowMin / 60, windowMin % 60)}")
+            Field("بداية قائمة غير المسجل · HH:mm", windowTime, { windowTime = it })
+            val parsedWindow = Regex("^([01]?[0-9]|2[0-3]):([0-5][0-9])$").matchEntire(Money.normalize(windowTime))
+                ?.let { m -> m.groupValues[1].toInt() * 60 + m.groupValues[2].toInt() }
+            Button(enabled = !busy && parsedWindow != null, onClick = { vm.setUnregisteredStartMinute(parsedWindow!!) }) { Text("حفظ بداية التتبع") }
+            if (parsedWindow == null) Text("اكتب الوقت بصيغة HH:mm، مثل 18:00", color = MaterialTheme.colorScheme.error)
+            Text("قبل هذا الوقت: أي جهاز غير معروف يرسل تنبيهًا واحدًا فقط ولا يدخل قائمة غير المسجل. بعده: يبدأ احتساب مدة البقاء من وقت البداية أو أول ظهور، أيهما أحدث.",
+                style = MaterialTheme.typography.bodySmall)
             Text("التنبيهات محلية داخل الهاتف: لا يُرسل أي بيانات جهاز إلى أي خدمة خارجية.", style = MaterialTheme.typography.bodySmall)
             val recoveryKeyword by vm.recoveryKeyword.collectAsStateWithLifecycle()
             var recoveryField by remember(recoveryKeyword) { mutableStateOf(recoveryKeyword) }
