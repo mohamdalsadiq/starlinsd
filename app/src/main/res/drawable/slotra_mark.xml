@@ -1,0 +1,27 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="48"
+    android:viewportHeight="48">
+    <path
+        android:fillColor="#0A0E1A"
+        android:pathData="M0,0h48v48h-48z" />
+    <!-- WiFi arcs -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#29B6F6"
+        android:strokeWidth="3.5"
+        android:strokeLineCap="round"
+        android:pathData="M12,26 a17,17 0 0 1 24,0" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#4FC3F7"
+        android:strokeWidth="3.5"
+        android:strokeLineCap="round"
+        android:pathData="M17,32 a10,10 0 0 1 14,0" />
+    <circle
+        android:fillColor="#4FC3F7"
+        android:cx="24"
+        android:cy="38"
+        android:r="3" />
+</vector>
