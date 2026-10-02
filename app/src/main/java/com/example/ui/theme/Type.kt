@@ -6,7 +6,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
-// Muse UI v2 type scale: fewer sizes, Arabic-friendly line heights,
+// Slotra type scale: fewer sizes, Arabic-friendly line heights,
 // and zero letter spacing (spacing breaks connected Arabic script).
 val Typography =
   Typography(

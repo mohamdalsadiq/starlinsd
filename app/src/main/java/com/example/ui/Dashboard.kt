@@ -78,7 +78,7 @@ private fun dateLabel(at: Long, pattern: String = "EEEE، d MMMM yyyy") = Simple
             Card(Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.extraLarge,
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
                 Column(Modifier.fillMaxWidth()
-                    .background(Brush.verticalGradient(listOf(MaterialTheme.colorScheme.primary.copy(alpha = 0.30f), MaterialTheme.colorScheme.primary.copy(alpha = 0.03f))))
+                    .background(Brush.verticalGradient(listOf(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f), MaterialTheme.colorScheme.primary.copy(alpha = 0.01f))))
                     .padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("إيراد اليوم المعتمد", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     Text(amount(daily.revenue), Modifier.testTag("today-revenue"),

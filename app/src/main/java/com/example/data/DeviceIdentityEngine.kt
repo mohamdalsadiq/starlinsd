@@ -31,6 +31,13 @@ object DeviceIdentityEngine {
         val category: IpLists.Category,
         /** True when this snapshot upgraded a legacy IP-only record to this clientId. */
         val promoted: Boolean,
+        /**
+         * The old identity row's clientId when this device was recognized by its
+         * stored MAC under a CHURNED clientId. The storage layer re-keys that one
+         * row instead of inserting a second — one physical device = one HOME/WATCH
+         * entry, so a clientId change can never duplicate the registry.
+         */
+        val rekeyFrom: Long? = null,
     )
 
     /**
@@ -55,8 +62,13 @@ object DeviceIdentityEngine {
             DeviceAlerts.usableMac(identity.mac)?.let { it to identity }
         }.toMap()
         return snapshot.map { device ->
-            val stored = byId[device.clientId]
-                ?: DeviceAlerts.usableMac(device.mac)?.let { macToId[it] }
+            val storedById = byId[device.clientId]
+            // MAC fallback only when the clientId itself is unknown; a stored MAC
+            // under a different clientId means the id churned (Wi-Fi password
+            // change, reconnect) — re-key, never duplicate.
+            val storedByMac = if (storedById == null) DeviceAlerts.usableMac(device.mac)?.let { macToId[it] } else null
+            val stored = storedById ?: storedByMac
+            val rekeyFrom = storedByMac?.deviceId?.takeIf { it != device.clientId }
             var promoted = false
             val category = when {
                 stored != null && stored.list == "HOME" -> IpLists.Category.HOME
@@ -67,7 +79,7 @@ object DeviceIdentityEngine {
                 device.ip in legacyWatch -> { promoted = true; IpLists.Category.WATCH }
                 else -> IpLists.Category.UNKNOWN
             }
-            Resolved(device.clientId, device.name, device.ip, device.mac, category, promoted)
+            Resolved(device.clientId, device.name, device.ip, device.mac, category, promoted, rekeyFrom)
         }
     }
 
@@ -80,7 +92,10 @@ object DeviceIdentityEngine {
         val byId = existing.associateBy { it.deviceId }
         return resolved.filter { it.category != IpLists.Category.UNKNOWN || byId[it.clientId] != null }
             .map { device ->
+                // A re-keyed row inherits `added` from the old row it replaces, so
+                // the registry keeps the original registration moment.
                 val previous = byId[device.clientId]
+                    ?: device.rekeyFrom?.let { old -> existing.firstOrNull { it.deviceId == old } }
                 com.example.db.DeviceIdentity(
                     deviceId = device.clientId,
                     list = when (device.category) {

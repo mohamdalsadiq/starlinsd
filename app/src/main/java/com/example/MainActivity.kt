@@ -34,8 +34,8 @@ class MainActivity : ComponentActivity() {
 
 /**
  * App theme entry point (kept in this package for the UI tests).
- * Delegates to the Muse v2 design system: navy/electric-blue palette,
- * shared type scale and radii, RTL layout.
+ * Delegates to the single Slotra design system: the established green-night /
+ * mint / gold identity, shared type scale and radii, RTL layout.
  */
 @Composable
 fun ManagerTheme(content: @Composable () -> Unit) = SlotraTheme(content = content)

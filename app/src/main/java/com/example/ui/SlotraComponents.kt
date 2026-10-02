@@ -16,18 +16,18 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.ui.theme.SlotraAmber
-import com.example.ui.theme.SlotraBlueBright
 import com.example.ui.theme.SlotraGreen
+import com.example.ui.theme.SlotraMintBright
 import com.example.ui.theme.SlotraMuted
 import com.example.ui.theme.SlotraRed
 
-/** Visual tone for status chips (Muse v2): green ok, amber pending, blue info, grey muted, red danger. */
+/** Visual tone for status chips: green ok, gold pending, mint info, grey muted, red danger. */
 internal enum class StatusTone { OK, PENDING, INFO, MUTED, DANGER }
 
 private fun toneColor(tone: StatusTone) = when (tone) {
     StatusTone.OK -> SlotraGreen
     StatusTone.PENDING -> SlotraAmber
-    StatusTone.INFO -> SlotraBlueBright
+    StatusTone.INFO -> SlotraMintBright
     StatusTone.MUTED -> SlotraMuted
     StatusTone.DANGER -> SlotraRed
 }

@@ -337,9 +337,12 @@ internal fun openAccessibilitySettings(context: Context, onError: (Throwable) ->
     }
 }
 /**
- * Live router clients + home/watch list management. Classification by IP; a HOME device
- * is never suggested for binding and never paused or resumed. The lists exist now;
- * watch-list notifications are a later feature by design.
+ * Live router clients + the PERMANENT home/watch identity registry (schema v8).
+ * Classification is clientId-first with a real-MAC fallback; the current IP is
+ * display-only metadata. Adding a device to HOME is a one-time, idempotent and
+ * persistent act: every later day it is recognized automatically and skipped by
+ * the customer pipeline (no session, no grace, no alert, no revenue). Legacy manual
+ * IP rows are kept only for old installs and are upgraded to identity on first sight.
  */
 @Composable private fun DevicesScreen(vm: MainViewModel) {
     val context = LocalContext.current
@@ -351,6 +354,7 @@ internal fun openAccessibilitySettings(context: Context, onError: (Throwable) ->
     LaunchedEffect(Unit) { vm.refreshDevices() }
     var newHome by rememberSaveable { mutableStateOf(false) }
     var newWatch by rememberSaveable { mutableStateOf(false) }
+    var renameTarget by remember { mutableStateOf<com.example.db.DeviceIdentity?>(null) }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Title("إدارة الأجهزة", "قراءة محلية من راوتر Starlink · بدون حساب سحابي") }
         item {
@@ -382,21 +386,34 @@ internal fun openAccessibilitySettings(context: Context, onError: (Throwable) ->
             }
         }
         item { Panel {
-            SectionHeading(Icons.Default.Home, "أهل البيت (بالهوية)", "مرتبطة بمعرّف الجهاز؛ تغيّر IP لا يُخرجها من القائمة")
-            identities.filter { it.list == "HOME" }.forEach { entry ->
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("${entry.name.ifBlank { "جهاز ${entry.deviceId}" }} · آخر عنوان ${entry.lastIp.ifBlank { "؟" }}", Modifier.weight(1f))
-                    TextButton(enabled = !busy, onClick = { vm.removeHomeDevice(entry.deviceId) }) { Text("حذف") }
+            SectionHeading(Icons.Default.Home, "أهل البيت · سجل دائم", "تسجيل مرة واحدة؛ يُتعرَّف عليه تلقائيًا كل يوم — تغيّر IP لا يُغيّر هويته")
+            val homeEntries = identities.filter { it.list == "HOME" }
+            if (homeEntries.isEmpty() && homeIps.isEmpty()) Text("لا توجد أجهزة محفوظة بعد. أضف جهازًا من قائمة «الأجهزة المتصلة الآن».", style = MaterialTheme.typography.bodySmall)
+            homeEntries.forEach { entry ->
+                val liveDevice = scan?.devices?.firstOrNull { it.clientId == entry.deviceId }
+                Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(entry.name.ifBlank { "جهاز ${entry.deviceId}" }, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                    Text("المعرّف الثابت: ${entry.deviceId} · MAC: ${entry.mac.ifBlank { "غير متاح" }}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        StatusPill(if (liveDevice != null) "متصل الآن" else "غير متصل", if (liveDevice != null) StatusTone.OK else StatusTone.MUTED)
+                        Text("العنوان الحالي: ${liveDevice?.ip ?: entry.lastIp.ifBlank { "؟" }}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        TextButton(enabled = !busy, onClick = { renameTarget = entry }) { Text("إعادة تسمية") }
+                        TextButton(enabled = !busy, onClick = { vm.removeHomeDevice(entry.deviceId) }) { Text("إزالة من أهل البيت") }
+                    }
                 }
             }
-            homeIps.forEach { entry ->
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("${entry.ip}${if (entry.label.isBlank()) "" else " · ${entry.label}"} (IP قديم)", Modifier.weight(1f))
-                    TextButton(enabled = !busy, onClick = { vm.removeHomeIp(entry.ip) }) { Text("حذف") }
+            if (homeIps.isNotEmpty()) {
+                Text("قوائم IP قديمة (تُرقّى تلقائيًا إلى هوية عند ظهور الجهاز):", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                homeIps.forEach { entry ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("${entry.ip}${if (entry.label.isBlank()) "" else " · ${entry.label}"} (قديم)", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                        TextButton(enabled = !busy, onClick = { vm.removeHomeIp(entry.ip) }) { Text("حذف") }
+                    }
                 }
             }
-            if (identities.none { it.list == "HOME" } && homeIps.isEmpty()) Text("لا توجد أجهزة محفوظة بعد.", style = MaterialTheme.typography.bodySmall)
-            TextButton(onClick = { newHome = true }) { Text("إضافة عنوان يدويًا (IP)") }
+            TextButton(onClick = { newHome = true }) { Text("إضافة عنوان يدويًا (طريقة قديمة)") }
         } }
         item { Panel {
             SectionHeading(Icons.Default.Visibility, "قائمة المراقبة (بالهوية)", "مرتبطة بمعرّف الجهاز؛ إشعارها يعرض الاسم وآخر IP")
@@ -416,8 +433,19 @@ internal fun openAccessibilitySettings(context: Context, onError: (Throwable) ->
             TextButton(onClick = { newWatch = true }) { Text("إضافة عنوان يدويًا (IP)") }
         } }
     }
-    if (newHome) IpEntryForm("إضافة لأهل البيت", { newHome = false }) { ip, label -> vm.addHomeIp(ip, label); newHome = false }
-    if (newWatch) IpEntryForm("إضافة للمراقبة", { newWatch = false }) { ip, label -> vm.addWatchIp(ip, label); newWatch = false }
+    if (newHome) IpEntryForm("إضافة عنوان قديم", { newHome = false }) { ip, label -> vm.addHomeIp(ip, label); newHome = false }
+    if (newWatch) IpEntryForm("إضافة عنوان قديم", { newWatch = false }) { ip, label -> vm.addWatchIp(ip, label); newWatch = false }
+    renameTarget?.let { entry ->
+        RenameDeviceForm(entry.name, { renameTarget = null }) { name -> vm.renameHomeDevice(entry.deviceId, name); renameTarget = null }
+    }
+}
+
+@Composable private fun RenameDeviceForm(current: String, dismiss: () -> Unit, save: (String) -> Unit) {
+    var name by rememberSaveable(current) { mutableStateOf(current) }
+    Form("إعادة تسمية جهاز أهل البيت", dismiss, { save(name.trim()) }, name.trim().isNotBlank()) {
+        Field("اسم الجهاز", name, { name = it })
+        Text("الاسم للعرض فقط؛ الهوية تبقى المعرّف الثابت (ثم MAC).", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
 }
 
 @Composable private fun IpEntryForm(title: String, dismiss: () -> Unit, save: (String, String) -> Unit) {

@@ -2,41 +2,43 @@ package com.example.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// Slotra brand identity (Muse UI v2 reference, approved 2026-10-02):
-// deep navy night + electric blue. Night-first app — the dark scheme is the identity.
+// Slotra established identity (README «الانتقال إلى Slotra»): the S mark links
+// time and connection — deep green night, mint primary, gold touch. Night-first.
+// The Muse v2 blue-neon reference stays docs-only and is NOT the app identity.
 
 // Backgrounds
-val SlotraNavy = Color(0xFF0A0E1A)
-val SlotraNavyDeep = Color(0xFF060A14)
-val SlotraNavyMid = Color(0xFF0D1424)
+val SlotraNight = Color(0xFF0A1512)
+val SlotraNightDeep = Color(0xFF06100D)
+val SlotraNightMid = Color(0xFF0D1B17)
 
 // Surfaces
-val SlotraSurface = Color(0xFF111A2E)
-val SlotraSurfaceDeep = Color(0xFF0E1626)
-val SlotraSurfaceRaised = Color(0xFF16213A)
+val SlotraSurface = Color(0xFF11201C)
+val SlotraSurfaceDeep = Color(0xFF0E1A17)
+val SlotraSurfaceRaised = Color(0xFF172823)
 
 // Lines
-val SlotraBorder = Color(0xFF1E3A5F)
-val SlotraBorderSoft = Color(0xFF1B2A44)
+val SlotraBorder = Color(0xFF25453B)
+val SlotraBorderSoft = Color(0xFF1D332C)
 
 // Accents
-val SlotraBlue = Color(0xFF29B6F6)
-val SlotraBlueBright = Color(0xFF4FC3F7)
-val SlotraBlueDeep = Color(0xFF0288D1)
-val SlotraGreen = Color(0xFF69F0AE)
-val SlotraAmber = Color(0xFFFFC46A)
-val SlotraRed = Color(0xFFFF8A9B)
+val SlotraMint = Color(0xFF3FD1A3)
+val SlotraMintBright = Color(0xFF6FE3BC)
+val SlotraMintDeep = Color(0xFF219A75)
+val SlotraGreen = Color(0xFF7FDFA8)
+val SlotraGold = Color(0xFFE3B45F)
+val SlotraAmber = SlotraGold
+val SlotraRed = Color(0xFFFF8F9B)
 
 // Text
-val SlotraText = Color(0xFFE8F1FF)
-val SlotraTextDim = Color(0xFF9FB3CE)
-val SlotraMuted = Color(0xFF5B7290)
+val SlotraText = Color(0xFFE7F1EC)
+val SlotraTextDim = Color(0xFFA9BFB6)
+val SlotraMuted = Color(0xFF63796F)
 
-// Text/icons that sit on an electric-blue or green accent
-val SlotraOnAccent = Color(0xFF04121E)
+// Text/icons that sit on a mint or gold accent
+val SlotraOnAccent = Color(0xFF062018)
 
 // Light scheme (fallback only; the app's identity is the dark scheme)
-val SlotraLightBg = Color(0xFFF4F8FC)
+val SlotraLightBg = Color(0xFFF4F8F6)
 val SlotraLightSurface = Color(0xFFFFFFFF)
-val SlotraLightPrimary = Color(0xFF0288D1)
+val SlotraLightPrimary = Color(0xFF1F8A66)
 val SlotraLightOnPrimary = Color(0xFFFFFFFF)

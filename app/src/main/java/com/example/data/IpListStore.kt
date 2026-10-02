@@ -42,6 +42,42 @@ class IpListStore(context: Context, private val db: AppDatabase = AppDatabase.ge
         dao.identity(DeviceIdentity(deviceId, "HOME", mac, name, ip, System.currentTimeMillis(), System.currentTimeMillis()))
     suspend fun setWatchIdentity(deviceId: Long, name: String, mac: String, ip: String) =
         dao.identity(DeviceIdentity(deviceId, "WATCH", mac, name, ip, System.currentTimeMillis(), System.currentTimeMillis()))
+
+    /**
+     * Explicit "Add to Home" — a PERSISTENT, IDEMPOTENT registry write. The
+     * strongest currently available identity is stored: clientId primary, a real
+     * MAC secondary, current IP as display-only metadata. If the same MAC already
+     * lives under a churned clientId the existing row is re-keyed, never
+     * duplicated, and the original `added` moment is preserved.
+     */
+    suspend fun addHomeDevice(device: TrackedDevice) = registerDevice("HOME", device)
+    suspend fun addWatchDevice(device: TrackedDevice) = registerDevice("WATCH", device)
+
+    private suspend fun registerDevice(list: String, device: TrackedDevice) {
+        val now = System.currentTimeMillis()
+        val name = device.name.trim().take(60)
+        db.withTransaction {
+            val mac = DeviceAlerts.usableMac(device.mac)
+            val byMac = mac?.let { dao.identityByMac(it) }
+            if (byMac != null) {
+                // Same physical device, churned clientId: move the one row, don't fork it.
+                dao.identity(DeviceIdentity(device.clientId, list, device.mac,
+                    byMac.name.ifBlank { name }, device.ip, byMac.added, now))
+                if (byMac.deviceId != device.clientId) dao.deleteIdentity(byMac.deviceId)
+            } else {
+                val previous = dao.identity(device.clientId)
+                dao.identity(DeviceIdentity(device.clientId, list, device.mac.ifBlank { previous?.mac ?: "" },
+                    name.ifBlank { previous?.name ?: "" }, device.ip, previous?.added ?: now, now))
+            }
+        }
+    }
+
+    /** Renames a known HOME/WATCH device; identity, list, and IP metadata are untouched. */
+    suspend fun renameIdentity(deviceId: Long, name: String) {
+        val trimmed = name.trim().take(60)
+        require(trimmed.isNotBlank()) { "أدخل اسمًا للجهاز" }
+        dao.identity(deviceId)?.let { dao.identity(it.copy(name = trimmed, updated = System.currentTimeMillis())) }
+    }
     fun observeIdentities(): Flow<List<DeviceIdentity>> = dao.observeIdentities()
 
     /** Removes an identity record (owner un-listing a device); legacy IP rows untouched. */
@@ -78,13 +114,21 @@ class IpListStore(context: Context, private val db: AppDatabase = AppDatabase.ge
         val resolved = DeviceIdentityEngine.reconcile(tracked, lists.identities, lists.legacyHome, lists.legacyWatch)
         val upserts = DeviceIdentityEngine.planUpserts(resolved, lists.identities, System.currentTimeMillis())
         val existingById = lists.identities.associateBy { it.deviceId }
-        upserts.forEach { row ->
-            val existing = existingById[row.deviceId]
-            when {
-                existing == null -> dao.insertIdentity(row) // promotion or first sight
-                existing.lastIp != row.lastIp || existing.name != row.name || (existing.mac.isBlank() && row.mac.isNotBlank()) ->
-                    dao.identity(existing.copy(lastIp = row.lastIp, name = row.name,
-                        mac = existing.mac.ifBlank { row.mac }, updated = row.updated))
+        // MAC-matched, churned clientId: ONE physical device keeps ONE row. Delete the
+        // stale row ONLY when its replacement is actually being written (an UNKNOWN
+        // record's refresh is skipped by planUpserts, and deleting it would lose data).
+        val upsertIds = upserts.map { it.deviceId }.toSet()
+        val rekeyFrom = resolved.mapNotNull { r -> r.rekeyFrom?.takeIf { r.clientId in upsertIds } }.toSet()
+        db.withTransaction {
+            rekeyFrom.forEach { stale -> dao.deleteIdentity(stale) }
+            upserts.forEach { row ->
+                val existing = existingById[row.deviceId]
+                when {
+                    existing == null -> dao.insertIdentity(row) // promotion, re-key, or first sight
+                    existing.lastIp != row.lastIp || existing.name != row.name || (existing.mac.isBlank() && row.mac.isNotBlank()) ->
+                        dao.identity(existing.copy(lastIp = row.lastIp, name = row.name,
+                            mac = existing.mac.ifBlank { row.mac }, updated = row.updated))
+                }
             }
         }
         return tracked.map { device ->

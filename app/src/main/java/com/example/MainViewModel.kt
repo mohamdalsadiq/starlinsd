@@ -117,15 +117,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // Identity-based list management (schema v8): the stable clientId is saved with the
     // MAC and last-known IP as display data, so DHCP IP changes cannot reclassify.
+    // "Add to Home" is a PERMANENT, idempotent registry write: the same clientId OR
+    // MAC never creates a second HOME entry, and the device is recognized on every
+    // future day without asking the user anything.
     fun addHomeDevice(device: TrackedDevice) = work {
-        lists.setHomeIdentity(device.clientId, device.name, device.mac, device.ip)
-        message.value = "تمت إضافة الجهاز لأهل البيت بمعرّفه الثابت"
+        lists.addHomeDevice(device)
+        message.value = "أُضيف إلى أهل البيت نهائيًا · سيُتعرَّف عليه تلقائيًا كل يوم"
     }
     fun addWatchDevice(device: TrackedDevice) = work {
-        lists.setWatchIdentity(device.clientId, device.name, device.mac, device.ip)
+        lists.addWatchDevice(device)
         message.value = "تمت إضافة الجهاز لقائمة المراقبة بمعرّفه الثابت"
     }
-    fun removeHomeDevice(deviceId: Long) = work { lists.removeIdentity(deviceId) }
+    /** Renames a known HOME device (display only; identity and classification stay). */
+    fun renameHomeDevice(deviceId: Long, name: String) = work {
+        lists.renameIdentity(deviceId, name)
+        message.value = "تم تحديث اسم الجهاز"
+    }
+    fun removeHomeDevice(deviceId: Long) = work {
+        lists.removeIdentity(deviceId)
+        message.value = "أُزيل الجهاز من أهل البيت · سيعود للمسار العادي عند ظهوره"
+    }
     fun removeWatchDevice(deviceId: Long) = work { lists.removeIdentity(deviceId) }
     val identities = repo.dao.observeIdentities().stateIn(viewModelScope, sharing, emptyList())
 
