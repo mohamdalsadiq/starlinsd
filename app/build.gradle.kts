@@ -49,6 +49,11 @@ android {
       versionNameSuffix = "-preview"
     }
   }
+  // Phase 4 signing diagnosis (§40 report point L): the debug build MUST keep one
+  // stable certificate forever or Android refuses update-over-install
+  // (INSTALL_FAILED_UPDATE_INCOMPATIBLE). debugConfig already prefers
+  // ${rootDir}/debug.keystore when present; CI restores that same file from the
+  // DEBUG_KEYSTORE_B64 secret instead of generating a random key per run.
   compileOptions {
     sourceCompatibility = JavaVersion.VERSION_11
     targetCompatibility = JavaVersion.VERSION_11

@@ -104,8 +104,8 @@ class ManagerUiTest {
             compose.onNodeWithTag("nav-1").performClick()
             compose.onNodeWithText("ابحث بالاسم أو الرقم أو الباقة").performTextInput("١٢")
             compose.onNodeWithTag("nav-2").performClick()
-            compose.waitUntil(10000) { compose.onAllNodesWithText("خطة السداد مستقلة عن ربح الدورة").fetchSemanticsNodes().isNotEmpty() }
-            compose.onNodeWithText("خطة السداد مستقلة عن ربح الدورة").assertIsDisplayed()
+            compose.waitUntil(10000) { compose.onAllNodesWithText("ديون عليك — تُسدَّد من الربح").fetchSemanticsNodes().isNotEmpty() }
+            compose.onNodeWithText("ديون عليك — تُسدَّد من الربح").assertIsDisplayed()
             compose.onNodeWithTag("nav-1").performClick()
             compose.onNodeWithText("١٢").assertIsDisplayed()
             compose.onNodeWithTag("nav-4").performClick()

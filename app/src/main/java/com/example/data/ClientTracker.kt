@@ -13,11 +13,14 @@ import kotlinx.coroutines.withContext
  *
  * A poll cycle:
  *  1. Reads one CLIENTS snapshot (StarlinkProbe.clients()). Exceptions become null - never
- *     a pause trigger (spec 26): discovery failure never pauses anything.
+ *     a pause trigger (spec 26): discovery failure never pauses anything and never
+ *     reconciles identities (identity reconciliation only runs on SUCCESS).
  *  2. Excludes the management phone's own current IPs (never assume a static phone IP,
  *     spec 15) from the snapshot before comparison.
- *  3. Compares against bound ACTIVE/PAUSED sessions via the pure DeviceTracker.compare().
- *  4. Applies the plan with the existing changeState() which is already idempotent and
+ *  3. Reconciles device identity (clientId primary, MAC secondary, one-shot legacy IP
+ *     promotion) and classifies each device by identity — NOT by IP alone.
+ *  4. Compares against bound ACTIVE/PAUSED sessions via the pure DeviceTracker.compare().
+ *  5. Applies the plan with the existing changeState() which is already idempotent and
  *     re-advances state under the repository's own clock.
  *
  * Never touches Starlink Cloud, never mutates router state, never scans the subnet.
@@ -37,14 +40,15 @@ internal class ClientTracker(context: Context,
     suspend fun snapshotBlocking(): List<TrackedDevice>? = withContext(Dispatchers.IO) {
         val network = wifiNetwork() ?: return@withContext null
         val raw = probe(network)
-        if (raw == null) null else track(raw, lists.snapshot()).also { lastSnapshot = it }
+        if (raw == null) null else track(raw).also { lastSnapshot = it }
     }
 
-    private suspend fun track(snapshot: List<StarlinkProtocol.Client>, current: IpListStore.Lists): List<TrackedDevice> {
+    private suspend fun track(snapshot: List<StarlinkProtocol.Client>): List<TrackedDevice> {
         val phone = phoneIps()
-        return snapshot
+        val base = snapshot
             .filter { c -> c.id != null && c.ip !in phone }
-            .map { c -> TrackedDevice(c.id!!, c.name, c.ip, c.mac, current.classify(c.ip), c.blocked) }
+            .map { c -> TrackedDevice(c.id!!, c.name, c.ip, c.mac, IpLists.Category.UNKNOWN, c.blocked) }
+        return lists.reconcile(base)
     }
 
     private fun wifiNetwork(): android.net.Network? = connectivity.allNetworks.firstOrNull { network ->
@@ -65,15 +69,18 @@ internal class ClientTracker(context: Context,
     suspend fun poll(): DeviceTracker.Plan? = withContext(Dispatchers.IO) {
         val network = wifiNetwork() ?: return@withContext null
         val raw = try { probe(network) } catch (e: CancellationException) { throw e } catch (_: Exception) { null } ?: return@withContext null
-        val current = lists.snapshot()
-        val tracked = track(raw, current)
+        val tracked = track(raw)
         lastSnapshot = tracked
-        applyPlan(repo.reconcile(), tracked, current.home)
+        val lists = lists0()
+        applyPlan(repo.reconcile(), tracked, lists.homeClientIds, lists.legacyHomeIps)
     }
 
+    private suspend fun lists0() = lists.identitySnapshot()
+
     /** Pure-application path, also the unit-test entry point (no network involved). */
-    suspend fun applyPlan(sessions: List<Session>, snapshot: List<TrackedDevice>?, homeIps: Set<String> = emptySet()): DeviceTracker.Plan? {
-        val plan = DeviceTracker.compare(sessions, snapshot, homeIps)
+    suspend fun applyPlan(sessions: List<Session>, snapshot: List<TrackedDevice>?,
+        homeClientIds: Set<Long> = emptySet(), legacyHomeIps: Set<String> = emptySet()): DeviceTracker.Plan? {
+        val plan = DeviceTracker.compare(sessions, snapshot, homeClientIds, legacyHomeIps)
         // The plan carries clientIds; changeState() needs session ids, so map them back.
         val pauseIds = plan.pause.toSet()
         val resumeIds = plan.resume.toSet()

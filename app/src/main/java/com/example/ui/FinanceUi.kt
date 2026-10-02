@@ -9,6 +9,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -58,7 +59,26 @@ import java.util.*
     var paying by remember { mutableStateOf<DebtBalance?>(null) }
     val byDebt = remember(payments) { payments.groupBy { it.debtId } }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { Title("الديون", "خطة السداد مستقلة عن ربح الدورة") }
+        item { Title("الديون", "ديون عليك — تُسدَّد من الربح") }
+        // Profit hero: surplus at the very top so the owner always sees it first.
+        // Recording a payment reduces the debt; the profit shown here is the
+        // source it comes from.
+        item {
+            val today = remember(report, now) { report.day(now) }
+            Panel {
+                Text("ربح اليوم (الفائض)", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+                Text(
+                    amount(today.surplus ?: 0),
+                    style = MaterialTheme.typography.headlineLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Text(
+                    "أي سداد تسجّله أدناه يُخصم من هذا الربح.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
         item { Panel {
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Column(Modifier.weight(1f)) { MoneyLine("متبقي الديون", report.debts.sumOf { it.remaining }) }

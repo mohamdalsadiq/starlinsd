@@ -1,0 +1,158 @@
+package com.example.notifications
+
+import android.content.Context
+import androidx.test.core.app.ApplicationProvider
+import com.example.data.DeviceAlerts
+import com.example.data.IpLists
+import com.example.data.TrackedDevice
+import org.junit.Assert.*
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
+
+/**
+ * Coordinator tests (spec 26/28): fast Robolectric tests over real
+ * SharedPreferences; persistence rounds trip and one-per-day keys are covered
+ * without any sleeps.
+ */
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [36])
+class DeviceAlertsCoordinatorTest {
+    private val context: Context = ApplicationProvider.getApplicationContext()
+    private val now = System.currentTimeMillis()
+
+    private fun device(id: Long, ip: String, category: IpLists.Category) =
+        TrackedDevice(id, "d$id", ip, "mac$id", category)
+
+    @Test fun settingsRoundTripAndValidation() {
+        DeviceAlertsCoordinator.setDelayMinutes(context, 5)
+        assertEquals(5, DeviceAlertsCoordinator.knownDelayMinutes(context))
+        DeviceAlertsCoordinator.setSummaryMinute(context, 23 * 60 + 30)
+        assertEquals(23 * 60 + 30, DeviceAlertsCoordinator.knownSummaryMinute(context))
+        DeviceAlertsCoordinator.setSummaryMinute(context, null)
+        assertEquals(DeviceAlertsCoordinator.DEFAULT_SUMMARY_MINUTE, DeviceAlertsCoordinator.knownSummaryMinute(context))
+        try {
+            DeviceAlertsCoordinator.setDelayMinutes(context, 2); fail("delay 2 must be rejected")
+        } catch (expected: IllegalArgumentException) { }
+    }
+
+    @Test fun seedingIsIdempotentAndStopsWhenUserChangesAValue() {
+        DeviceAlertsCoordinator.resetForTest(context)
+        DeviceAlertsCoordinator.seedDefaults(context)
+        assertEquals(5, DeviceAlertsCoordinator.knownDelayMinutes(context))
+        assertEquals(DeviceAlertsCoordinator.DEFAULT_SUMMARY_MINUTE, DeviceAlertsCoordinator.knownSummaryMinute(context))
+        DeviceAlertsCoordinator.setDelayMinutes(context, 1)
+        DeviceAlertsCoordinator.seedDefaults(context) // must not overwrite the user choice
+        assertEquals(1, DeviceAlertsCoordinator.knownDelayMinutes(context))
+    }
+
+    @Test fun v2SeedUpgradesTheOldDefaultUnlessTheUserChoseExplicitly() {
+        DeviceAlertsCoordinator.resetForTest(context)
+        // Simulate the old seed (3-minute notification delay, no explicit choice).
+        val prefs = context.getSharedPreferences("device_alerts", 0)
+        prefs.edit().putInt("delay_minutes", 3).putBoolean("seeded", true).apply()
+        DeviceAlertsCoordinator.seedDefaults(context)
+        assertEquals(5, DeviceAlertsCoordinator.knownDelayMinutes(context))
+        // An explicit user choice survives the upgrade.
+        DeviceAlertsCoordinator.resetForTest(context)
+        prefs.edit().putInt("delay_minutes", 3).putBoolean("seeded", true)
+            .putBoolean("delay_minutes_custom", true).apply()
+        DeviceAlertsCoordinator.seedDefaults(context)
+        assertEquals(3, DeviceAlertsCoordinator.knownDelayMinutes(context))
+    }
+
+    @Test fun unregisteredTariffRoundTripAndValidation() {
+        DeviceAlertsCoordinator.resetForTest(context)
+        assertEquals(50000L, DeviceAlertsCoordinator.unregisteredTariff(context))
+        DeviceAlertsCoordinator.setUnregisteredTariff(context, 100000L)
+        assertEquals(100000L, DeviceAlertsCoordinator.unregisteredTariff(context))
+        try {
+            DeviceAlertsCoordinator.setUnregisteredTariff(context, 0); fail("tariff 0 must be rejected")
+        } catch (expected: IllegalArgumentException) { }
+    }
+
+    @Test fun notifiedTodayPersistsPerClientPerDayAndCleansOldDays() {
+        DeviceAlertsCoordinator.resetForTest(context)
+        DeviceAlertsCoordinator.markNotified(context, now, 123)
+        assertEquals(setOf(123L), DeviceAlertsCoordinator.notifiedToday(context, now))
+        DeviceAlertsCoordinator.markNotified(context, now, 456)
+        assertEquals(setOf(123L, 456L), DeviceAlertsCoordinator.notifiedToday(context, now))
+        // A stale key from another day must not leak into today (spec 30 cleanup).
+        val prefs = context.getSharedPreferences("device_alerts", 0)
+        prefs.edit().putString("notified", """{"2020-01-01":[999]}""").apply()
+        DeviceAlertsCoordinator.markNotified(context, now, 123)
+        assertFalse(DeviceAlertsCoordinator.notifiedToday(context, now).contains(999))
+    }
+
+    @Test fun pendingAlertsRoundTripThroughJson() {
+        DeviceAlertsCoordinator.resetForTest(context)
+        val alerts = listOf(DeviceAlerts.PendingAlert(7, now, now + 60_000, IpLists.Category.WATCH))
+        DeviceAlertsCoordinator.savePending(context, alerts)
+        assertEquals(alerts, DeviceAlertsCoordinator.pending(context))
+    }
+
+    @Test fun recordSnapshotMergesHistoryAndDropsHomeByIdentity() = kotlinx.coroutines.runBlocking {
+        DeviceAlertsCoordinator.resetForTest(context)
+        // Seed client 2 as a HOME identity record before the snapshot.
+        context.getSharedPreferences("device_alerts", 0) // coordinator reads identities from Room
+        DeviceAlertsCoordinator.recordSnapshot(context, now,
+            listOf(device(1, "192.168.1.10", IpLists.Category.UNKNOWN), device(2, "192.168.1.11", IpLists.Category.HOME)))
+        val history = DeviceAlertsCoordinator.historyFor(context, now)
+        // Client 2 has no identity record (fresh test DB), so it is tracked normally.
+        assertEquals(listOf(1L, 2L), history.map { it.clientId })
+        // A second successful snapshot with the device gone keeps it in history (spec 17).
+        DeviceAlertsCoordinator.recordSnapshot(context, now + 60_000, emptyList())
+        assertEquals(listOf(1L, 2L), DeviceAlertsCoordinator.historyFor(context, now).map { it.clientId })
+    }
+
+    private fun writeHistoryDay(dayKey: String, clientId: Long) {
+        context.getSharedPreferences("device_alerts", 0).edit()
+            .putString("history_$dayKey",
+                """[{"clientId":$clientId,"name":"d$clientId","ip":"192.168.1.9","mac":"mac$clientId","category":"UNKNOWN","firstSeen":1,"lastSeen":2}]""")
+            .apply()
+    }
+
+    /** Phase 4 (spec 13): a later day must never wipe earlier days — they stay reviewable. */
+    @Test fun laterSnapshotsKeepPastDaysReviewable() = kotlinx.coroutines.runBlocking {
+        DeviceAlertsCoordinator.resetForTest(context)
+        val todayKey = DeviceAlerts.dayKey(now)
+        DeviceAlertsCoordinator.recordSnapshot(context, now,
+            listOf(device(1, "192.168.1.10", IpLists.Category.UNKNOWN)))
+        val tomorrow = now + 24 * 60 * 60_000L
+        DeviceAlertsCoordinator.recordSnapshot(context, tomorrow,
+            listOf(device(2, "192.168.1.12", IpLists.Category.UNKNOWN)))
+        // Today's record survived the next day's write and still reads back.
+        assertEquals(listOf(1L), DeviceAlertsCoordinator.historyFor(context, todayKey).map { it.clientId })
+        assertEquals(listOf(2L), DeviceAlertsCoordinator.historyFor(context, tomorrow).map { it.clientId })
+    }
+
+    /** Pruning is a bounded retention window: only days older than the window are removed. */
+    @Test fun historyPruneKeepsRetentionWindowAndDropsOnlyOlderDays() = kotlinx.coroutines.runBlocking {
+        DeviceAlertsCoordinator.resetForTest(context)
+        val day = 24 * 60 * 60_000L
+        val keptKey = DeviceAlerts.dayKey(now - 10 * day)
+        val staleKey = DeviceAlerts.dayKey(now - 100 * day)
+        writeHistoryDay(keptKey, 7)
+        writeHistoryDay(staleKey, 8)
+        DeviceAlertsCoordinator.recordSnapshot(context, now,
+            listOf(device(1, "192.168.1.10", IpLists.Category.UNKNOWN)))
+        val prefs = context.getSharedPreferences("device_alerts", 0)
+        assertTrue(prefs.contains("history_$keptKey"))
+        assertTrue(prefs.contains("history_${DeviceAlerts.dayKey(now)}"))
+        assertFalse(prefs.contains("history_$staleKey"))
+        // Exactly the window survivors remain: the kept past day and today.
+        assertEquals(2, prefs.all.keys.count { it.startsWith("history_") })
+    }
+
+    /** The unregistered-tracking window: before 18:00 no bookkeeping, after it dwell accrues. */
+    @Test fun insideUnregisteredWindowBoundsTheTrackingDay() {
+        val dayStart = DeviceAlerts.dayStart(now)
+        val at = { h: Int, m: Int -> dayStart + (h * 60 + m) * 60_000L }
+        assertFalse(DeviceAlertsCoordinator.insideUnregisteredWindow(at(17, 59), 18 * 60))
+        assertTrue(DeviceAlertsCoordinator.insideUnregisteredWindow(at(18, 0), 18 * 60))
+        assertTrue(DeviceAlertsCoordinator.insideUnregisteredWindow(at(23, 30), 18 * 60))
+        // 0 = the whole day is inside the window.
+        assertTrue(DeviceAlertsCoordinator.insideUnregisteredWindow(at(9, 0), 0))
+    }
+}
