@@ -148,16 +148,26 @@ object DailyReconciliation {
         //     against sessions started on [dayKey].
         // Without this, a subscribed device leaked into the unregistered list
         // under its new id while its session pointed at the old one.
+        // Index the matchable sessions once: clientId is the primary key, then a
+        // real (unmasked) MAC, then the day-stamped reference — the same
+        // precedence the per-device scan implemented, but usableMac/dayKey are
+        // parsed once per session instead of once per device × session.
+        val candidates = sessions.filter { !it.home && it.state in listOf("ACTIVE", "PAUSED", "ENDED") }
+        val byClientId = HashMap<Long, com.example.db.Session>()
+        val byMac = HashMap<String, com.example.db.Session>()
+        val byStamp = HashMap<String, com.example.db.Session>()
+        for (session in candidates) {
+            session.deviceClientId?.let { if (it !in byClientId) byClientId[it] = session }
+            DeviceAlerts.usableMac(session.deviceMac)?.let { if (it !in byMac) byMac[it] = session }
+            if (session.reference.isNotBlank() && DeviceAlerts.dayKey(session.started) == dayKey && session.reference !in byStamp) {
+                byStamp[session.reference] = session
+            }
+        }
         val subscribed = billable.mapNotNull { device ->
-            val deviceMac = DeviceAlerts.usableMac(device.mac)
-            val deviceStamp = DeviceAlerts.stampOf(device.name)
-            sessions.firstOrNull { session ->
-                !session.home && session.state in listOf("ACTIVE", "PAUSED", "ENDED") &&
-                    ((session.deviceClientId != null && session.deviceClientId == device.clientId) ||
-                        (deviceMac != null && DeviceAlerts.usableMac(session.deviceMac) == deviceMac) ||
-                        (deviceStamp != null && session.reference.isNotBlank() && deviceStamp == session.reference &&
-                            DeviceAlerts.dayKey(session.started) == dayKey))
-            }?.let { device to it }
+            val match = byClientId[device.clientId]
+                ?: DeviceAlerts.usableMac(device.mac)?.let { byMac[it] }
+                ?: DeviceAlerts.stampOf(device.name)?.let { byStamp[it] }
+            match?.let { device to it }
         }
         val subscribedIds = subscribed.map { it.first.clientId }.toSet()
         val others = billable.filter { it.clientId !in subscribedIds }
