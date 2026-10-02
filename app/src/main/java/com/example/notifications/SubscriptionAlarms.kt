@@ -80,8 +80,11 @@ object SubscriptionAlarms {
         // and NEW-device discovery work while the UI is closed. Skipped only when
         // nothing is tracked AND the discovery sweep is not due; a poll failure
         // must never break alarm scheduling.
+        // One binding read per refresh: reused by needsPoll and the alert pass below,
+        // and it stops refresh() from re-polling right after a UI-triggered poll (perf audit).
+        val bindings = DeviceTrackerBridge.activeBindings(app)
         try {
-            if (DeviceTrackerBridge.needsPoll(app)) withTimeout(5000) { DeviceTrackerBridge.poll(app) }
+            if (DeviceTrackerBridge.needsPoll(app, bindings)) withTimeout(5000) { DeviceTrackerBridge.poll(app) }
         } catch (e: CancellationException) { throw e } catch (_: Exception) { /* monitoring is best-effort */ }
         // Deterministic stamp-binding safety net: bind today's still-unbound
         // shortcut sessions against the fresh snapshot (no discovery of its own).
@@ -129,7 +132,7 @@ object SubscriptionAlarms {
         // Only a FRESH snapshot drives evaluation: stale data is treated as a
         // discovery failure (monitoring freezes, never acts on old data).
         val deviceWakeups = try { DeviceAlertsCoordinator.onRefresh(app, now,
-            DeviceTrackerBridge.freshSnapshot(), DeviceTrackerBridge.activeBindings(app)) } catch (e: CancellationException) { throw e } catch (_: Exception) { emptyList() }
+            DeviceTrackerBridge.freshSnapshot(), bindings) } catch (e: CancellationException) { throw e } catch (_: Exception) { emptyList() }
         // Background discovery tick (spec 21): keeps new-device observation alive
         // while the app is closed, on the SAME alarm — never a second scheduler.
         val monitoringWakeup = DeviceTrackerBridge.monitoringWakeup(now)
@@ -206,8 +209,21 @@ object DeviceTrackerBridge {
      * or the monitoring interval elapsed with nothing tracked yet (new-device
      * discovery). When false the poll is skipped entirely.
      */
-    fun needsPoll(app: Context, now: Long = System.currentTimeMillis()): Boolean = try {
-        activeBindings(app).isNotEmpty() ||
+    /**
+     * Minimum gap between two polls. A UI-driven poll is immediately followed by
+     * SubscriptionAlarms.refresh(); without this gap the refresh would fetch the
+     * CLIENTS list a second time for no reason (perf audit: never poll more than needed).
+     */
+    const val MIN_POLL_GAP_MS = 10_000L
+
+    /**
+     * True when background monitoring has something to evaluate or is due for its
+     * periodic discovery sweep. [bindings] lets the caller reuse one session read;
+     * when null it is read here (standalone callers unchanged).
+     */
+    fun needsPoll(app: Context, bindings: Map<Long, String>? = null, now: Long = System.currentTimeMillis()): Boolean = try {
+        if (now - lastPollAttemptAt < MIN_POLL_GAP_MS) false
+        else (bindings ?: activeBindings(app)).isNotEmpty() ||
             DeviceAlertsCoordinator.pending(app).isNotEmpty() ||
             now - lastPollAttemptAt >= MONITOR_INTERVAL_MS
     } catch (_: Exception) { false }

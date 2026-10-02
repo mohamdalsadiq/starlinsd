@@ -80,4 +80,14 @@ class DeviceTrackerBridgeTest {
         DeviceTrackerBridge.updateSnapshot(listOf(device(101)))
         assertFalse(DeviceTrackerBridge.needsPoll(context))
     }
+
+    @Test fun recentObservationSuppressesTheImmediateRepoll() {
+        // A UI poll is immediately followed by refresh(); within MIN_POLL_GAP_MS a
+        // bound session must not force a second CLIENTS read (perf audit)…
+        DeviceTrackerBridge.updateSnapshot(listOf(device(101)))
+        assertFalse(DeviceTrackerBridge.needsPoll(context, bindings = mapOf(101L to "s1")))
+        // …while past the gap the bound session drives polling again.
+        assertTrue(DeviceTrackerBridge.needsPoll(context, bindings = mapOf(101L to "s1"),
+            now = System.currentTimeMillis() + DeviceTrackerBridge.MIN_POLL_GAP_MS + 1))
+    }
 }

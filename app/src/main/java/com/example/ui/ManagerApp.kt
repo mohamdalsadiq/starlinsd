@@ -2,6 +2,7 @@ package com.example.ui
 
 import android.Manifest
 import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -52,6 +53,7 @@ import com.example.data.TrackedDevice
 import com.example.db.*
 import com.example.domain.*
 import com.example.notifications.DeviceAlertsCoordinator
+import com.example.notifications.DeviceTrackerBridge
 import com.example.notifications.SubscriptionAlarms
 import com.example.service.ExpanderHealth
 import com.example.service.TextExpanderService
@@ -67,6 +69,31 @@ internal fun remaining(ms: Long): String {
 internal fun amount(minor: Long): String {
     val number = java.text.NumberFormat.getNumberInstance(Locale.US).apply { maximumFractionDigits = 2 }
     return "${number.format(java.math.BigDecimal.valueOf(minor, 2))} ج.س"
+}
+
+/** "03:00 م" — the primary END TIME display (spec 24: «ينتهي 03:00 م»). */
+internal fun clockTime(at: Long): String = SimpleDateFormat("hh:mm a", Locale.forLanguageTag("ar")).format(Date(at))
+
+/** Slotra's accessibility service state right now; re-read after returning from Android settings (spec 17). */
+internal fun accessibilityEnabled(context: Context): Boolean {
+    val expected = ComponentName(context, TextExpanderService::class.java)
+    return Settings.Secure.getString(context.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
+        .orEmpty().split(':').any { ComponentName.unflattenFromString(it) == expected }
+}
+
+/**
+ * Opens the per-app accessibility page when this Android build has one, and falls
+ * back to the general accessibility list otherwise — the operator never has to
+ * search Settings himself (spec 17).
+ */
+internal fun openAccessibilitySettings(context: Context, onError: (Throwable) -> Unit) {
+    // No public Settings constant exists for this action; the per-app accessibility
+    // page is O+ and some OEM builds lack it, so the general list stays the fallback.
+    val specific = if (Build.VERSION.SDK_INT >= 26)
+        Intent("android.settings.ACCESSIBILITY_DETAILS_SETTINGS", Uri.parse("package:${context.packageName}"))
+    else null
+    val opened = specific != null && runCatching { context.startActivity(specific) }.isSuccess
+    if (!opened) runCatching { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }.onFailure(onError)
 }
 @Composable internal fun Title(title: String, subtitle: String = "") {
     Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
@@ -546,8 +573,10 @@ private fun DeviceConfirmationScreen(vm: MainViewModel) {
     var tariffText by remember(dayKey) { mutableStateOf("") }
     var unpaidText by remember(dayKey) { mutableStateOf("") }
     var fieldsSeeded by remember(dayKey) { mutableStateOf(false) }
-    var showSubscribedDetails by rememberSaveable { mutableStateOf(false) }
     var showUnregisteredDetails by rememberSaveable { mutableStateOf(false) }
+    // Last successful snapshot only (null = stale/unknown): connection state is
+    // display-only and must never be guessed from old data (spec 14).
+    var liveNow by remember { mutableStateOf<Set<Long>?>(null) }
 
     LaunchedEffect(now, dayKey) {
         val loaded = kotlinx.coroutines.withContext(Dispatchers.IO) {
@@ -561,6 +590,7 @@ private fun DeviceConfirmationScreen(vm: MainViewModel) {
         devices = loaded.first
         sessions = loaded.second
         savedSummary = loaded.third
+        liveNow = DeviceTrackerBridge.freshSnapshot()?.map { it.clientId }?.toSet()
         if (!fieldsSeeded) {
             val tariff = loaded.third?.tariff ?: DeviceAlertsCoordinator.unregisteredTariff(context)
             tariffText = Money.show(tariff)
@@ -606,7 +636,7 @@ private fun DeviceConfirmationScreen(vm: MainViewModel) {
     val valid = tariff > 0 && unpaidCount <= qualifiedUnregistered.size
 
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { Title("تأكيد الأجهزة اليومية", "المشترك: عدد وإجمالي مقفول · غير المسجل: عدد × تعرفة − غير الدافعين") }
+        item { Title("تأكيد أجهزة اليوم", "المسجل مقيّد بسعر اختصاره · غير المسجل: عدد × تعرفة − غير الدافعين") }
         item { Panel {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
@@ -615,20 +645,30 @@ private fun DeviceConfirmationScreen(vm: MainViewModel) {
                 }
                 TextButton(onClick = { showPicker = true }) { Text("اختيار يوم") }
             }
-            Text("الأجهزة المُعرف عليها اليوم: ${devices.size}", style = MaterialTheme.typography.bodyMedium)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                SummaryCell("الأجهزة", devices.size.toString(), Modifier.weight(1f))
+                SummaryCell("المسجل", subscribed.size.toString(), Modifier.weight(1f))
+                SummaryCell("يحتاج مراجعة", qualifiedUnregistered.size.toString(), Modifier.weight(1f))
+                SummaryCell("دخل اليوم", amount(grandTotal), Modifier.weight(1f))
+            }
         } }
         item { Panel {
-            SectionHeading(Icons.Default.CheckCircle, "المشترك", "${subscribed.size} أجهزة · ${amount(subscribedTotal)}")
-            Text("المبالغ مقفولة على أسعار الاختصارات؛ لا تعديل بعد تأكيد الاشتراك.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            SectionHeading(Icons.Default.CheckCircle, "المسجل", "${subscribed.size} أجهزة · ${amount(subscribedTotal)}")
+            Text("لا يوجد حقل مبلغ: كل سجل مقفول على سعر اختصاره، ومن سجّل باشتراك يخرج من «يحتاج مراجعة» فورًا.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (subscribed.isEmpty()) Text("لا يوجد")
-            else {
-                TextButton(onClick = { showSubscribedDetails = !showSubscribedDetails }) {
-                    Text(if (showSubscribedDetails) "إخفاء التفاصيل" else "عرض التفاصيل")
-                }
-                if (showSubscribedDetails) subscribed.forEach { (device, session) ->
-                    val dupMark = if (session.id in duplicateSessionIds) "⚠️ " else ""
-                    Text("· $dupMark${device.name.ifBlank { "جهاز ${device.clientId}" }} · ${session.client} #${session.reference.ifBlank { "?" }} · ${amount(session.amount)} (مقفول)",
-                        style = MaterialTheme.typography.bodySmall)
+            else subscribed.forEach { (device, session) ->
+                val dupMark = if (session.id in duplicateSessionIds) "⚠️ " else ""
+                val sessionRemaining = Rules.remaining(session.clock(), now)
+                val endAt = if (session.state == "PAUSED") now + sessionRemaining else session.resumed + session.duration - session.served
+                val connection = liveNow?.let { if (device.clientId in it) "متصل" else "غير متصل" } ?: "غير معروف"
+                Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("$dupMark${device.name.ifBlank { "جهاز ${device.clientId}" }} · ${session.client} #${session.reference.ifBlank { "?" }}",
+                        style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                    Text("المبلغ: ${amount(session.amount)} (من الاختصار · مقفول)", style = MaterialTheme.typography.bodySmall)
+                    Text("بدأ ${clockTime(session.started)} · ينتهي ${clockTime(endAt)}", style = MaterialTheme.typography.bodySmall)
+                    Text("الحالة: $connection · متبقٍ ${remaining(sessionRemaining)}",
+                        style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         } }
@@ -664,7 +704,7 @@ private fun DeviceConfirmationScreen(vm: MainViewModel) {
         } }
         item { Panel {
             SectionHeading(Icons.Default.Calculate, "الملخص المالي لليوم", "حفظ واحد يعيد كتابة نفس السجلات")
-            Text("المشترك: ${subscribed.size} أجهزة · ${amount(subscribedTotal)}")
+            Text("المسجل: ${subscribed.size} أجهزة · ${amount(subscribedTotal)}")
             Text("غير المسجل: $paidCount دافع × ${amount(tariff)} = ${amount(unregisteredNet)}")
             Text("الإجمالي: ${amount(grandTotal)}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             savedSummary?.let { summary ->
@@ -814,6 +854,14 @@ private fun DayPickerDialog(current: String, onPick: (String) -> Unit) {
 }
 
 @Composable
+private fun SummaryCell(label: String, value: String, modifier: Modifier = Modifier) {
+    Column(modifier, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(value, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, maxLines = 1)
+        Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+    }
+}
+
+@Composable
 private fun SettingsScreen(vm: MainViewModel, config: BusinessSettings?, now: Long) {
     val context = LocalContext.current
     val bound by ExpanderHealth.connected.collectAsStateWithLifecycle()
@@ -830,8 +878,24 @@ private fun SettingsScreen(vm: MainViewModel, config: BusinessSettings?, now: Lo
     val backupStatus by vm.backupStatus.collectAsStateWithLifecycle()
     val finance by vm.financial.collectAsStateWithLifecycle()
     var balanceForm by rememberSaveable { mutableStateOf(false) }
-    val component = ComponentName(context, TextExpanderService::class.java)
-    val enabled = remember(now, bound) { Settings.Secure.getString(context.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES).orEmpty().split(':').any { ComponentName.unflattenFromString(it) == component } }
+    val enabled = remember(now, bound) { accessibilityEnabled(context) }
+    // spec 17: re-check automatically when the operator returns from Android settings
+    // and confirm activation in-app instead of leaving him to hunt through Settings.
+    var enabledNow by remember { mutableStateOf(enabled) }
+    var justActivated by remember { mutableStateOf(false) }
+    LaunchedEffect(enabled) { enabledNow = enabled }
+    val activationOwner = LocalLifecycleOwner.current
+    DisposableEffect(activationOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                val current = accessibilityEnabled(context)
+                if (!enabledNow && current) { justActivated = true; vm.message.value = "تم التفعيل ✓" }
+                enabledNow = current
+            }
+        }
+        activationOwner.lifecycle.addObserver(observer)
+        onDispose { activationOwner.lifecycle.removeObserver(observer) }
+    }
     fun open(intent: Intent) { try { context.startActivity(intent) } catch (_: Exception) { vm.message.value = "هذا الإعداد غير متاح هنا؛ افتحه من إعدادات الهاتف." } }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item { Title("الإعدادات", "تحكّم في الحساب والتنبيهات واستمرارية الاختصارات") }
@@ -853,11 +917,17 @@ private fun SettingsScreen(vm: MainViewModel, config: BusinessSettings?, now: Lo
         } }
         item { Panel {
             SectionHeading(Icons.Default.VerifiedUser, "جاهزية التطبيق")
-            Text("الاختصارات: ${if (bound) "الخدمة متصلة" else if (enabled) "مفعّلة؛ النظام لم يربط الخدمة حاليًا" else "تحتاج تفعيل إمكانية الوصول"}")
+            Text("الاختصارات: ${if (bound) "الخدمة متصلة" else if (enabledNow) "مفعّلة؛ النظام لم يربط الخدمة حاليًا" else "تحتاج تفعيل إمكانية الوصول"}")
+            if (!enabledNow) {
+                Text("اضغط [تفعيل الآن] ثم اختر Slotra من قائمة إمكانية الوصول وفعّلها — سيتحقق التطبيق تلقائيًا عند العودة.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Button(enabled = !busy, modifier = Modifier.testTag("activate-shortcuts"),
+                    onClick = { openAccessibilitySettings(context) { vm.message.value = "هذا الإعداد غير متاح هنا؛ افتحه من إعدادات الهاتف." } }) { Text("تفعيل الآن") }
+            } else if (justActivated) Text("تم التفعيل ✓", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
             Text("تطبيقات مسموحة: ${selectedApps.size}")
             Text("الإشعارات: ${if (SubscriptionAlarms.notificationsAllowed(context)) "مسموحة" else "غير مسموحة"}")
             Text("دقة الموعد: ${if (SubscriptionAlarms.exactAllowed(context)) "الإذن متاح" else "قد يتأخر التنبيه؛ فعّل المنبّهات الدقيقة"}")
-            TextButton(onClick = { open(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }) { Text("إعدادات الاختصارات") }
+            TextButton(onClick = { open(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }) { Text("فتح إعدادات إمكانية الوصول") }
             TextButton(onClick = { appsDialog = true }) { Text("اختيار التطبيقات المسموحة") }
             TextButton(onClick = {
                 if (Build.VERSION.SDK_INT >= 33 && context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) notificationRequest.launch(Manifest.permission.POST_NOTIFICATIONS)
