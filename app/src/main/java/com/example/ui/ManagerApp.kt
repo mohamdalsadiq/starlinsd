@@ -17,7 +17,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.selection.toggleable
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -96,11 +99,17 @@ internal fun openAccessibilitySettings(context: Context, onError: (Throwable) ->
     if (!opened) runCatching { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }.onFailure(onError)
 }
 @Composable internal fun Title(title: String, subtitle: String = "") {
-    Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-    if (subtitle.isNotBlank()) Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        if (subtitle.isNotBlank()) Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
 }
-@Composable internal fun Panel(content: @Composable ColumnScope.() -> Unit) {
-    Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp), content = content) }
+@Composable internal fun Panel(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
+    OutlinedCard(modifier.fillMaxWidth(), shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.outlinedCardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp), content = content)
+    }
 }
 @Composable internal fun Field(label: String, value: String, onChange: (String) -> Unit, single: Boolean = true, numeric: Boolean = false, modifier: Modifier = Modifier.fillMaxWidth()) {
     OutlinedTextField(value, onChange, label = { Text(label) }, modifier = modifier, singleLine = single, minLines = if (single) 1 else 3, keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = if (numeric) androidx.compose.ui.text.input.KeyboardType.Decimal else androidx.compose.ui.text.input.KeyboardType.Text))
@@ -109,7 +118,9 @@ internal fun openAccessibilitySettings(context: Context, onError: (Throwable) ->
     FilterChip(selected, onClick, label = { Text(label) })
 }
 @Composable internal fun Form(title: String, dismiss: () -> Unit, save: () -> Unit, valid: Boolean = true, content: @Composable ColumnScope.() -> Unit) {
-    AlertDialog(properties = DialogProperties(usePlatformDefaultWidth = false), onDismissRequest = dismiss, title = { Text(title) }, text = {
+    AlertDialog(properties = DialogProperties(usePlatformDefaultWidth = false), shape = MaterialTheme.shapes.extraLarge,
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+        onDismissRequest = dismiss, title = { Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }, text = {
         Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp), content = content)
     }, confirmButton = { Button(onClick = save, enabled = valid) { Text("حفظ") } }, dismissButton = { TextButton(onClick = dismiss) { Text("إلغاء") } })
 }
@@ -137,8 +148,10 @@ internal fun openAccessibilitySettings(context: Context, onError: (Throwable) ->
     val labels = listOf("الرئيسية", "المشتركون", "الديون", "الاختصارات", "المزيد")
     val icons = listOf(Icons.Default.Dashboard, Icons.Default.People, Icons.Default.AccountBalanceWallet, Icons.Default.Keyboard, Icons.Default.MoreHoriz)
     Scaffold(snackbarHost = { SnackbarHost(host) }, bottomBar = {
-        NavigationBar { labels.forEachIndexed { index, label -> NavigationBarItem(selected = tab == index,
-            onClick = { tab = index; detail = "" }, modifier = Modifier.testTag("nav-$index"), icon = { Icon(icons[index], null) }, label = { Text(label, maxLines = 1) }) } }
+        NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainer) { labels.forEachIndexed { index, label -> NavigationBarItem(selected = tab == index,
+            onClick = { tab = index; detail = "" }, modifier = Modifier.testTag("nav-$index"),
+            colors = NavigationBarItemDefaults.colors(indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)),
+            icon = { Icon(icons[index], null) }, label = { Text(label, maxLines = 1) }) } }
     }) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
             if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -420,13 +433,22 @@ internal fun openAccessibilitySettings(context: Context, onError: (Throwable) ->
 @Composable private fun MoreScreen(open: (String) -> Unit) {
     LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Title("المزيد", "أدوات مشروعك وإعدادات التطبيق") }
-        item { Card(onClick = { open("إدارة الأجهزة") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.Devices, "إدارة الأجهزة", "الأجهزة الحية وقوائم أهل البيت والمراقبة") } } }
-        item { Card(onClick = { open("استعادة الاشتراكات") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.Restore, "استعادة الاشتراكات", "إعادة ربط اشتراك قائم بجهازه بعد تغيير كلمة مرور الشبكة") } } }
-        item { Card(onClick = { open("تأكيد الأجهزة اليومية") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.FactCheck, "تأكيد الأجهزة اليومية", "أجهزة اليوم المرتبطة وغير المرتبطة") } } }
-        item { Card(onClick = { open("اختبار Starlink") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.Router, "اختبار Starlink", "قراءة الأجهزة وتجربة الإيقاف · محليًا") } } }
-        item { Card(onClick = { open("الباقات والأسعار") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.LocalOffer, "الباقات والأسعار", "إدارة المدة والسعر وأهل البيت") } } }
-        item { Card(onClick = { open("التقارير") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.BarChart, "التقارير", "الدخل والتغطية وسجل الأيام") } } }
-        item { Card(onClick = { open("الإعدادات") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.Settings, "الإعدادات", "النسخ الاحتياطي والصلاحيات والدورة") } } }
+        item { MoreItem(Icons.Default.Devices, "إدارة الأجهزة", "الأجهزة الحية وقوائم أهل البيت والمراقبة") { open("إدارة الأجهزة") } }
+        item { MoreItem(Icons.Default.Restore, "استعادة الاشتراكات", "إعادة ربط اشتراك قائم بجهازه بعد تغيير كلمة مرور الشبكة") { open("استعادة الاشتراكات") } }
+        item { MoreItem(Icons.Default.FactCheck, "تأكيد الأجهزة اليومية", "أجهزة اليوم المرتبطة وغير المرتبطة") { open("تأكيد الأجهزة اليومية") } }
+        item { MoreItem(Icons.Default.Router, "اختبار Starlink", "قراءة الأجهزة وتجربة الإيقاف · محليًا") { open("اختبار Starlink") } }
+        item { MoreItem(Icons.Default.LocalOffer, "الباقات والأسعار", "إدارة المدة والسعر وأهل البيت") { open("الباقات والأسعار") } }
+        item { MoreItem(Icons.Default.BarChart, "التقارير", "الدخل والتغطية وسجل الأيام") { open("التقارير") } }
+        item { MoreItem(Icons.Default.Settings, "الإعدادات", "النسخ الاحتياطي والصلاحيات والدورة") { open("الإعدادات") } }
+    }
+}
+
+@Composable private fun MoreItem(icon: androidx.compose.ui.graphics.vector.ImageVector, title: String, subtitle: String, open: () -> Unit) {
+    Card(onClick = open, shape = MaterialTheme.shapes.large, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Box(Modifier.weight(1f)) { SectionHeading(icon, title, subtitle) }
+            Icon(Icons.Default.KeyboardArrowLeft, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 }
 
@@ -469,7 +491,10 @@ internal fun openAccessibilitySettings(context: Context, onError: (Throwable) ->
                 IconButton(enabled = !busy, onClick = { renaming = s }) { Icon(Icons.Default.Edit, "تسمية المشترك") }
             }
             Text("رقم الاشتراك #${s.reference.ifBlank { s.id.take(8) }}", style = MaterialTheme.typography.labelLarge)
-            Text("${s.plan} · ${labels.firstOrNull { it.first == s.state }?.second.orEmpty()}")
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                StatusPill(labels.firstOrNull { it.first == s.state }?.second.orEmpty(), sessionTone(s.state))
+                Text(s.plan, style = MaterialTheme.typography.bodyMedium)
+            }
             var expanded by rememberSaveable(s.id) { mutableStateOf(false) }
             if (expanded) Text("البداية: ${stamp(s.started)}")
             if (expanded && s.deviceClientId != null) Text("الجهاز: ${s.deviceName.ifBlank { "بدون اسم" }} · ${s.deviceIp.ifBlank { "IP غير معروف" }} · معرّف ${s.deviceClientId}",
@@ -667,8 +692,11 @@ private fun DeviceConfirmationScreen(vm: MainViewModel) {
                         style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
                     Text("المبلغ: ${amount(session.amount)} (من الاختصار · مقفول)", style = MaterialTheme.typography.bodySmall)
                     Text("بدأ ${clockTime(session.started)} · ينتهي ${clockTime(endAt)}", style = MaterialTheme.typography.bodySmall)
-                    Text("الحالة: $connection · متبقٍ ${remaining(sessionRemaining)}",
-                        style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        StatusPill(connection, connectionTone(connection))
+                        Text("متبقٍ ${remaining(sessionRemaining)}",
+                            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
             }
         } }
@@ -855,8 +883,10 @@ private fun DayPickerDialog(current: String, onPick: (String) -> Unit) {
 
 @Composable
 private fun SummaryCell(label: String, value: String, modifier: Modifier = Modifier) {
-    Column(modifier, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text(value, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, maxLines = 1)
+    Column(modifier.clip(MaterialTheme.shapes.small).background(MaterialTheme.colorScheme.surfaceVariant).padding(vertical = 8.dp, horizontal = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(value, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.primary, maxLines = 1)
         Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
     }
 }
@@ -917,7 +947,13 @@ private fun SettingsScreen(vm: MainViewModel, config: BusinessSettings?, now: Lo
         } }
         item { Panel {
             SectionHeading(Icons.Default.VerifiedUser, "جاهزية التطبيق")
-            Text("الاختصارات: ${if (bound) "الخدمة متصلة" else if (enabledNow) "مفعّلة؛ النظام لم يربط الخدمة حاليًا" else "تحتاج تفعيل إمكانية الوصول"}")
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("الاختصارات", Modifier.weight(1f))
+                StatusPill(
+                    if (bound) "الخدمة متصلة" else if (enabledNow) "بانتظار الربط" else "تحتاج تفعيل",
+                    if (bound) StatusTone.OK else if (enabledNow) StatusTone.INFO else StatusTone.PENDING,
+                )
+            }
             if (!enabledNow) {
                 Text("اضغط [تفعيل الآن] ثم اختر Slotra من قائمة إمكانية الوصول وفعّلها — سيتحقق التطبيق تلقائيًا عند العودة.",
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
