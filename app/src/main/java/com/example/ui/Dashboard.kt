@@ -13,6 +13,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -24,8 +25,8 @@ import java.util.*
 
 @Composable internal fun SectionHeading(icon: ImageVector, title: String, subtitle: String = "") {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        Box(Modifier.size(44.dp).background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(14.dp)), contentAlignment = Alignment.Center) {
-            Icon(icon, null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
+        Box(Modifier.size(44.dp).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f), RoundedCornerShape(14.dp)), contentAlignment = Alignment.Center) {
+            Icon(icon, null, tint = MaterialTheme.colorScheme.primary)
         }
         Column(Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
@@ -74,8 +75,11 @@ private fun dateLabel(at: Long, pattern: String = "EEEE، d MMMM yyyy") = Simple
             Column { Text("Slotra", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold); Text(dateLabel(snapshot.day), style = MaterialTheme.typography.bodySmall) }
         } }
         item(key = "income") {
-            Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
-                Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Card(Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.extraLarge,
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+                Column(Modifier.fillMaxWidth()
+                    .background(Brush.verticalGradient(listOf(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f), MaterialTheme.colorScheme.primary.copy(alpha = 0.01f))))
+                    .padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("إيراد اليوم المعتمد", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     Text(amount(daily.revenue), Modifier.testTag("today-revenue"),
                         style = MaterialTheme.typography.headlineLarge.copy(textDirection = androidx.compose.ui.text.style.TextDirection.ContentOrLtr),

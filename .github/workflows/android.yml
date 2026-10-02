@@ -33,9 +33,21 @@ jobs:
     - name: Install Android SDK packages
       run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
 
-    - name: Generate debug.keystore
+    - name: Restore stable debug.keystore (update-over-install requires one certificate forever)
+      env:
+        DEBUG_KEYSTORE_B64: ${{ secrets.DEBUG_KEYSTORE_B64 }}
       run: |
-        keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "C=US, O=Android, CN=Android Debug"
+        set -e
+        if [ -z "$DEBUG_KEYSTORE_B64" ]; then
+          echo "::error::Missing secret DEBUG_KEYSTORE_B64 (base64 of the stable debug.keystore)."
+          echo "::error::Every run signing with a fresh key breaks update-over-install (INSTALL_FAILED_UPDATE_INCOMPATIBLE)."
+          echo "::error::Add the secret once (owner-controlled, never committed): base64 -w0 debug.keystore"
+          exit 1
+        fi
+        echo "$DEBUG_KEYSTORE_B64" | base64 -d > debug.keystore
+        SHA256=$(keytool -list -v -keystore debug.keystore -storepass android -alias androiddebugkey 2>/dev/null | grep -m1 'SHA256:' | tr -d ' ')
+        echo "debug.keystore SHA256: $SHA256"
+        test -s debug.keystore
 
     - name: Test, lint, and build Debug APK
       run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleRelease -PunsignedRelease -Proborazzi.test.record=true --stacktrace

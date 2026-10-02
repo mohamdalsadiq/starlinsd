@@ -73,6 +73,23 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
         })
     }
 
+    /**
+     * Phase 4 password-change recovery (§40 report point J): re-links an EXISTING
+     * active/paused subscription to a re-discovered device. No new session, no new
+     * amount, no revenue, no added time — only the four display/diagnostic columns
+     * and the clientId binding change; duration/started/reserved/served/amount are
+     * carried untouched, so remaining time and the projected end time survive.
+     * When [deviceIsLive], a PAUSED session is resumed right away via the existing
+     * changeState path so the tracker continues it from the remaining time.
+     */
+    suspend fun relinkDevice(id: String, device: TrackedDevice, deviceIsLive: Boolean) = db.withTransaction {
+        val s = dao.session(id) ?: throw IllegalArgumentException("الاشتراك غير موجود")
+        require(!s.home && s.state in listOf("ACTIVE", "PAUSED")) { "يمكن استعادة الاشتراكات النشطة أو المتوقفة فقط" }
+        require(device.clientId in 1..4294967295L) { "معرّف الجهاز غير صالح" }
+        dao.updateSession(s.copy(deviceClientId = device.clientId, deviceIp = device.ip, deviceName = device.name, deviceMac = device.mac))
+        if (deviceIsLive && s.state == "PAUSED") changeState(id, "RESUME")
+    }
+
     suspend fun insert(session: Session): Long = db.withTransaction {
         if (dao.session(session.id) != null) return@withTransaction -1L
         val reservation = dao.reservations().firstOrNull { it.sessionId == session.id }
@@ -95,6 +112,108 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
                 if (payment == "BANK") Money.bankToCash(total, settings.premiumBps) else total, payment, settings.premiumBps))
         }
     }
+
+    /**
+     * Phase 4 daily device confirmation (§40 report point H), redesigned per device
+     * (device-identity-reconciliation-v1):
+     *
+     * - The operator edits ONE row per device: registered (from the bound session) and
+     *   confirmed (what was actually received). Unbound devices get an entered amount.
+     * - Storage is the schema-v8 daily_device_confirmations table keyed by
+     *   (dayKey, deviceId) — the stable identity the task requires. Opening the review
+     *   twice, editing 1000→500, or re-confirming rewrites the SAME row: idempotent by
+     *   primary key, never a second revenue record.
+     * - The money still lands in manual_sales as ONE deterministic ledger row per day
+     *   (DailyReconciliation.dailyRowId), REBUILT from the confirmation rows on every
+     *   save. Editing a device's amount updates its row and rewrites the day's ledger
+     *   row in place — manual_sales keeps one row per confirmed day, never duplicates.
+     * - Only confirmed UNREGISTERED amounts create ledger money (spec 14):
+     *   registered (subscribed) income already exists as session revenue, so the
+     *   subscribed amounts are kept on the confirmation rows for audit but
+     *   contribute zero ledger money. Total day income = session revenue +
+     *   this row — never double-counted.
+     * - The row's `at` is pinned inside the EVENT day, so Finance/Revenue bucket it
+     *   into that day regardless of when the operator confirms.
+     * - HOME devices never reach this path: the caller (DeviceConfirmationScreen)
+     *   classifies by identity and excludes them from financial totals.
+     */
+    suspend fun confirmDailyDevices(dayKey: String, devices: List<DailyDeviceAmount>, payment: String) = db.withTransaction {
+        val settings = dao.settings() ?: BusinessSettings()
+        DailyReconciliation.validateDeviceAmounts(payment, devices.map { it.deviceId to it.confirmed })
+        val sessionsById = dao.sessions().associateBy { it.id }
+        devices.forEach { entry ->
+            val session = sessionsById[entry.sessionId]
+            if (session != null) require(!session.home) { "أجهزة أهل البيت لا تدخل في التأكيد المالي" }
+        }
+        val activeSessions = dao.sessions().filter { it.state in listOf("ACTIVE", "PAUSED", "ENDED") }.associateBy { it.id }
+        val now = time()
+        val previous = dao.dayConfirmations(dayKey)
+        val keep = devices.map { it.deviceId }.toSet()
+        previous.filter { it.deviceId !in keep }.forEach { dao.deleteConfirmations(dayKey, listOf(it.deviceId)) }
+        devices.forEach { entry ->
+            val session = activeSessions[entry.sessionId]
+            val registered = session?.takeIf { !it.home && it.recognized > 0 }?.amount ?: 0L
+            val row = DailyDeviceConfirmation(
+                dayKey = dayKey, deviceId = entry.deviceId, sessionId = entry.sessionId,
+                registered = registered, confirmed = entry.confirmed,
+                payment = payment, premiumBps = settings.premiumBps, updated = now)
+            if (previous.any { it.deviceId == entry.deviceId }) dao.upsertConfirmation(row)
+            else dao.insertConfirmation(row)
+        }
+        // Rebuild the day's single ledger row from the surviving confirmation rows.
+        // Only confirmed UNREGISTERED amounts become ledger money (spec 14): the
+        // subscribed amounts already exist as session revenue and must not be
+        // written again.
+        val rows = dao.dayConfirmations(dayKey)
+        val ledger = DailyReconciliation.ledgerRow(dayKey, rows, now, settings.premiumBps, payment)
+        val existing = DailyReconciliation.rowsFor(dao.manualSales(), dayKey)
+        if (ledger == null) existing.forEach { dao.deleteManualSale(it) }
+        else {
+            existing.filter { it.id != ledger.id }.forEach { dao.deleteManualSale(it) }
+            dao.upsertManualSale(ledger)
+        }
+    }
+
+    /** One editable device amount for [confirmDailyDevices]. */
+    data class DailyDeviceAmount(val deviceId: Long, val sessionId: String, val confirmed: Long)
+
+    /**
+     * Confirms the day's unregistered devices as ONE aggregate: [deviceCount] ×
+     * [tariff], minus [unpaidCount] non-paying devices. Rewrites the same summary
+     * row and the same single ledger row on every save (idempotent). Subscribed
+     * devices are confirmed separately via [confirmDailyDevices]; their revenue
+     * already exists as session revenue and never becomes ledger money here.
+     */
+    suspend fun confirmUnregisteredSummary(
+        dayKey: String,
+        deviceCount: Int,
+        tariff: Long,
+        unpaidCount: Int,
+        payment: String,
+    ) = db.withTransaction {
+        val settings = dao.settings() ?: BusinessSettings()
+        DailyReconciliation.validateUnregisteredSummary(deviceCount, tariff, unpaidCount, payment)
+        val net = DailyReconciliation.unregisteredNet(deviceCount, tariff, unpaidCount)
+        val now = time()
+        dao.upsertUnregisteredSummary(UnregisteredDaySummary(
+            dayKey = dayKey, tariff = tariff, deviceCount = deviceCount,
+            unpaidCount = unpaidCount, netTotal = net, payment = payment, updated = now))
+        // Drop any legacy per-device unregistered rows for the day (sessionId == ""):
+        // the aggregate is the single source of truth now.
+        dao.dayConfirmations(dayKey).filter { it.sessionId.isBlank() }
+            .forEach { dao.deleteConfirmations(dayKey, listOf(it.deviceId)) }
+        // Rebuild the day's single ledger row from the summary.
+        val ledger = DailyReconciliation.summaryLedgerRow(dayKey,
+            requireNotNull(dao.unregisteredSummary(dayKey)), now, settings.premiumBps)
+        val existing = DailyReconciliation.rowsFor(dao.manualSales(), dayKey)
+        if (ledger == null) existing.forEach { dao.deleteManualSale(it) }
+        else {
+            existing.filter { it.id != ledger.id }.forEach { dao.deleteManualSale(it) }
+            dao.upsertManualSale(ledger)
+        }
+    }
+
+    suspend fun unregisteredSummary(dayKey: String): UnregisteredDaySummary? = dao.unregisteredSummary(dayKey)
 
     suspend fun expansionPlan(id: Long): Plan = requireNotNull(dao.plan(id)).also { require(it.enabled) { "هذه الباقة متوقفة" } }
 
@@ -164,6 +283,9 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
         require(TextRules.validKeyword(key)) { "الاختصار دون مسافات أو / وبحد أقصى 40 حرفًا" }
         require(shortcut.phrase.isNotBlank() && shortcut.phrase.length <= 10000) { "اكتب نصًا لا يتجاوز 10000 حرف" }
         require(db.shortcutDao().list().none { it.id != shortcut.id && it.keyword == key }) { "هذا الاختصار موجود؛ عدّل الاختصار الحالي" }
+        // Phase 4: subscription shortcuts must not shadow the recovery keyword — the
+        // service checks recovery first, so such a shortcut could never fire.
+        require(key != com.example.service.ExpanderHealth.recoveryKeyword(context)) { "هذه الكلمة محفوظة لاستعادة الاشتراكات؛ اختر غيرها" }
         require(shortcut.planId == null || dao.plan(shortcut.planId) != null) { "اختر باقة موجودة" }
         db.shortcutDao().insert(shortcut.copy(keyword = key))
     }
@@ -249,7 +371,7 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
 
     suspend fun exportJson(): String = withContext(Dispatchers.IO) {
         db.withTransaction {
-            val root = org.json.JSONObject().put("version", 7).put("format", "slotra-backup").put("exportedAt", System.currentTimeMillis())
+            val root = org.json.JSONObject().put("version", 8).put("format", "slotra-backup").put("exportedAt", System.currentTimeMillis())
             fun rows(query: String): org.json.JSONArray {
                 val result = org.json.JSONArray()
                 db.openHelper.readableDatabase.query(query).use { c -> while (c.moveToNext()) {

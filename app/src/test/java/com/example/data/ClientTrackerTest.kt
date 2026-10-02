@@ -81,15 +81,16 @@ class ClientTrackerTest {
     }
 
     @Test fun homeDevicesAreExcludedFromTrackingAndSuggestions() = runBlocking {
-        lists.addHome("192.168.1.10")
+        // HOME by IDENTITY: device 102's clientId is stored as HOME, so the session is
+        // never tracked even though the device is absent from the snapshot.
+        lists.setHomeIdentity(102, "تلفاز", "aa:bb:cc:dd:ee:ff", "192.168.1.10")
         val id = boundSession(102, "ACTIVE")
-        // Bind a device whose IP is now home-listed: tracking must skip it entirely.
-        repo.bindDevice(id, TrackedDevice(102, "تلفاز", "192.168.1.10", "aa:bb:cc:dd:ee:ff", IpLists.Category.HOME))
         ClientTracker(ApplicationProvider.getApplicationContext(), repo, lists, fakeProbe(101)).poll()
         assertEquals("ACTIVE", repo.dao.session(id)!!.state)
-        // The same IP is not offered to the binding flow.
+        // A HOME identity device (103) is not offered to the binding flow.
+        lists.setHomeIdentity(103, "جهاز", "aa:bb:cc:00:00:03", "192.168.1.11")
         val tracker = ClientTracker(ApplicationProvider.getApplicationContext(), repo, lists,
-            { listOf(com.example.network.StarlinkProtocol.Client("d103", "192.168.1.10", "aa:bb:cc:00:00:03", true, 103, false, null)) })
+            { listOf(com.example.network.StarlinkProtocol.Client("d103", "192.168.1.11", "aa:bb:cc:00:00:03", true, 103, false, null)) })
         val choices = DeviceSelection.choose(tracker.snapshotBlocking().orEmpty(), emptySet())
         assertTrue(choices.unbound)
     }

@@ -2,6 +2,7 @@ package com.example.ui
 
 import android.Manifest
 import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -12,10 +13,14 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.selection.toggleable
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -40,11 +45,18 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import com.example.MainViewModel
+import com.example.data.DailyReconciliation
+import com.example.data.DeviceAlerts
+import com.example.data.DeviceRecovery
 import com.example.data.DeviceSelection
 import com.example.data.IpListStore
+import com.example.data.IpLists
+import com.example.data.SubscriptionRepository
 import com.example.data.TrackedDevice
 import com.example.db.*
 import com.example.domain.*
+import com.example.notifications.DeviceAlertsCoordinator
+import com.example.notifications.DeviceTrackerBridge
 import com.example.notifications.SubscriptionAlarms
 import com.example.service.ExpanderHealth
 import com.example.service.TextExpanderService
@@ -61,26 +73,59 @@ internal fun amount(minor: Long): String {
     val number = java.text.NumberFormat.getNumberInstance(Locale.US).apply { maximumFractionDigits = 2 }
     return "${number.format(java.math.BigDecimal.valueOf(minor, 2))} ج.س"
 }
+
+/** "03:00 م" — the primary END TIME display (spec 24: «ينتهي 03:00 م»). */
+internal fun clockTime(at: Long): String = SimpleDateFormat("hh:mm a", Locale.forLanguageTag("ar")).format(Date(at))
+
+/** Slotra's accessibility service state right now; re-read after returning from Android settings (spec 17). */
+internal fun accessibilityEnabled(context: Context): Boolean {
+    val expected = ComponentName(context, TextExpanderService::class.java)
+    return Settings.Secure.getString(context.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
+        .orEmpty().split(':').any { ComponentName.unflattenFromString(it) == expected }
+}
+
+/**
+ * Opens the per-app accessibility page when this Android build has one, and falls
+ * back to the general accessibility list otherwise — the operator never has to
+ * search Settings himself (spec 17).
+ */
+internal fun openAccessibilitySettings(context: Context, onError: (Throwable) -> Unit) {
+    // No public Settings constant exists for this action; the per-app accessibility
+    // page is O+ and some OEM builds lack it, so the general list stays the fallback.
+    val specific = if (Build.VERSION.SDK_INT >= 26)
+        Intent("android.settings.ACCESSIBILITY_DETAILS_SETTINGS", Uri.parse("package:${context.packageName}"))
+    else null
+    val opened = specific != null && runCatching { context.startActivity(specific) }.isSuccess
+    if (!opened) runCatching { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }.onFailure(onError)
+}
 @Composable internal fun Title(title: String, subtitle: String = "") {
-    Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-    if (subtitle.isNotBlank()) Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        if (subtitle.isNotBlank()) Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
 }
-@Composable internal fun Panel(content: @Composable ColumnScope.() -> Unit) {
-    Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp), content = content) }
+@Composable internal fun Panel(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
+    OutlinedCard(modifier.fillMaxWidth(), shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.outlinedCardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp), content = content)
+    }
 }
-@Composable internal fun Field(label: String, value: String, onChange: (String) -> Unit, single: Boolean = true, numeric: Boolean = false) {
-    OutlinedTextField(value, onChange, label = { Text(label) }, modifier = Modifier.fillMaxWidth(), singleLine = single, minLines = if (single) 1 else 3, keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = if (numeric) androidx.compose.ui.text.input.KeyboardType.Decimal else androidx.compose.ui.text.input.KeyboardType.Text))
+@Composable internal fun Field(label: String, value: String, onChange: (String) -> Unit, single: Boolean = true, numeric: Boolean = false, modifier: Modifier = Modifier.fillMaxWidth()) {
+    OutlinedTextField(value, onChange, label = { Text(label) }, modifier = modifier, singleLine = single, minLines = if (single) 1 else 3, keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = if (numeric) androidx.compose.ui.text.input.KeyboardType.Decimal else androidx.compose.ui.text.input.KeyboardType.Text))
 }
 @Composable internal fun Choice(label: String, selected: Boolean, onClick: () -> Unit) {
     FilterChip(selected, onClick, label = { Text(label) })
 }
 @Composable internal fun Form(title: String, dismiss: () -> Unit, save: () -> Unit, valid: Boolean = true, content: @Composable ColumnScope.() -> Unit) {
-    AlertDialog(properties = DialogProperties(usePlatformDefaultWidth = false), onDismissRequest = dismiss, title = { Text(title) }, text = {
+    AlertDialog(properties = DialogProperties(usePlatformDefaultWidth = false), shape = MaterialTheme.shapes.extraLarge,
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+        onDismissRequest = dismiss, title = { Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }, text = {
         Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp), content = content)
     }, confirmButton = { Button(onClick = save, enabled = valid) { Text("حفظ") } }, dismissButton = { TextButton(onClick = dismiss) { Text("إلغاء") } })
 }
 
-@Composable fun ManagerApp(vm: MainViewModel, requestedSession: String?) {
+@Composable fun ManagerApp(vm: MainViewModel, requestedSession: String?, requestedConfirmation: String? = null, requestedRecovery: String? = null) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var detail by rememberSaveable { mutableStateOf("") }
     var newSession by rememberSaveable { mutableStateOf(false) }
@@ -94,13 +139,19 @@ internal fun amount(minor: Long): String {
         while (true) { vm.refresh(); delay(15000) }
     } }
     LaunchedEffect(requestedSession) { if (requestedSession != null) { tab = 1; detail = "" } }
+    // Phase 3 confirmation tap-in (spec 21): opens the temporary confirmation detail.
+    LaunchedEffect(requestedConfirmation) { if (requestedConfirmation != null) { tab = 4; detail = "تأكيد الأجهزة اليومية" } }
+    LaunchedEffect(requestedRecovery) { if (requestedRecovery != null) { tab = 4; detail = "استعادة الاشتراكات" } }
+    var requestedRecoveryState by remember { mutableStateOf(requestedRecovery) }
     LaunchedEffect(message) { message?.let { host.showSnackbar(it); vm.message.value = null } }
     BackHandler(detail.isNotBlank() || tab != 0) { if (detail.isNotBlank()) detail = "" else tab = 0 }
     val labels = listOf("الرئيسية", "المشتركون", "الديون", "الاختصارات", "المزيد")
     val icons = listOf(Icons.Default.Dashboard, Icons.Default.People, Icons.Default.AccountBalanceWallet, Icons.Default.Keyboard, Icons.Default.MoreHoriz)
     Scaffold(snackbarHost = { SnackbarHost(host) }, bottomBar = {
-        NavigationBar { labels.forEachIndexed { index, label -> NavigationBarItem(selected = tab == index,
-            onClick = { tab = index; detail = "" }, modifier = Modifier.testTag("nav-$index"), icon = { Icon(icons[index], null) }, label = { Text(label, maxLines = 1) }) } }
+        NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainer) { labels.forEachIndexed { index, label -> NavigationBarItem(selected = tab == index,
+            onClick = { tab = index; detail = "" }, modifier = Modifier.testTag("nav-$index"),
+            colors = NavigationBarItemDefaults.colors(indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)),
+            icon = { Icon(icons[index], null) }, label = { Text(label, maxLines = 1) }) } }
     }) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
             if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -114,6 +165,8 @@ internal fun amount(minor: Long): String {
                         when {
                             detail == "اختبار Starlink" -> StarlinkTestScreen()
                             detail == "إدارة الأجهزة" -> DevicesScreen(vm)
+                            detail == "تأكيد الأجهزة اليومية" -> DeviceConfirmationScreen(vm)
+                            detail == "استعادة الاشتراكات" -> RecoveryScreen(vm)
                             detail == "الإعدادات" -> {
                                 val config by vm.settings.collectAsStateWithLifecycle()
                                 val now by vm.clock.collectAsStateWithLifecycle()
@@ -132,7 +185,7 @@ internal fun amount(minor: Long): String {
                                     detail == "التقارير" -> ReportsScreen(ready, vm::correctRevenue)
                                     tab == 2 -> DebtsScreen(ready.data.debts, ready.data.payments, ready.budget, ready.day, busy, vm::saveDebt, vm::payDebt)
                                     else -> Dashboard(ready, { bulk = true }, { detail = "التقارير" }, vm::correctRevenue,
-                                        live = { LiveOverview(vm) { tab = 1 } }) { newSession = true }
+                                        live = { LiveOverview(vm) { tab = 1 }; DailyReviewCard(vm) { detail = "تأكيد الأجهزة اليومية" } }) { newSession = true }
                                 }
                             }
                             tab == 1 -> {
@@ -244,19 +297,64 @@ internal fun amount(minor: Long): String {
     }
 }
 /**
- * Live router clients + home/watch list management. Classification by IP; a HOME device
- * is never suggested for binding and never paused or resumed. The lists exist now;
- * watch-list notifications are a later feature by design.
+ * Compact daily-reconciliation summary on the home tab (spec 16): registered
+ * subscription income vs confirmed unregistered money for today, with one tap
+ * to the full confirmation screen. HOME/WATCH devices never enter the
+ * financial totals (spec 18). Read-only: all edits stay in the detail screen.
+ */
+@Composable private fun DailyReviewCard(vm: MainViewModel, open: () -> Unit) {
+    val context = LocalContext.current
+    val now by vm.clock.collectAsStateWithLifecycle()
+    val dayKey = remember(now) { DeviceAlerts.dayKey(now) }
+    var devices by remember { mutableStateOf<List<DeviceAlerts.DayDevice>>(emptyList()) }
+    var sessions by remember { mutableStateOf<List<com.example.db.Session>>(emptyList()) }
+    val sales by vm.manualSales.collectAsStateWithLifecycle()
+    LaunchedEffect(now, dayKey) {
+        withContext(Dispatchers.IO) {
+            devices = DeviceAlertsCoordinator.historyFor(context, dayKey)
+            sessions = com.example.db.AppDatabase.getDatabase(context).businessDao().sessions()
+        }
+    }
+    // Subscription chain + financial split (pure, unit-tested): HOME/WATCH never
+    // enter the financial totals.
+    val groups = remember(devices, sessions, dayKey) { DailyReconciliation.confirmationGroups(devices, sessions, dayKey) }
+    val subscribed = groups.subscribed
+    val unregistered = groups.unregistered
+    val registeredTotal = remember(subscribed) { subscribed.sumOf { it.second.amount } }
+    val confirmedUnregistered = remember(sales, dayKey) {
+        DailyReconciliation.rowsFor(sales, dayKey).firstOrNull { it.id == DailyReconciliation.dailyRowId(dayKey) }?.amount ?: 0L
+    }
+    Panel {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("المراجعة اليومية", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            TextButton(onClick = open) { Text("تأكيد الأجهزة") }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            DetailMetric("مسجّل (${subscribed.size})", amount(registeredTotal), Modifier.weight(1f))
+            DetailMetric("غير مسجّل (${unregistered.size})", amount(confirmedUnregistered), Modifier.weight(1f))
+        }
+        Text("المسجّل تلقائي من الاشتراكات · غير المسجّل بعد التأكيد فقط", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+/**
+ * Live router clients + the PERMANENT home/watch identity registry (schema v8).
+ * Classification is clientId-first with a real-MAC fallback; the current IP is
+ * display-only metadata. Adding a device to HOME is a one-time, idempotent and
+ * persistent act: every later day it is recognized automatically and skipped by
+ * the customer pipeline (no session, no grace, no alert, no revenue). Legacy manual
+ * IP rows are kept only for old installs and are upgraded to identity on first sight.
  */
 @Composable private fun DevicesScreen(vm: MainViewModel) {
     val context = LocalContext.current
     val homeIps by vm.homeIps.collectAsStateWithLifecycle()
     val watchIps by vm.watchIps.collectAsStateWithLifecycle()
+    val identities by vm.identities.collectAsStateWithLifecycle()
     val scan by vm.deviceScanState.collectAsStateWithLifecycle()
     val busy by vm.busy.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { vm.refreshDevices() }
     var newHome by rememberSaveable { mutableStateOf(false) }
     var newWatch by rememberSaveable { mutableStateOf(false) }
+    var renameTarget by remember { mutableStateOf<com.example.db.DeviceIdentity?>(null) }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Title("إدارة الأجهزة", "قراءة محلية من راوتر Starlink · بدون حساب سحابي") }
         item {
@@ -280,36 +378,74 @@ internal fun amount(minor: Long): String {
             Panel {
                 DeviceRow(d)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextButton(enabled = !busy, onClick = { vm.addHomeIp(d.ip, d.name) }) { Text("إضافة لأهل البيت (IP)") }
-                    TextButton(enabled = !busy, onClick = { vm.addWatchIp(d.ip, d.name) }) { Text("إضافة للمراقبة") }
+                    // Identity-based: records the stable clientId (MAC + last IP kept for
+                    // display), so a DHCP IP change can never un-HOME the device.
+                    TextButton(enabled = !busy, onClick = { vm.addHomeDevice(d) }) { Text("إضافة لأهل البيت") }
+                    TextButton(enabled = !busy, onClick = { vm.addWatchDevice(d) }) { Text("إضافة للمراقبة") }
                 }
             }
         }
         item { Panel {
-            SectionHeading(Icons.Default.Home, "أهل البيت (بالعناوين IP)", "مستبعد تمامًا من التتبع والإيقاف التلقائي")
-            homeIps.forEach { entry ->
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("${entry.ip}${if (entry.label.isBlank()) "" else " · ${entry.label}"}", Modifier.weight(1f))
-                    TextButton(enabled = !busy, onClick = { vm.removeHomeIp(entry.ip) }) { Text("حذف") }
+            SectionHeading(Icons.Default.Home, "أهل البيت · سجل دائم", "تسجيل مرة واحدة؛ يُتعرَّف عليه تلقائيًا كل يوم — تغيّر IP لا يُغيّر هويته")
+            val homeEntries = identities.filter { it.list == "HOME" }
+            if (homeEntries.isEmpty() && homeIps.isEmpty()) Text("لا توجد أجهزة محفوظة بعد. أضف جهازًا من قائمة «الأجهزة المتصلة الآن».", style = MaterialTheme.typography.bodySmall)
+            homeEntries.forEach { entry ->
+                val liveDevice = scan?.devices?.firstOrNull { it.clientId == entry.deviceId }
+                Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(entry.name.ifBlank { "جهاز ${entry.deviceId}" }, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                    Text("المعرّف الثابت: ${entry.deviceId} · MAC: ${entry.mac.ifBlank { "غير متاح" }}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        StatusPill(if (liveDevice != null) "متصل الآن" else "غير متصل", if (liveDevice != null) StatusTone.OK else StatusTone.MUTED)
+                        Text("العنوان الحالي: ${liveDevice?.ip ?: entry.lastIp.ifBlank { "؟" }}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        TextButton(enabled = !busy, onClick = { renameTarget = entry }) { Text("إعادة تسمية") }
+                        TextButton(enabled = !busy, onClick = { vm.removeHomeDevice(entry.deviceId) }) { Text("إزالة من أهل البيت") }
+                    }
                 }
             }
-            if (homeIps.isEmpty()) Text("لا توجد عناوين محفوظة بعد.", style = MaterialTheme.typography.bodySmall)
-            TextButton(onClick = { newHome = true }) { Text("إضافة عنوان يدويًا") }
+            if (homeIps.isNotEmpty()) {
+                Text("قوائم IP قديمة (تُرقّى تلقائيًا إلى هوية عند ظهور الجهاز):", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                homeIps.forEach { entry ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("${entry.ip}${if (entry.label.isBlank()) "" else " · ${entry.label}"} (قديم)", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                        TextButton(enabled = !busy, onClick = { vm.removeHomeIp(entry.ip) }) { Text("حذف") }
+                    }
+                }
+            }
+            TextButton(onClick = { newHome = true }) { Text("إضافة عنوان يدويًا (طريقة قديمة)") }
         } }
         item { Panel {
-            SectionHeading(Icons.Default.Visibility, "قائمة المراقبة (بالعناوين IP)", "تُصنَّف الآن؛ إشعاراتها لاحقًا")
+            SectionHeading(Icons.Default.Visibility, "قائمة المراقبة (بالهوية)", "مرتبطة بمعرّف الجهاز؛ إشعارها يعرض الاسم وآخر IP")
+            identities.filter { it.list == "WATCH" }.forEach { entry ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("${entry.name.ifBlank { "جهاز ${entry.deviceId}" }} · آخر عنوان ${entry.lastIp.ifBlank { "؟" }}", Modifier.weight(1f))
+                    TextButton(enabled = !busy, onClick = { vm.removeWatchDevice(entry.deviceId) }) { Text("حذف") }
+                }
+            }
             watchIps.forEach { entry ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("${entry.ip}${if (entry.label.isBlank()) "" else " · ${entry.label}"}", Modifier.weight(1f))
+                    Text("${entry.ip}${if (entry.label.isBlank()) "" else " · ${entry.label}"} (IP قديم)", Modifier.weight(1f))
                     TextButton(enabled = !busy, onClick = { vm.removeWatchIp(entry.ip) }) { Text("حذف") }
                 }
             }
-            if (watchIps.isEmpty()) Text("لا توجد عناوين محفوظة بعد.", style = MaterialTheme.typography.bodySmall)
-            TextButton(onClick = { newWatch = true }) { Text("إضافة عنوان يدويًا") }
+            if (identities.none { it.list == "WATCH" } && watchIps.isEmpty()) Text("لا توجد أجهزة محفوظة بعد.", style = MaterialTheme.typography.bodySmall)
+            TextButton(onClick = { newWatch = true }) { Text("إضافة عنوان يدويًا (IP)") }
         } }
     }
-    if (newHome) IpEntryForm("إضافة لأهل البيت", { newHome = false }) { ip, label -> vm.addHomeIp(ip, label); newHome = false }
-    if (newWatch) IpEntryForm("إضافة للمراقبة", { newWatch = false }) { ip, label -> vm.addWatchIp(ip, label); newWatch = false }
+    if (newHome) IpEntryForm("إضافة عنوان قديم", { newHome = false }) { ip, label -> vm.addHomeIp(ip, label); newHome = false }
+    if (newWatch) IpEntryForm("إضافة عنوان قديم", { newWatch = false }) { ip, label -> vm.addWatchIp(ip, label); newWatch = false }
+    renameTarget?.let { entry ->
+        RenameDeviceForm(entry.name, { renameTarget = null }) { name -> vm.renameHomeDevice(entry.deviceId, name); renameTarget = null }
+    }
+}
+
+@Composable private fun RenameDeviceForm(current: String, dismiss: () -> Unit, save: (String) -> Unit) {
+    var name by rememberSaveable(current) { mutableStateOf(current) }
+    Form("إعادة تسمية جهاز أهل البيت", dismiss, { save(name.trim()) }, name.trim().isNotBlank()) {
+        Field("اسم الجهاز", name, { name = it })
+        Text("الاسم للعرض فقط؛ الهوية تبقى المعرّف الثابت (ثم MAC).", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
 }
 
 @Composable private fun IpEntryForm(title: String, dismiss: () -> Unit, save: (String, String) -> Unit) {
@@ -325,11 +461,22 @@ internal fun amount(minor: Long): String {
 @Composable private fun MoreScreen(open: (String) -> Unit) {
     LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Title("المزيد", "أدوات مشروعك وإعدادات التطبيق") }
-        item { Card(onClick = { open("إدارة الأجهزة") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.Devices, "إدارة الأجهزة", "الأجهزة الحية وقوائم أهل البيت والمراقبة") } } }
-        item { Card(onClick = { open("اختبار Starlink") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.Router, "اختبار Starlink", "قراءة الأجهزة وتجربة الإيقاف · محليًا") } } }
-        item { Card(onClick = { open("الباقات والأسعار") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.LocalOffer, "الباقات والأسعار", "إدارة المدة والسعر وأهل البيت") } } }
-        item { Card(onClick = { open("التقارير") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.BarChart, "التقارير", "الدخل والتغطية وسجل الأيام") } } }
-        item { Card(onClick = { open("الإعدادات") }) { Column(Modifier.padding(16.dp)) { SectionHeading(Icons.Default.Settings, "الإعدادات", "النسخ الاحتياطي والصلاحيات والدورة") } } }
+        item { MoreItem(Icons.Default.Devices, "إدارة الأجهزة", "الأجهزة الحية وقوائم أهل البيت والمراقبة") { open("إدارة الأجهزة") } }
+        item { MoreItem(Icons.Default.Restore, "استعادة الاشتراكات", "إعادة ربط اشتراك قائم بجهازه بعد تغيير كلمة مرور الشبكة") { open("استعادة الاشتراكات") } }
+        item { MoreItem(Icons.Default.FactCheck, "تأكيد الأجهزة اليومية", "أجهزة اليوم المرتبطة وغير المرتبطة") { open("تأكيد الأجهزة اليومية") } }
+        item { MoreItem(Icons.Default.Router, "اختبار Starlink", "قراءة الأجهزة وتجربة الإيقاف · محليًا") { open("اختبار Starlink") } }
+        item { MoreItem(Icons.Default.LocalOffer, "الباقات والأسعار", "إدارة المدة والسعر وأهل البيت") { open("الباقات والأسعار") } }
+        item { MoreItem(Icons.Default.BarChart, "التقارير", "الدخل والتغطية وسجل الأيام") { open("التقارير") } }
+        item { MoreItem(Icons.Default.Settings, "الإعدادات", "النسخ الاحتياطي والصلاحيات والدورة") { open("الإعدادات") } }
+    }
+}
+
+@Composable private fun MoreItem(icon: androidx.compose.ui.graphics.vector.ImageVector, title: String, subtitle: String, open: () -> Unit) {
+    Card(onClick = open, shape = MaterialTheme.shapes.large, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Box(Modifier.weight(1f)) { SectionHeading(icon, title, subtitle) }
+            Icon(Icons.Default.KeyboardArrowLeft, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 }
 
@@ -372,7 +519,10 @@ internal fun amount(minor: Long): String {
                 IconButton(enabled = !busy, onClick = { renaming = s }) { Icon(Icons.Default.Edit, "تسمية المشترك") }
             }
             Text("رقم الاشتراك #${s.reference.ifBlank { s.id.take(8) }}", style = MaterialTheme.typography.labelLarge)
-            Text("${s.plan} · ${labels.firstOrNull { it.first == s.state }?.second.orEmpty()}")
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                StatusPill(labels.firstOrNull { it.first == s.state }?.second.orEmpty(), sessionTone(s.state))
+                Text(s.plan, style = MaterialTheme.typography.bodyMedium)
+            }
             var expanded by rememberSaveable(s.id) { mutableStateOf(false) }
             if (expanded) Text("البداية: ${stamp(s.started)}")
             if (expanded && s.deviceClientId != null) Text("الجهاز: ${s.deviceName.ifBlank { "بدون اسم" }} · ${s.deviceIp.ifBlank { "IP غير معروف" }} · معرّف ${s.deviceClientId}",
@@ -386,6 +536,10 @@ internal fun amount(minor: Long): String {
                 Text(remaining(Rules.remaining(s.clock(), timerNow)), Modifier.testTag("timer-${s.id}"),
                     style = MaterialTheme.typography.headlineLarge.copy(textDirection = androidx.compose.ui.text.style.TextDirection.Ltr),
                     fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                // Phase 4 (spec 6): END TIME is the primary value the operator sees,
+                // always reflecting the real clock (a pause shifts it; resume re-extends).
+                Text("النهاية: ${stamp(s.resumed + s.duration - s.served)}", Modifier.testTag("endtime-${s.id}"),
+                    style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             }
             if (expanded && s.state == "ACTIVE") Text("النهاية: ${stamp(s.resumed + s.duration - s.served)}")
             val financial = ledger["session:${s.id}"]
@@ -446,9 +600,327 @@ internal fun amount(minor: Long): String {
             Field("السعر بالجنيه السوداني", cash, { cash = it }, numeric = true)
         }
     }
+}/**
+ * Daily device reconciliation screen (device-identity-reconciliation-v1). The
+ * operator picks one event day and sees the day's recognized devices split into
+ * A) subscribed (bound ACTIVE/PAUSED/ENDED with its registered amount),
+ * B) appeared without a subscription (proposed/uncertain),
+ * C) HOME (identity-based; never enters the money),
+ * D) WATCH (separate status; never auto-revenue).
+ * Each A/B device has ONE editable confirmed amount; saving upserts the
+ * (dayKey, deviceId) row and rebuilds the day's single ledger row — idempotent,
+ * never a duplicate revenue record. Identity is clientId; IP is display-only.
+ */
+@Composable
+private fun DeviceConfirmationScreen(vm: MainViewModel) {
+    val context = LocalContext.current
+    val now by vm.clock.collectAsStateWithLifecycle()
+    var devices by remember { mutableStateOf<List<DeviceAlerts.DayDevice>>(emptyList()) }
+    var sessions by remember { mutableStateOf<List<com.example.db.Session>>(emptyList()) }
+    var dayKey by rememberSaveable { mutableStateOf(DeviceAlerts.dayKey(System.currentTimeMillis())) }
+    var payment by rememberSaveable(dayKey) { mutableStateOf("CASH") }
+    var showPicker by rememberSaveable { mutableStateOf(false) }
+    var savedSummary by remember(dayKey) { mutableStateOf<com.example.db.UnregisteredDaySummary?>(null) }
+    // Aggregate unregistered fields: seeded once per day from the saved summary
+    // (or the tariff setting), then owned by the operator's typing.
+    var tariffText by remember(dayKey) { mutableStateOf("") }
+    var unpaidText by remember(dayKey) { mutableStateOf("") }
+    var fieldsSeeded by remember(dayKey) { mutableStateOf(false) }
+    var showUnregisteredDetails by rememberSaveable { mutableStateOf(false) }
+    // Last successful snapshot only (null = stale/unknown): connection state is
+    // display-only and must never be guessed from old data (spec 14).
+    var liveNow by remember { mutableStateOf<Set<Long>?>(null) }
+
+    LaunchedEffect(now, dayKey) {
+        val loaded = kotlinx.coroutines.withContext(Dispatchers.IO) {
+            val dao = com.example.db.AppDatabase.getDatabase(context).businessDao()
+            Triple(
+                DeviceAlertsCoordinator.historyFor(context, dayKey),
+                dao.sessions(),
+                dao.unregisteredSummary(dayKey),
+            )
+        }
+        devices = loaded.first
+        sessions = loaded.second
+        savedSummary = loaded.third
+        liveNow = DeviceTrackerBridge.freshSnapshot()?.map { it.clientId }?.toSet()
+        if (!fieldsSeeded) {
+            val tariff = loaded.third?.tariff ?: DeviceAlertsCoordinator.unregisteredTariff(context)
+            tariffText = Money.show(tariff)
+            unpaidText = (loaded.third?.unpaidCount ?: 0).takeIf { it > 0 }?.toString() ?: ""
+            fieldsSeeded = true
+        }
+    }
+
+    // Financial split (pure, unit-tested): HOME/WATCH never enter the groups.
+    val groups = remember(devices, sessions, dayKey) { DailyReconciliation.confirmationGroups(devices, sessions, dayKey) }
+    val subscribed = groups.subscribed
+    val watch = groups.watch
+    // Unregistered = binding-excluded devices that DWELLED past the delay,
+    // counted only inside the operator's tracking window and minus the devices
+    // he removed by hand today. Passing phones never qualify; a later
+    // subscription moves the device out.
+    val delay = remember(now) { DeviceAlertsCoordinator.knownDelayMinutes(context) }
+    val windowStart = remember(now) { DeviceAlertsCoordinator.knownUnregisteredStartMinute(context) }
+    var dismissTick by remember { mutableStateOf(0) }
+    val dismissed = remember(context, dayKey, dismissTick) { DeviceAlertsCoordinator.dismissedUnregistered(context, dayKey) }
+    val qualifiedUnregistered = remember(devices, sessions, dayKey, delay, now, windowStart, dismissed) {
+        DailyReconciliation.qualifiedUnregistered(devices, sessions, dayKey, delay, now, windowStart, dismissed)
+    }
+
+    // Subscribed amounts are LOCKED to the shortcut plan prices — no per-device edits.
+    // One sale = one amount: a session matched by two device records (misbinding
+    // aftermath — e.g. the stamped device AND the wrongly-bound one) must not
+    // double-count its amount. The session is the money identity.
+    val subscribedTotal = remember(subscribed) { subscribed.distinctBy { it.second.id }.sumOf { it.second.amount } }
+    // Sessions claimed by more than one device need the user's eye: re-link the
+    // right device from the recovery screen.
+    val duplicateSessionIds = remember(subscribed) {
+        subscribed.groupingBy { it.second.id }.eachCount().filter { it.value > 1 }.keys
+    }
+    val tariff = remember(tariffText) { Money.parse(tariffText) ?: 0L }
+    val unpaidCount = remember(unpaidText) { unpaidText.toIntOrNull()?.coerceAtLeast(0) ?: 0 }
+    val paidCount = (qualifiedUnregistered.size - unpaidCount).coerceAtLeast(0)
+    val unregisteredNet = remember(qualifiedUnregistered, tariff, unpaidCount) {
+        runCatching { DailyReconciliation.unregisteredNet(qualifiedUnregistered.size, tariff, unpaidCount) }.getOrDefault(0L)
+    }
+    val grandTotal = subscribedTotal + unregisteredNet
+    val busy by vm.busy.collectAsStateWithLifecycle()
+    val valid = tariff > 0 && unpaidCount <= qualifiedUnregistered.size
+
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { Title("تأكيد أجهزة اليوم", "المسجل مقيّد بسعر اختصاره · غير المسجل: عدد × تعرفة − غير الدافعين") }
+        item { Panel {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("يوم المراجعة", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(dayLabel(dayKey), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                }
+                TextButton(onClick = { showPicker = true }) { Text("اختيار يوم") }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                SummaryCell("الأجهزة", devices.size.toString(), Modifier.weight(1f))
+                SummaryCell("المسجل", subscribed.size.toString(), Modifier.weight(1f))
+                SummaryCell("يحتاج مراجعة", qualifiedUnregistered.size.toString(), Modifier.weight(1f))
+                SummaryCell("دخل اليوم", amount(grandTotal), Modifier.weight(1f))
+            }
+        } }
+        item { Panel {
+            SectionHeading(Icons.Default.CheckCircle, "المسجل", "${subscribed.size} أجهزة · ${amount(subscribedTotal)}")
+            Text("لا يوجد حقل مبلغ: كل سجل مقفول على سعر اختصاره، ومن سجّل باشتراك يخرج من «يحتاج مراجعة» فورًا.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (subscribed.isEmpty()) Text("لا يوجد")
+            else subscribed.forEach { (device, session) ->
+                val dupMark = if (session.id in duplicateSessionIds) "⚠️ " else ""
+                val sessionRemaining = Rules.remaining(session.clock(), now)
+                val endAt = if (session.state == "PAUSED") now + sessionRemaining else session.resumed + session.duration - session.served
+                val connection = liveNow?.let { if (device.clientId in it) "متصل" else "غير متصل" } ?: "غير معروف"
+                Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("$dupMark${device.name.ifBlank { "جهاز ${device.clientId}" }} · ${session.client} #${session.reference.ifBlank { "?" }}",
+                        style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                    Text("المبلغ: ${amount(session.amount)} (من الاختصار · مقفول)", style = MaterialTheme.typography.bodySmall)
+                    Text("بدأ ${clockTime(session.started)} · ينتهي ${clockTime(endAt)}", style = MaterialTheme.typography.bodySmall)
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        StatusPill(connection, connectionTone(connection))
+                        Text("متبقٍ ${remaining(sessionRemaining)}",
+                            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+        } }
+        item { Panel {
+            SectionHeading(Icons.Default.HelpOutline, "غير المسجل", "${qualifiedUnregistered.size} أجهزة × ${amount(tariff)}")
+            Text("يدخل القائمة الجهاز الذي بقي بدون اشتراك $delay دقائق بعد الساعة ${String.format(Locale.ROOT, "%02d:%02d", windowStart / 60, windowStart % 60)}. من سُجّل لاحقًا باشتراك يُنقل تلقائيًا إلى المشترك. زر «إزالة» يسقط الجهاز من حساب اليوم فقط.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Field("التعرفة للجهاز (ج.س)", tariffText, { tariffText = it }, numeric = true)
+            Field("عدد الأجهزة التي لم تدفع", unpaidText, { unpaidText = it }, numeric = true)
+            MoneyLine("الدافعون: $paidCount × ${amount(tariff)}", unregisteredNet)
+            if (!valid) Text("راجع التعرفة وعدد غير الدافعين (بين صفر وعدد الأجهزة).", color = MaterialTheme.colorScheme.error)
+            if (qualifiedUnregistered.isEmpty()) Text("لا يوجد")
+            else {
+                TextButton(onClick = { showUnregisteredDetails = !showUnregisteredDetails }) {
+                    Text(if (showUnregisteredDetails) "إخفاء الأجهزة" else "عرض الأجهزة (${qualifiedUnregistered.size})")
+                }
+                if (showUnregisteredDetails) qualifiedUnregistered.forEach { device ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("· ${device.name.ifBlank { "جهاز ${device.clientId}" }}",
+                            style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                        TextButton(enabled = !busy, onClick = {
+                            vm.dismissUnregistered(device, dayKey)
+                            dismissTick++
+                        }) { Text("إزالة") }
+                    }
+                }
+            }
+        } }
+        item { Panel {
+            SectionHeading(Icons.Default.Visibility, "قائمة المراقبة (WATCH)", "حالة منفصلة؛ لا تتحول تلقائيًا إلى إيراد")
+            if (watch.isEmpty()) Text("لا يوجد")
+            watch.forEach { Text("· ${it.name.ifBlank { "جهاز ${it.clientId}" }} (${it.ip})") }
+        } }
+        item { Panel {
+            SectionHeading(Icons.Default.Calculate, "الملخص المالي لليوم", "حفظ واحد يعيد كتابة نفس السجلات")
+            Text("المسجل: ${subscribed.size} أجهزة · ${amount(subscribedTotal)}")
+            Text("غير المسجل: $paidCount دافع × ${amount(tariff)} = ${amount(unregisteredNet)}")
+            Text("الإجمالي: ${amount(grandTotal)}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            savedSummary?.let { summary ->
+                Text("محفوظ مسبقًا: ${summary.deviceCount} أجهزة × ${amount(summary.tariff)} − ${summary.unpaidCount} = ${amount(summary.netTotal)}",
+                    style = MaterialTheme.typography.bodySmall)
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Choice("كاش", payment == "CASH") { payment = "CASH" }
+                Choice("بنكك", payment == "BANK") { payment = "BANK" }
+            }
+            Button(enabled = !busy && valid, onClick = {
+                val entries = subscribed.map { (device, session) ->
+                    SubscriptionRepository.DailyDeviceAmount(device.clientId, session.id, session.amount)
+                }
+                vm.confirmDay(dayKey, entries, qualifiedUnregistered.size, tariff, unpaidCount, payment)
+            }) { Text("حفظ وتأكيد إيراد اليوم") }
+            Text("الحفظ يعيد كتابة نفس سجلات اليوم: إعادة التأكيد أو التعديل لا تضيف إيرادًا مكررًا.", style = MaterialTheme.typography.bodySmall)
+        } }
+    }
+    if (showPicker) DayPickerDialog(dayKey) { picked -> dayKey = picked; showPicker = false }
 }
 
-@Composable private fun SettingsScreen(vm: MainViewModel, config: BusinessSettings?, now: Long) {
+/**
+ * Phase 4 password-change recovery screen (§40 report point J): a short list of
+ * active/paused subscriptions whose device disappeared, each showing name +
+ * "...<last octets>" + actual end time; the operator picks a live device from
+ * the last successful snapshot. No auto-pick by IP (spec 28); relink keeps the
+ * remaining time and never creates a subscription, time, or revenue.
+ */
+@Composable
+private fun RecoveryScreen(vm: MainViewModel) {
+    val scope = rememberCoroutineScope()
+    val busy by vm.busy.collectAsStateWithLifecycle()
+    var board by remember { mutableStateOf<DeviceRecovery.Board?>(null) }
+    var loading by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var pairing by remember { mutableStateOf<DeviceRecovery.Candidate?>(null) }
+    var homePairing by remember { mutableStateOf<DeviceRecovery.HomeCandidate?>(null) }
+    var options by remember { mutableStateOf<List<DeviceRecovery.Option>>(emptyList()) }
+    var selectedOption by remember { mutableStateOf<DeviceRecovery.Option?>(null) }
+
+    suspend fun load() {
+        loading = true; error = null
+        try { board = vm.recoveryBoard() } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (e: Exception) { error = e.message ?: "تعذّر قراءة الأجهزة"; board = null }
+        finally { loading = false }
+    }
+    LaunchedEffect(Unit) { load() }
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { Title("استعادة الاشتراكات", "بعد تغيير كلمة مرور الشبكة: أعد ربط الاشتراك القائم بجهازه دون إنشاء اشتراك جديد") }
+        item { Panel {
+            when {
+                loading -> Text("جاري قراءة الأجهزة من الراوتر…")
+                error != null -> Text(error!!, color = MaterialTheme.colorScheme.error)
+                board != null && !board!!.snapshotOk -> Text("تعذّر الوصول للراوتر؛ لا تُقترح أي استعادة قبل نجاح القراءة.", color = MaterialTheme.colorScheme.error)
+                board != null && board!!.candidates.isEmpty() -> Text("لا توجد اشتراكات بحاجة لاستعادة: كل الأجهزة المرتبطة ظاهرة في آخر قراءة.")
+                board != null -> Text("اشتراكات أجهزتها غير ظاهرة بعد تغيير كلمة المرور: ${board!!.candidates.size}")
+            }
+            TextButton(enabled = !loading && !busy, onClick = { scope.launch { load() } }) { Text("تحديث") }
+        } }
+        val current = board
+        if (current != null) items(current.candidates, key = { it.sessionId }) { c ->
+            Panel {
+                Text(c.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text("…${DeviceRecovery.ipTail(c.ip)} · ${if (c.state == "PAUSED") "موقوف مؤقتًا" else "نشط"}",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("ينتهي: ${stamp(c.endAt)} · متبقٍ ${remaining(c.remaining)}", style = MaterialTheme.typography.bodyMedium)
+                TextButton(enabled = !busy && current.options.isNotEmpty(), onClick = {
+                    pairing = c; options = current.options
+                }) { Text("إعادة الربط بجهاز") }
+            }
+        }
+        if (current != null && current.candidates.isNotEmpty() && current.options.isEmpty() && !loading) {
+            item { Panel { Text("لا توجد أجهزة حية مرشحة الآن. تأكد أن الأجهزة أعادت الاتصال بالشبكة ثم اضغط تحديث.", color = MaterialTheme.colorScheme.error) } } }
+        val homeCurrent = current
+        if (homeCurrent != null && homeCurrent.homeCandidates.isNotEmpty()) {
+            item { Panel {
+                SectionHeading(Icons.Default.Home, "أهل البيت", "معرّفها غير ظاهر بعد تغيير كلمة المرور")
+                Text("هذه الأجهزة مسجلة أهل بيت لكن الراوتر أعاد ترقيمها؛ أعد ربط كل واحد بظهوره الجديد ليتجاهله التطبيق تمامًا (بلا تتبع أو تنبيه أو تسجيل).",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } }
+            items(homeCurrent.homeCandidates, key = { it.deviceId }) { h ->
+                Panel {
+                    Text(h.name.ifBlank { "جهاز بيت" }, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text("…${DeviceRecovery.ipTail(h.ip)} · معرّف قديم ${h.deviceId}",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    TextButton(enabled = !busy && homeCurrent.options.isNotEmpty(), onClick = {
+                        homePairing = h; options = homeCurrent.options; selectedOption = null
+                    }) { Text("إعادة الربط بجهاز") }
+                }
+            }
+        }
+    }
+    pairing?.let { candidate ->
+        AlertDialog(onDismissRequest = { pairing = null; selectedOption = null }, title = { Text("اختر جهاز ${candidate.name}") }, text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("الأجهزة الحية المتاحة (الاسم · آخر مقاطع العنوان):", style = MaterialTheme.typography.bodySmall)
+                options.forEach { option ->
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(selected = selectedOption == option, onClick = { selectedOption = option })
+                        Text("${option.name.ifBlank { "جهاز ${option.clientId}" }} · …${DeviceRecovery.ipTail(option.ip)}")
+                    }
+                }
+                Text("الاستعادة تحافظ على الوقت المتبقي والسعر ولا تنشئ اشتراكًا أو إيرادًا جديدًا.", style = MaterialTheme.typography.bodySmall)
+            }
+        }, confirmButton = { Button(enabled = selectedOption != null && !busy, onClick = {
+            val option = selectedOption!!
+            val device = TrackedDevice(option.clientId, "", option.ip, option.mac, com.example.data.IpLists.Category.UNKNOWN, null)
+            vm.relinkDevice(candidate.sessionId, device, deviceIsLive = true)
+            pairing = null; selectedOption = null
+        }) { Text("تأكيد الاستعادة") } }, dismissButton = { TextButton(onClick = { pairing = null; selectedOption = null }) { Text("إلغاء") } })
+    }
+    homePairing?.let { homeCandidate ->
+        AlertDialog(onDismissRequest = { homePairing = null; selectedOption = null }, title = { Text("اختر الظهور الجديد لجهاز البيت") }, text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("الأجهزة الحية المتاحة (الاسم · آخر مقاطع العنوان):", style = MaterialTheme.typography.bodySmall)
+                options.forEach { option ->
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(selected = selectedOption == option, onClick = { selectedOption = option })
+                        Text("${option.name.ifBlank { "جهاز ${option.clientId}" }} · …${DeviceRecovery.ipTail(option.ip)}")
+                    }
+                }
+                Text("إعادة الربط تنقل سجل أهل البيت إلى المعرّف الجديد؛ الجهاز القديم لا يبقى مسجلًا.",
+                    style = MaterialTheme.typography.bodySmall)
+            }
+        }, confirmButton = { Button(enabled = selectedOption != null && !busy, onClick = {
+            val job = vm.relinkHomeIdentity(homeCandidate.deviceId, selectedOption!!)
+            homePairing = null; selectedOption = null
+            // Reload only after the relink transaction commits — never on a stale board.
+            scope.launch { job.join(); load() }
+        }) { Text("تأكيد إعادة الربط") } }, dismissButton = { TextButton(onClick = { homePairing = null; selectedOption = null }) { Text("إلغاء") } })
+    }
+}
+
+private fun dayLabel(dayKey: String): String = try {
+    SimpleDateFormat("EEEE، d MMMM yyyy", Locale.forLanguageTag("ar")).format(SimpleDateFormat("yyyy-MM-dd", Locale.US).parse(dayKey)!!)
+} catch (_: Exception) { dayKey }
+
+@Composable
+private fun DayPickerDialog(current: String, onPick: (String) -> Unit) {
+    var value by rememberSaveable { mutableStateOf(current) }
+    val valid = Regex("\\d{4}-\\d{2}-\\d{2}").matches(value)
+    Form("اختيار يوم المراجعة", { onPick(current) }, { onPick(value) }, valid) {
+        Field("اليوم · yyyy-MM-dd", value, { value = it })
+        Text("الافتراضي اليوم. الأيام السابقة تبقى قابلة للتأكيد ضمن نافذة الاحتفاظ.", style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+@Composable
+private fun SummaryCell(label: String, value: String, modifier: Modifier = Modifier) {
+    Column(modifier.clip(MaterialTheme.shapes.small).background(MaterialTheme.colorScheme.surfaceVariant).padding(vertical = 8.dp, horizontal = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(value, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.primary, maxLines = 1)
+        Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+    }
+}
+
+@Composable
+private fun SettingsScreen(vm: MainViewModel, config: BusinessSettings?, now: Long) {
     val context = LocalContext.current
     val bound by ExpanderHealth.connected.collectAsStateWithLifecycle()
     val selectedApps = remember(now) { ExpanderHealth.allowed(context) }
@@ -464,8 +936,24 @@ internal fun amount(minor: Long): String {
     val backupStatus by vm.backupStatus.collectAsStateWithLifecycle()
     val finance by vm.financial.collectAsStateWithLifecycle()
     var balanceForm by rememberSaveable { mutableStateOf(false) }
-    val component = ComponentName(context, TextExpanderService::class.java)
-    val enabled = remember(now, bound) { Settings.Secure.getString(context.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES).orEmpty().split(':').any { ComponentName.unflattenFromString(it) == component } }
+    val enabled = remember(now, bound) { accessibilityEnabled(context) }
+    // spec 17: re-check automatically when the operator returns from Android settings
+    // and confirm activation in-app instead of leaving him to hunt through Settings.
+    var enabledNow by remember { mutableStateOf(enabled) }
+    var justActivated by remember { mutableStateOf(false) }
+    LaunchedEffect(enabled) { enabledNow = enabled }
+    val activationOwner = LocalLifecycleOwner.current
+    DisposableEffect(activationOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                val current = accessibilityEnabled(context)
+                if (!enabledNow && current) { justActivated = true; vm.message.value = "تم التفعيل ✓" }
+                enabledNow = current
+            }
+        }
+        activationOwner.lifecycle.addObserver(observer)
+        onDispose { activationOwner.lifecycle.removeObserver(observer) }
+    }
     fun open(intent: Intent) { try { context.startActivity(intent) } catch (_: Exception) { vm.message.value = "هذا الإعداد غير متاح هنا؛ افتحه من إعدادات الهاتف." } }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item { Title("الإعدادات", "تحكّم في الحساب والتنبيهات واستمرارية الاختصارات") }
@@ -487,11 +975,23 @@ internal fun amount(minor: Long): String {
         } }
         item { Panel {
             SectionHeading(Icons.Default.VerifiedUser, "جاهزية التطبيق")
-            Text("الاختصارات: ${if (bound) "الخدمة متصلة" else if (enabled) "مفعّلة؛ النظام لم يربط الخدمة حاليًا" else "تحتاج تفعيل إمكانية الوصول"}")
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("الاختصارات", Modifier.weight(1f))
+                StatusPill(
+                    if (bound) "الخدمة متصلة" else if (enabledNow) "بانتظار الربط" else "تحتاج تفعيل",
+                    if (bound) StatusTone.OK else if (enabledNow) StatusTone.INFO else StatusTone.PENDING,
+                )
+            }
+            if (!enabledNow) {
+                Text("اضغط [تفعيل الآن] ثم اختر Slotra من قائمة إمكانية الوصول وفعّلها — سيتحقق التطبيق تلقائيًا عند العودة.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Button(enabled = !busy, modifier = Modifier.testTag("activate-shortcuts"),
+                    onClick = { openAccessibilitySettings(context) { vm.message.value = "هذا الإعداد غير متاح هنا؛ افتحه من إعدادات الهاتف." } }) { Text("تفعيل الآن") }
+            } else if (justActivated) Text("تم التفعيل ✓", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
             Text("تطبيقات مسموحة: ${selectedApps.size}")
             Text("الإشعارات: ${if (SubscriptionAlarms.notificationsAllowed(context)) "مسموحة" else "غير مسموحة"}")
             Text("دقة الموعد: ${if (SubscriptionAlarms.exactAllowed(context)) "الإذن متاح" else "قد يتأخر التنبيه؛ فعّل المنبّهات الدقيقة"}")
-            TextButton(onClick = { open(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }) { Text("إعدادات الاختصارات") }
+            TextButton(onClick = { open(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }) { Text("فتح إعدادات إمكانية الوصول") }
             TextButton(onClick = { appsDialog = true }) { Text("اختيار التطبيقات المسموحة") }
             TextButton(onClick = {
                 if (Build.VERSION.SDK_INT >= 33 && context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) notificationRequest.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -542,6 +1042,47 @@ internal fun amount(minor: Long): String {
             Button(enabled = !busy && validClose, onClick = { vm.setDailyClose(if (closeTime.isBlank()) -1 else parsedMinute!!) }) { Text("حفظ وقت الإغلاق") }
             if (!validClose) Text("اكتب الوقت بصيغة HH:mm، مثل 18:00", color = MaterialTheme.colorScheme.error)
             Text("عند هذا الوقت تُنهى كل الاشتراكات النشطة والمتوقفة مؤقتًا فورًا، ويُحتسب إيرادها كاملًا حتى لو لم تكتمل مهلة التثبيت (${Rules.RECOGNITION_MINUTES} دقائق). أرقام اليوم لا تتاح لغيرها حتى بعد الإغلاق.", style = MaterialTheme.typography.bodySmall)
+        } }
+        item { Panel {
+            SectionHeading(Icons.Default.DevicesOther, "تنبيهات الأجهزة", "تنبيه عند ظهور جهاز غير مرتبط، وملخص يومي")
+            val delay = remember(now) { DeviceAlertsCoordinator.knownDelayMinutes(context) }
+            val summaryMin = remember(now) { DeviceAlertsCoordinator.knownSummaryMinute(context) }
+            Text("اعتبار الجهاز غير مسجل: بعد $delay دقيقة من ظهوره بدون اشتراك")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(1, 3, 5, 10).forEach { option ->
+                    Choice("$option دقائق", delay == option) { if (delay != option) vm.setDeviceAlertDelay(option) }
+                }
+            }
+            Text("بعد هذه المدة داخل نافذة التتبع يدخل الجهاز قائمة غير المسجل في التأكيد اليومي. خارج النافذة: تنبيه نهاري واحد فقط بلا تسجيل. التنبيه الفوري المخصص لقائمة المراقبة لا يتأثر.", style = MaterialTheme.typography.bodySmall)
+            Text("ملخص تأكيد الأجهزة اليومي: ${String.format(Locale.ROOT, "%02d:%02d", summaryMin / 60, summaryMin % 60)}")
+            var summaryTime by rememberSaveable(summaryMin) { mutableStateOf(String.format(Locale.ROOT, "%02d:%02d", summaryMin / 60, summaryMin % 60)) }
+            Field("وقت الملخص اليومي · HH:mm", summaryTime, { summaryTime = it })
+            val parsedSummary = Regex("^([01]?[0-9]|2[0-3]):([0-5][0-9])$").matchEntire(Money.normalize(summaryTime))
+                ?.let { m -> m.groupValues[1].toInt() * 60 + m.groupValues[2].toInt() }
+            Button(enabled = !busy && parsedSummary != null, onClick = { vm.setDeviceSummaryTime(parsedSummary!!) }) { Text("حفظ وقت الملخص") }
+            if (parsedSummary == null) Text("اكتب الوقت بصيغة HH:mm، مثل 22:00", color = MaterialTheme.colorScheme.error)
+            val windowMin = remember(now) { DeviceAlertsCoordinator.knownUnregisteredStartMinute(context) }
+            var windowTime by rememberSaveable(windowMin) { mutableStateOf(String.format(Locale.ROOT, "%02d:%02d", windowMin / 60, windowMin % 60)) }
+            Text("بداية تتبع غير المسجل: ${String.format(Locale.ROOT, "%02d:%02d", windowMin / 60, windowMin % 60)}")
+            Field("بداية قائمة غير المسجل · HH:mm", windowTime, { windowTime = it })
+            val parsedWindow = Regex("^([01]?[0-9]|2[0-3]):([0-5][0-9])$").matchEntire(Money.normalize(windowTime))
+                ?.let { m -> m.groupValues[1].toInt() * 60 + m.groupValues[2].toInt() }
+            Button(enabled = !busy && parsedWindow != null, onClick = { vm.setUnregisteredStartMinute(parsedWindow!!) }) { Text("حفظ بداية التتبع") }
+            if (parsedWindow == null) Text("اكتب الوقت بصيغة HH:mm، مثل 18:00", color = MaterialTheme.colorScheme.error)
+            Text("قبل هذا الوقت: أي جهاز غير معروف يرسل تنبيهًا واحدًا فقط ولا يدخل قائمة غير المسجل. بعده: يبدأ احتساب مدة البقاء من وقت البداية أو أول ظهور، أيهما أحدث.",
+                style = MaterialTheme.typography.bodySmall)
+            Text("التنبيهات محلية داخل الهاتف: لا يُرسل أي بيانات جهاز إلى أي خدمة خارجية.", style = MaterialTheme.typography.bodySmall)
+            val recoveryKeyword by vm.recoveryKeyword.collectAsStateWithLifecycle()
+            var recoveryField by remember(recoveryKeyword) { mutableStateOf(recoveryKeyword) }
+            Text("اختصار استعادة الاشتراكات (بعد تغيير كلمة المرور): $recoveryKeyword")
+            Field("كلمة استعادة الاشتراكات", recoveryField, { recoveryField = it })
+            Button(enabled = !busy && recoveryField.trim() != recoveryKeyword && recoveryField.isNotBlank(), onClick = { vm.setRecoveryKeyword(recoveryField) }) { Text("حفظ كلمة الاستعادة") }
+            Text("اكتبها ثم مسافة في أي تطبيق مسموح لفتح شاشة الاستعادة. الاستعادة تعيد ربط اشتراك قائم بجهازه ولا تنشئ اشتراكًا جديدًا.", style = MaterialTheme.typography.bodySmall)
+            val signing = remember(now) { vm.debugSigningInfo() }
+            signing?.let { info ->
+                Text("بصمة توقيع النسخة الحالية: ${info.take(16)}…", style = MaterialTheme.typography.bodySmall)
+                Text("تثبيت نسخة أعلى القديمة يتطلب نفس البصمة؛ التغيير يفرض حذف التطبيق وفقدان البيانات.", style = MaterialTheme.typography.bodySmall)
+            }
         } }
         item { Panel {
             SectionHeading(Icons.Default.CloudDone, "النسخ الاحتياطي والاستعادة")

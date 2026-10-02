@@ -39,6 +39,43 @@ data class HomeIp(@PrimaryKey val ip: String, val label: String = "", val added:
 @Entity(tableName = "watch_ips")
 data class WatchIp(@PrimaryKey val ip: String, val label: String = "", val added: Long = 0)
 
+/**
+ * Identity-keyed HOME/WATCH records (schema v8). The router's stable clientId is the
+ * PRIMARY identity; IP is a mutable display/last-known address only, so a DHCP move
+ * can never turn a family device into "unknown" or invent a second record.
+ * Legacy home_ips/watch_ips rows are never deleted; they stay as the owner's manual
+ * fallback entries, while identities are auto-discovered from successful snapshots.
+ */
+@Entity(tableName = "device_identities")
+data class DeviceIdentity(
+    @PrimaryKey val deviceId: Long,
+    val list: String,
+    val mac: String = "",
+    val name: String = "",
+    val lastIp: String = "",
+    val added: Long = 0,
+    val updated: Long = 0,
+)
+
+/**
+ * Per-device daily confirmation (schema v8): one row per device per event day.
+ * The (dayKey, deviceId) primary key makes every confirm/edit idempotent —
+ * reopening the review and re-saving rewrites the SAME row, never a second
+ * revenue record. Registered amount comes from the bound session; confirmed is
+ * what the operator actually received (editable, defaults to registered).
+ */
+@Entity(tableName = "daily_device_confirmations", primaryKeys = ["dayKey", "deviceId"])
+data class DailyDeviceConfirmation(
+    val dayKey: String,
+    val deviceId: Long,
+    val sessionId: String,
+    val registered: Long,
+    val confirmed: Long,
+    val payment: String,
+    val premiumBps: Int,
+    val updated: Long,
+)
+
 @Entity(tableName = "manual_sales")
 data class ManualSale(@PrimaryKey val id: String, val at: Long, val count: Int, val unitPrice: Long,
     val amount: Long, val cashEquivalent: Long, val payment: String, val premiumBps: Int)
@@ -60,6 +97,29 @@ data class DebtPayment(@PrimaryKey val id: String, val debtId: String, val at: L
 data class BalanceUpdate(@PrimaryKey(autoGenerate = true) val id: Long = 0, val at: Long,
     val cash: Long, val bank: Long, val cashReceived: Long, val bankReceived: Long,
     val premiumBps: Int, val reason: String, val expectedCash: Long = 0, val expectedBank: Long = 0)
+
+/**
+ * Daily unregistered-device summary (schema v9): the operator confirms the day's
+ * unregistered devices as ONE aggregate — qualified device count × per-device
+ * tariff, minus the devices marked as not paid. One row per event day (dayKey
+ * primary key), so re-confirming rewrites the SAME row and its single ledger
+ * row, never a duplicate. Subscribed devices need no row here: their revenue
+ * already exists as session revenue in the finance ledger.
+ */
+@Entity(tableName = "unregistered_day_summary")
+data class UnregisteredDaySummary(
+    @PrimaryKey val dayKey: String,
+    /** Per-device tariff in minor units (e.g. 50000 = 500 ج.س), captured at confirm time. */
+    val tariff: Long,
+    /** Qualified unregistered devices that day (dwell >= the configured delay). */
+    val deviceCount: Int,
+    /** Devices the operator marked as not paid. */
+    val unpaidCount: Int,
+    /** Net amount = (deviceCount - unpaidCount) × tariff, in minor units. */
+    val netTotal: Long,
+    val payment: String,
+    val updated: Long,
+)
 
 @Dao
 interface BusinessDao {
@@ -84,6 +144,8 @@ interface BusinessDao {
     @Query("SELECT * FROM manual_sales ORDER BY at DESC") fun observeManualSales(): Flow<List<ManualSale>>
     @Query("SELECT * FROM manual_sales ORDER BY at DESC") suspend fun manualSales(): List<ManualSale>
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertManualSale(sale: ManualSale): Long
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun upsertManualSale(sale: ManualSale)
+    @Delete suspend fun deleteManualSale(sale: ManualSale)
     @Query("SELECT * FROM slot_reservations") suspend fun reservations(): List<SlotReservation>
     @Insert suspend fun reserve(reservation: SlotReservation)
     @Query("DELETE FROM slot_reservations WHERE sessionId = :id") suspend fun release(id: String)
@@ -114,4 +176,21 @@ interface BusinessDao {
     @Query("SELECT * FROM watch_ips") suspend fun watchIps(): List<WatchIp>
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun watchIp(entry: WatchIp)
     @Query("DELETE FROM watch_ips WHERE ip = :ip") suspend fun deleteWatchIp(ip: String)
+
+    @Query("SELECT * FROM device_identities ORDER BY added, deviceId") fun observeIdentities(): Flow<List<DeviceIdentity>>
+    @Query("SELECT * FROM device_identities") suspend fun identities(): List<DeviceIdentity>
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun identity(entry: DeviceIdentity)
+    @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertIdentity(entry: DeviceIdentity): Long
+    @Query("SELECT * FROM device_identities WHERE deviceId = :deviceId") suspend fun identity(deviceId: Long): DeviceIdentity?
+    @Query("SELECT * FROM device_identities WHERE mac = :mac AND mac != '' LIMIT 1") suspend fun identityByMac(mac: String): DeviceIdentity?
+    @Query("SELECT * FROM device_identities WHERE lastIp = :ip LIMIT 1") suspend fun identityByIp(ip: String): DeviceIdentity?
+    @Query("DELETE FROM device_identities WHERE deviceId = :deviceId") suspend fun deleteIdentity(deviceId: Long)
+
+    @Query("SELECT * FROM daily_device_confirmations WHERE dayKey = :dayKey") suspend fun dayConfirmations(dayKey: String): List<DailyDeviceConfirmation>
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun upsertConfirmation(entry: DailyDeviceConfirmation)
+    @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertConfirmation(entry: DailyDeviceConfirmation): Long
+    @Query("DELETE FROM daily_device_confirmations WHERE dayKey = :dayKey AND deviceId IN (:deviceIds)") suspend fun deleteConfirmations(dayKey: String, deviceIds: List<Long>)
+
+    @Query("SELECT * FROM unregistered_day_summary WHERE dayKey = :dayKey") suspend fun unregisteredSummary(dayKey: String): UnregisteredDaySummary?
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun upsertUnregisteredSummary(entry: UnregisteredDaySummary)
 }

@@ -1,5 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <style name="Theme.MyApplication" parent="android:Theme.DeviceDefault.NoActionBar" />
+    <style name="Theme.MyApplication" parent="android:Theme.DeviceDefault.NoActionBar">
+        <!-- Muse v2 identity at launch: no white flash, system bars match the navy theme. -->
+        <item name="android:windowBackground">@color/slotra_night</item>
+        <item name="android:statusBarColor">@color/slotra_night</item>
+        <item name="android:navigationBarColor">@color/slotra_surface</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
 </resources>
