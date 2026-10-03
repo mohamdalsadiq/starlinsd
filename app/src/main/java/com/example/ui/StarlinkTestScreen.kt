@@ -30,6 +30,7 @@ import kotlinx.coroutines.launch
     var running by remember { mutableStateOf(false) }
     var controlling by remember { mutableStateOf(false) }
     var linking by remember { mutableStateOf(false) }
+    var routerBusy by remember { mutableStateOf(false) }
     var accountReady by remember { mutableStateOf(false) }
     var progress by remember { mutableStateOf("") }
     var report by remember { mutableStateOf<ProbeReport?>(null) }
@@ -59,8 +60,10 @@ import kotlinx.coroutines.launch
             }) { Text("إعدادات Wi-Fi") }
             if (notice.isNotBlank()) Text(notice)
         } }
-        item { StarlinkAccountPanel(running || controlling, { linking = it }, { accountReady = it }) }
-        item { StarlinkControlPanel(report?.clients.orEmpty(), running || linking, { controlling = it }, cloud = true, accountReady = accountReady) }
+        item { StarlinkAccountPanel(running || controlling || routerBusy, { linking = it }, { accountReady = it }) }
+        item { StarlinkControlPanel(report?.clients.orEmpty(), running || linking || routerBusy, { controlling = it }, cloud = true, accountReady = accountReady) }
+        // Router API prototype: isolated read-only snapshots; not wired to any business logic.
+        item { RouterPrototypePanel(onRunning = { routerBusy = it }) }
         report?.let { current ->
             item { Panel {
                 Text(current.summary, style = MaterialTheme.typography.titleMedium)
