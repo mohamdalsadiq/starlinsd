@@ -236,8 +236,10 @@ private fun dateLabel(at: Long, pattern: String = "EEEE، d MMMM yyyy") = Simple
                         }
                     }
                 }
-                InvoicePaymentButton(payInvoice)
             }
+            // §9: the USD payment button lives outside cost?.let — the payInvoice
+            // reference must not be captured inside the let lambda.
+            if (report.cost != null) InvoicePaymentButton(payInvoice)
             if (config.cycleEnd > config.cycleStart && config.cycleStart > 0) {
                 Text("${dateLabel(config.cycleStart, "d MMM yyyy")} — ${dateLabel(config.cycleEnd - 1, "d MMM yyyy")}")
                 val left = if (snapshot.day >= config.cycleEnd) 0 else Finance.days(maxOf(snapshot.day, config.cycleStart), config.cycleEnd)
