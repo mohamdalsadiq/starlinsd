@@ -68,6 +68,12 @@ internal fun amount(minor: Long): String {
     val number = java.text.NumberFormat.getNumberInstance(Locale.US).apply { maximumFractionDigits = 2 }
     return "${number.format(java.math.BigDecimal.valueOf(minor, 2))} ج.س"
 }
+/** USD label for bill payments: 3000 → "$30", 3050 → "$30.50". usdCents are cents. */
+internal fun usdLabel(usdCents: Long): String {
+    val major = usdCents / 100
+    val minor = (usdCents % 100).toInt()
+    return if (minor == 0) "$$major" else "$$major.${minor.toString().padStart(2, '0')}"
+}
 @Composable internal fun Title(title: String, subtitle: String = "") {
     Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
     if (subtitle.isNotBlank()) Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -145,7 +151,8 @@ internal fun amount(minor: Long): String {
                                     detail == "التقارير" -> ReportsScreen(ready, vm::correctRevenue)
                                     tab == 2 -> DebtsScreen(ready.data.debts, ready.data.payments, ready.budget, ready.day, busy, vm::saveDebt, vm::payDebt)
                                     else -> Dashboard(ready, { bulk = true }, { detail = "التقارير" }, vm::correctRevenue,
-                                        live = { LiveOverview(vm) { tab = 1 }; DailyReviewCard(vm) { detail = "تأكيد الأجهزة اليومية" } }) { newSession = true }
+                                        live = { LiveOverview(vm) { tab = 1 }; DailyReviewCard(vm) { detail = "تأكيد الأجهزة اليومية" } },
+                                        payInvoice = vm::payInvoice) { newSession = true }
                                 }
                             }
                             tab == 1 -> {
@@ -275,12 +282,14 @@ internal fun amount(minor: Long): String {
             sessions = com.example.db.AppDatabase.getDatabase(context).businessDao().sessions()
         }
     }
-    // Subscription chain + financial split (pure, unit-tested): HOME/WATCH never
-    // enter the financial totals.
-    val groups = remember(devices, sessions, dayKey) { DailyReconciliation.confirmationGroups(devices, sessions, dayKey) }
-    val subscribed = groups.subscribed
-    val unregistered = groups.unregistered
-    val registeredTotal = remember(subscribed) { subscribed.sumOf { it.second.amount } }
+    // §1: the subscribed metric is the PAID subscription list — never device history.
+    val confirmations = remember(sessions, devices, dayKey) {
+        DailyReconciliation.subscriptionConfirmations(sessions, devices, dayKey)
+    }
+    val unregistered = remember(devices, sessions, dayKey) {
+        DailyReconciliation.confirmationGroups(devices, sessions, dayKey).unregistered
+    }
+    val registeredTotal = remember(confirmations) { confirmations.sumOf { it.session.amount } }
     val confirmedUnregistered = remember(sales, dayKey) {
         DailyReconciliation.rowsFor(sales, dayKey).firstOrNull { it.id == DailyReconciliation.dailyRowId(dayKey) }?.amount ?: 0L
     }
@@ -290,7 +299,7 @@ internal fun amount(minor: Long): String {
             TextButton(onClick = open) { Text("تأكيد الأجهزة") }
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            DetailMetric("مسجّل (${subscribed.size})", amount(registeredTotal), Modifier.weight(1f))
+            DetailMetric("مسجّل (${confirmations.size})", amount(registeredTotal), Modifier.weight(1f))
             DetailMetric("غير مسجّل (${unregistered.size})", amount(confirmedUnregistered), Modifier.weight(1f))
         }
         Text("المسجّل تلقائي من الاشتراكات · غير المسجّل بعد التأكيد فقط", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -521,15 +530,18 @@ internal fun amount(minor: Long): String {
         }
     }
 }/**
- * Daily device reconciliation screen (device-identity-reconciliation-v1). The
- * operator picks one event day and sees the day's recognized devices split into
- * A) subscribed (bound ACTIVE/PAUSED/ENDED with its registered amount),
- * B) appeared without a subscription (proposed/uncertain),
+ * Daily device reconciliation screen (§1–§3). The operator picks one event day and sees:
+ * A) the PAID SUBSCRIPTION LIST — every recognized non-HOME session of the business
+ *    day (ACTIVE/PAUSED/ENDED) with its LOCKED amount (the shortcut price at sale
+ *    time), a live countdown to expiry, and an optional device label from history.
+ *    Built from subscriptions, never from device history: a missing/unknown device
+ *    never hides a paid subscription.
+ * B) devices that appeared without a subscription (qualified unregistered),
  * C) HOME (identity-based; never enters the money),
  * D) WATCH (separate status; never auto-revenue).
- * Each A/B device has ONE editable confirmed amount; saving upserts the
- * (dayKey, deviceId) row and rebuilds the day's single ledger row — idempotent,
- * never a duplicate revenue record. Identity is clientId; IP is display-only.
+ * Saving upserts the (dayKey, deviceId) rows and rebuilds the day's single ledger
+ * row — idempotent, never a duplicate revenue record. After the 18:00 cutoff the
+ * day is frozen (badge shown) and its subscriptions accept no edits.
  */
 @Composable
 private fun DeviceConfirmationScreen(vm: MainViewModel) {
@@ -537,7 +549,16 @@ private fun DeviceConfirmationScreen(vm: MainViewModel) {
     val now by vm.clock.collectAsStateWithLifecycle()
     var devices by remember { mutableStateOf<List<DeviceAlerts.DayDevice>>(emptyList()) }
     var sessions by remember { mutableStateOf<List<com.example.db.Session>>(emptyList()) }
-    var dayKey by rememberSaveable { mutableStateOf(DeviceAlerts.dayKey(System.currentTimeMillis())) }
+    // The screen reviews ONE BUSINESS day (18:00 → 18:00): after 18:00 a new
+    // sale belongs to the next business day, so the key must be the
+    // business-day key — a calendar-day key would hide tonight's sales from
+    // the subscribed section.
+    var dayKey by rememberSaveable { mutableStateOf(BusinessDay.key(System.currentTimeMillis())) }
+    // Device history (and the unregistered aggregate) is calendar-day based:
+    // the evening belonging to business day K falls on calendar day K−1, so
+    // history, the unregistered summary, and dismissed keys all use that date.
+    // Existing summary rows are keyed exactly this way — no migration needed.
+    val historyKey = remember(dayKey) { BusinessDay.eveningCalendarKey(dayKey) }
     var payment by rememberSaveable(dayKey) { mutableStateOf("CASH") }
     var showPicker by rememberSaveable { mutableStateOf(false) }
     var savedSummary by remember(dayKey) { mutableStateOf<com.example.db.UnregisteredDaySummary?>(null) }
@@ -548,31 +569,41 @@ private fun DeviceConfirmationScreen(vm: MainViewModel) {
     var fieldsSeeded by remember(dayKey) { mutableStateOf(false) }
     var showSubscribedDetails by rememberSaveable { mutableStateOf(false) }
     var showUnregisteredDetails by rememberSaveable { mutableStateOf(false) }
+    var dayClosed by remember(dayKey) { mutableStateOf(false) }
 
     LaunchedEffect(now, dayKey) {
-        val loaded = kotlinx.coroutines.withContext(Dispatchers.IO) {
-            val dao = com.example.db.AppDatabase.getDatabase(context).businessDao()
-            Triple(
-                DeviceAlertsCoordinator.historyFor(context, dayKey),
-                dao.sessions(),
-                dao.unregisteredSummary(dayKey),
-            )
+        val dao = com.example.db.AppDatabase.getDatabase(context).businessDao()
+        val history = kotlinx.coroutines.withContext(Dispatchers.IO) {
+            DeviceAlertsCoordinator.historyFor(context, historyKey)
         }
-        devices = loaded.first
-        sessions = loaded.second
-        savedSummary = loaded.third
+        val loadedSessions = kotlinx.coroutines.withContext(Dispatchers.IO) { dao.sessions() }
+        val summary = kotlinx.coroutines.withContext(Dispatchers.IO) { dao.unregisteredSummary(historyKey) }
+        val cutoff = kotlinx.coroutines.withContext(Dispatchers.IO) { dao.dailyCutoff(dayKey) }
+        devices = history
+        sessions = loadedSessions
+        savedSummary = summary
+        dayClosed = cutoff != null
         if (!fieldsSeeded) {
-            val tariff = loaded.third?.tariff ?: DeviceAlertsCoordinator.unregisteredTariff(context)
+            val tariff = summary?.tariff ?: DeviceAlertsCoordinator.unregisteredTariff(context)
             tariffText = Money.show(tariff)
-            unpaidText = (loaded.third?.unpaidCount ?: 0).takeIf { it > 0 }?.toString() ?: ""
+            unpaidText = (summary?.unpaidCount ?: 0).takeIf { it > 0 }?.toString() ?: ""
             fieldsSeeded = true
         }
     }
 
-    // Financial split (pure, unit-tested): HOME/WATCH never enter the groups.
-    val groups = remember(devices, sessions, dayKey) { DailyReconciliation.confirmationGroups(devices, sessions, dayKey) }
-    val subscribed = groups.subscribed
-    val watch = groups.watch
+    // §1: the subscribed section is built from the PAID subscription list — never
+    // from device history. Every recognized non-HOME session of the business day
+    // appears exactly once with its LOCKED amount (the shortcut price at sale
+    // time). Device history only supplies an optional display label.
+    val confirmations = remember(sessions, devices, dayKey) {
+        DailyReconciliation.subscriptionConfirmations(sessions, devices, dayKey)
+    }
+    // WATCH stays history-driven: it is device management, not money.
+    // The stamp fallback inside is calendar-day scoped, so it takes the
+    // evening's calendar key (historyKey), not the business-day key.
+    val watch = remember(devices, sessions, historyKey) {
+        DailyReconciliation.confirmationGroups(devices, sessions, historyKey).watch
+    }
     // Unregistered = binding-excluded devices that DWELLED past the delay,
     // counted only inside the operator's tracking window and minus the devices
     // he removed by hand today. Passing phones never qualify; a later
@@ -580,21 +611,15 @@ private fun DeviceConfirmationScreen(vm: MainViewModel) {
     val delay = remember(now) { DeviceAlertsCoordinator.knownDelayMinutes(context) }
     val windowStart = remember(now) { DeviceAlertsCoordinator.knownUnregisteredStartMinute(context) }
     var dismissTick by remember { mutableStateOf(0) }
-    val dismissed = remember(context, dayKey, dismissTick) { DeviceAlertsCoordinator.dismissedUnregistered(context, dayKey) }
-    val qualifiedUnregistered = remember(devices, sessions, dayKey, delay, now, windowStart, dismissed) {
-        DailyReconciliation.qualifiedUnregistered(devices, sessions, dayKey, delay, now, windowStart, dismissed)
+    val dismissed = remember(context, historyKey, dismissTick) { DeviceAlertsCoordinator.dismissedUnregistered(context, historyKey) }
+    val qualifiedUnregistered = remember(devices, sessions, historyKey, delay, now, windowStart, dismissed) {
+        DailyReconciliation.qualifiedUnregistered(devices, sessions, historyKey, delay, now, windowStart, dismissed)
     }
 
     // Subscribed amounts are LOCKED to the shortcut plan prices — no per-device edits.
-    // One sale = one amount: a session matched by two device records (misbinding
-    // aftermath — e.g. the stamped device AND the wrongly-bound one) must not
-    // double-count its amount. The session is the money identity.
-    val subscribedTotal = remember(subscribed) { subscribed.distinctBy { it.second.id }.sumOf { it.second.amount } }
-    // Sessions claimed by more than one device need the user's eye: re-link the
-    // right device from the recovery screen.
-    val duplicateSessionIds = remember(subscribed) {
-        subscribed.groupingBy { it.second.id }.eachCount().filter { it.value > 1 }.keys
-    }
+    // One sale = one row: the session is the money identity, so a session matched
+    // by two device records (misbinding aftermath) can never double-count.
+    val subscribedTotal = remember(confirmations) { confirmations.sumOf { it.session.amount } }
     val tariff = remember(tariffText) { Money.parse(tariffText) ?: 0L }
     val unpaidCount = remember(unpaidText) { unpaidText.toIntOrNull()?.coerceAtLeast(0) ?: 0 }
     val paidCount = (qualifiedUnregistered.size - unpaidCount).coerceAtLeast(0)
@@ -610,7 +635,7 @@ private fun DeviceConfirmationScreen(vm: MainViewModel) {
         item { Panel {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("يوم المراجعة", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("يوم المراجعة (يوم عمل: من 18:00 إلى 18:00)", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text(dayLabel(dayKey), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 }
                 TextButton(onClick = { showPicker = true }) { Text("اختيار يوم") }
@@ -618,16 +643,42 @@ private fun DeviceConfirmationScreen(vm: MainViewModel) {
             Text("الأجهزة المُعرف عليها اليوم: ${devices.size}", style = MaterialTheme.typography.bodyMedium)
         } }
         item { Panel {
-            SectionHeading(Icons.Default.CheckCircle, "المشترك", "${subscribed.size} أجهزة · ${amount(subscribedTotal)}")
-            Text("المبالغ مقفولة على أسعار الاختصارات؛ لا تعديل بعد تأكيد الاشتراك.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            if (subscribed.isEmpty()) Text("لا يوجد")
+            SectionHeading(Icons.Default.CheckCircle, "المشترك", "${confirmations.size} اشتراكات · ${amount(subscribedTotal)}")
+            Text("المبالغ مقفولة على أسعار الاختصارات؛ لا تعديل بعد تأكيد الاشتراك.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            // Frozen-day rule (§2): a closed business day freezes its
+            // SUBSCRIPTION records (no binding/relink/rename/state change).
+            // The evening review itself — confirming the unregistered
+            // aggregate — stays available: that is the operator's own
+            // money-counting action, and the subscribed list here is read-only.
+            if (dayClosed) {
+                Text("اليوم مغلق 18:00 — الاشتراكات مجمّدة ولا تقبل التعديل.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                Text("التأكيد اليومي (مراجعة غير المسجل) يبقى متاحًا كإجراء المراجعة المسائي.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            if (confirmations.isEmpty()) Text("لا يوجد")
             else {
                 TextButton(onClick = { showSubscribedDetails = !showSubscribedDetails }) {
                     Text(if (showSubscribedDetails) "إخفاء التفاصيل" else "عرض التفاصيل")
                 }
-                if (showSubscribedDetails) subscribed.forEach { (device, session) ->
-                    val dupMark = if (session.id in duplicateSessionIds) "⚠️ " else ""
-                    Text("· $dupMark${device.name.ifBlank { "جهاز ${device.clientId}" }} · ${session.client} #${session.reference.ifBlank { "?" }} · ${amount(session.amount)} (مقفول)",
+                // §3: every paid subscription of the day, its locked amount, its
+                // state, and a visible countdown to expiry.
+                if (showSubscribedDetails) confirmations.forEach { conf ->
+                    val s = conf.session
+                    val left = when (s.state) {
+                        "ACTIVE" -> Rules.remaining(s.clock(), now)
+                        "PAUSED" -> (s.duration - s.served).coerceIn(0, s.duration)
+                        else -> 0L
+                    }
+                    val stateLabel = when (s.state) {
+                        "ACTIVE" -> "نشط"
+                        "PAUSED" -> "متوقف مؤقتًا"
+                        else -> "منتهٍ"
+                    }
+                    Text("· ${s.client} #${s.reference.ifBlank { "?" }} · ${amount(s.amount)} (مقفول) · $stateLabel" +
+                        (if (left > 0) " · متبقٍّ ${remaining(left)}" else "") +
+                        (conf.deviceLabel?.let { " · $it" } ?: ""),
                         style = MaterialTheme.typography.bodySmall)
                 }
             }
@@ -650,7 +701,7 @@ private fun DeviceConfirmationScreen(vm: MainViewModel) {
                         Text("· ${device.name.ifBlank { "جهاز ${device.clientId}" }}",
                             style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
                         TextButton(enabled = !busy, onClick = {
-                            vm.dismissUnregistered(device, dayKey)
+                            vm.dismissUnregistered(device, historyKey)
                             dismissTick++
                         }) { Text("إزالة") }
                     }
@@ -664,7 +715,7 @@ private fun DeviceConfirmationScreen(vm: MainViewModel) {
         } }
         item { Panel {
             SectionHeading(Icons.Default.Calculate, "الملخص المالي لليوم", "حفظ واحد يعيد كتابة نفس السجلات")
-            Text("المشترك: ${subscribed.size} أجهزة · ${amount(subscribedTotal)}")
+            Text("المشترك: ${confirmations.size} اشتراكات · ${amount(subscribedTotal)}")
             Text("غير المسجل: $paidCount دافع × ${amount(tariff)} = ${amount(unregisteredNet)}")
             Text("الإجمالي: ${amount(grandTotal)}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             savedSummary?.let { summary ->
@@ -676,10 +727,16 @@ private fun DeviceConfirmationScreen(vm: MainViewModel) {
                 Choice("بنكك", payment == "BANK") { payment = "BANK" }
             }
             Button(enabled = !busy && valid, onClick = {
-                val entries = subscribed.map { (device, session) ->
-                    SubscriptionRepository.DailyDeviceAmount(device.clientId, session.id, session.amount)
+                val entries = confirmations.map { conf ->
+                    // Stable row key: the bound router clientId when known, else a
+                    // deterministic per-session negative id (stableAuditDeviceId).
+                    // The session itself is the money identity, so re-confirming
+                    // never duplicates; audit rows only.
+                    val deviceId = conf.session.deviceClientId?.takeIf { it > 0 }
+                        ?: DailyReconciliation.stableAuditDeviceId(conf.session.id)
+                    SubscriptionRepository.DailyDeviceAmount(deviceId, conf.session.id, conf.session.amount)
                 }
-                vm.confirmDay(dayKey, entries, qualifiedUnregistered.size, tariff, unpaidCount, payment)
+                vm.confirmDay(dayKey, historyKey, entries, qualifiedUnregistered.size, tariff, unpaidCount, payment)
             }) { Text("حفظ وتأكيد إيراد اليوم") }
             Text("الحفظ يعيد كتابة نفس سجلات اليوم: إعادة التأكيد أو التعديل لا تضيف إيرادًا مكررًا.", style = MaterialTheme.typography.bodySmall)
         } }
@@ -807,9 +864,9 @@ private fun dayLabel(dayKey: String): String = try {
 private fun DayPickerDialog(current: String, onPick: (String) -> Unit) {
     var value by rememberSaveable { mutableStateOf(current) }
     val valid = Regex("\\d{4}-\\d{2}-\\d{2}").matches(value)
-    Form("اختيار يوم المراجعة", { onPick(current) }, { onPick(value) }, valid) {
+    Form("اختيار يوم المراجعة (يوم عمل)", { onPick(current) }, { onPick(value) }, valid) {
         Field("اليوم · yyyy-MM-dd", value, { value = it })
-        Text("الافتراضي اليوم. الأيام السابقة تبقى قابلة للتأكيد ضمن نافذة الاحتفاظ.", style = MaterialTheme.typography.bodySmall)
+        Text("يوم العمل من 18:00 إلى 18:00. الأجهزة غير المسجلة المعروضة هي أجهزة أمسية ذلك اليوم.", style = MaterialTheme.typography.bodySmall)
     }
 }
 
