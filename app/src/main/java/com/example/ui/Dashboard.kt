@@ -55,9 +55,14 @@ private fun dateLabel(at: Long, pattern: String = "EEEE، d MMMM yyyy") = Simple
 /** Handler for recording a USD bill payment. Interface (not function type) to avoid a compiler resolution quirk. */
 interface InvoicePayer { fun pay(usdCents: Long, ratePerUsd: Long, note: String) }
 
+/** No-op payer for previews/tests. */
+private object NoOpPayer : InvoicePayer {
+    override fun pay(usdCents: Long, ratePerUsd: Long, note: String) {}
+}
+
 @Composable internal fun Dashboard(snapshot: FinancialSnapshot, addSales: () -> Unit = {},
     openReports: () -> Unit = {}, correct: (String, Long, Int, Boolean, String) -> Unit = { _, _, _, _, _ -> },
-    live: @Composable () -> Unit = {}, payer: InvoicePayer? = null, add: () -> Unit) {
+    live: @Composable () -> Unit = {}, payer: InvoicePayer = NoOpPayer, add: () -> Unit) {
     val config = snapshot.data.config
     val report = snapshot.revenue
     val daily = snapshot.today
@@ -247,7 +252,7 @@ interface InvoicePayer { fun pay(usdCents: Long, ratePerUsd: Long, note: String)
             }
         } }
         // §9: USD payment button as its own item (shallow nesting for compiler).
-        if (report.cost != null && payer != null) item { InvoicePaymentButton(payer) }
+        if (report.cost != null) item { InvoicePaymentButton(payer) }
         item { Panel {
             SectionHeading(Icons.Default.PieChart, "توزيع اليوم", "مخصصات تقديرية · ليست ربح الدورة")
             BudgetSummary(snapshot.budget.day(snapshot.day))
