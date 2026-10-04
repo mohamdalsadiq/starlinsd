@@ -121,6 +121,53 @@ data class UnregisteredDaySummary(
     val updated: Long,
 )
 
+/**
+ * Idempotency marker + finalized summary for the automatic 18:00 daily cutoff
+ * (§2). One row per closed business day ([BusinessDay.key]); the row's
+ * presence is what makes a repeated cutoff a no-op and freezes the day's
+ * subscriptions (no edits/deletes after cutoff). Additive, never deleted.
+ */
+@Entity(tableName = "daily_cutoff")
+data class DailyCutoff(
+    @PrimaryKey val dayKey: String,
+    /** The exact 18:00 instant this day was closed at. */
+    val cutoffAt: Long,
+    /** ACTIVE/PAUSED sessions force-ended by this cutoff (frozen, never deleted). */
+    val sessionsEnded: Int,
+    /** Paid (recognized, non-HOME) sessions belonging to the day. */
+    val subscribedCount: Int,
+    /** Sum of cashEquivalent over the day's paid sessions, in minor units. */
+    val totalRevenue: Long,
+    val cashTotal: Long,
+    val bankTotal: Long,
+    val createdAt: Long,
+)
+
+/**
+ * Actual partial bill/invoice payments in USD with the ACTUAL purchase rate
+ * (§9, owner's rule 2026-10-04). He pays the Starlink bill ($85) in parts,
+ * buying dollars at his own rate — e.g. $30 at 8100 SDG/USD while his
+ * accounting bankk rate ([BusinessSettings.bankRate]) stays fixed at 8500.
+ * - [usdCents]: USD bought in this payment, in cents (3000 = $30). Buying
+ *   reduces the bill's remaining USD; it never touches the accounting rate.
+ * - [ratePerUsd]: actual SDG paid per 1 USD (e.g. 8100).
+ * - [sdgPaid]: actual SDG outlay = usdCents * ratePerUsd / 100 (e.g. 243000).
+ *   This — not the accounting value — is what [realizedProfit][com.example.domain.RevenueReport.realizedProfit]
+ *   subtracts, and what the remaining-bill display converts at the FIXED rate.
+ * Distinct from [DebtPayment] (personal debts the owner owes others).
+ * Additive, never edited or deleted by the app.
+ */
+@Entity(tableName = "invoice_payments")
+data class InvoicePayment(
+    @PrimaryKey val id: String,
+    val cycleId: String,
+    val at: Long,
+    val usdCents: Long,
+    val ratePerUsd: Long,
+    val sdgPaid: Long,
+    val note: String,
+)
+
 @Dao
 interface BusinessDao {
     @Query("SELECT * FROM balance_updates ORDER BY at, id") fun observeBalanceUpdates(): Flow<List<BalanceUpdate>>
@@ -193,4 +240,13 @@ interface BusinessDao {
 
     @Query("SELECT * FROM unregistered_day_summary WHERE dayKey = :dayKey") suspend fun unregisteredSummary(dayKey: String): UnregisteredDaySummary?
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun upsertUnregisteredSummary(entry: UnregisteredDaySummary)
+
+    @Query("SELECT * FROM daily_cutoff WHERE dayKey = :dayKey") suspend fun dailyCutoff(dayKey: String): DailyCutoff?
+    @Query("SELECT * FROM daily_cutoff ORDER BY dayKey DESC") suspend fun cutoffs(): List<DailyCutoff>
+    @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertCutoff(entry: DailyCutoff): Long
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertInvoicePayment(entry: InvoicePayment): Long
+    @Query("SELECT * FROM invoice_payments WHERE cycleId = :cycleId ORDER BY at DESC") suspend fun invoicePaymentsForCycle(cycleId: String): List<InvoicePayment>
+    @Query("SELECT * FROM invoice_payments ORDER BY at DESC") suspend fun invoicePayments(): List<InvoicePayment>
+    @Query("SELECT * FROM invoice_payments ORDER BY at DESC") fun observeInvoicePayments(): Flow<List<InvoicePayment>>
 }

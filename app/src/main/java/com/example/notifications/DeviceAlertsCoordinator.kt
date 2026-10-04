@@ -472,15 +472,19 @@ object DeviceAlertsCoordinator {
 
     /**
      * The churn-proof bound set: deviceKeys AND subscriber stamps of sessions
-     * currently ACTIVE/PAUSED. A subscribed device whose clientId churned since
-     * the bind still carries its "[N]" stamp in the router name, so the stamp
-     * match keeps it out of the daytime heads-up (and the unregistered list).
+     * that still count as subscribed today — ACTIVE/PAUSED, plus sessions that
+     * ENDED today (timer expiry or the 18:00 cutoff). A subscribed device whose
+     * clientId churned since the bind still carries its "[N]" stamp in the
+     * router name, so the stamp match keeps it out of the daytime heads-up (and
+     * the unregistered list) even after its subscription ended today.
      */
     internal data class BoundSessions(val keys: Set<String>, val stamps: Set<String>)
-    internal fun boundSessions(context: Context): BoundSessions = try {
+    internal fun boundSessions(context: Context, now: Long): BoundSessions = try {
         kotlinx.coroutines.runBlocking {
+            val today = com.example.data.DeviceAlerts.dayKey(now)
             val sessions = com.example.db.AppDatabase.getDatabase(context).businessDao().sessions()
-                .filter { !it.home && it.state in listOf("ACTIVE", "PAUSED") }
+                .filter { !it.home && (it.state in listOf("ACTIVE", "PAUSED") ||
+                    (it.state == "ENDED" && com.example.data.DeviceAlerts.dayKey(it.started) == today)) }
             BoundSessions(
                 keys = sessions.filter { it.deviceMac.isNotBlank() || it.deviceClientId != null }
                     .map { com.example.data.DeviceAlerts.deviceKey(it.deviceMac, it.deviceClientId ?: -1) }
@@ -531,7 +535,7 @@ object DeviceAlertsCoordinator {
             val live = tracked.orEmpty()
             if (live.isNotEmpty()) {
                 val dayKey = DeviceAlerts.dayKey(now)
-                val bound = boundSessions(context)
+                val bound = boundSessions(context, now)
                 live.forEach { device ->
                     val key = DeviceAlerts.deviceKey(device.mac, device.clientId)
                     val stamp = DeviceAlerts.stampOf(device.name)

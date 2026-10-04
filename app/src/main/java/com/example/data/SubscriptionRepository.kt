@@ -3,6 +3,7 @@ package com.example.data
 import android.content.Context
 import androidx.room.withTransaction
 import com.example.db.*
+import com.example.domain.BusinessDay
 import com.example.domain.Money
 import com.example.domain.Rules
 import com.example.domain.TextRules
@@ -65,6 +66,7 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
      */
     suspend fun bindDevice(id: String, device: TrackedDevice?) = db.withTransaction {
         val s = dao.session(id) ?: return@withTransaction
+        requireDayOpen(s)
         dao.updateSession(if (device == null)
             s.copy(deviceClientId = null, deviceIp = "", deviceName = "", deviceMac = "")
         else {
@@ -85,6 +87,7 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
     suspend fun relinkDevice(id: String, device: TrackedDevice, deviceIsLive: Boolean) = db.withTransaction {
         val s = dao.session(id) ?: throw IllegalArgumentException("الاشتراك غير موجود")
         require(!s.home && s.state in listOf("ACTIVE", "PAUSED")) { "يمكن استعادة الاشتراكات النشطة أو المتوقفة فقط" }
+        requireDayOpen(s)
         require(device.clientId in 1..4294967295L) { "معرّف الجهاز غير صالح" }
         dao.updateSession(s.copy(deviceClientId = device.clientId, deviceIp = device.ip, deviceName = device.name, deviceMac = device.mac))
         if (deviceIsLive && s.state == "PAUSED") changeState(id, "RESUME")
@@ -248,6 +251,59 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
         }
     }
 
+    /**
+     * §2: the automatic, idempotent daily cutoff at exactly 18:00. Closes every
+     * business day whose cutoff has passed (normally just the latest one; older
+     * days are backfilled if the app was off): their ACTIVE/PAUSED sessions are
+     * force-ended AT the cutoff instant — frozen, never deleted — and one
+     * [DailyCutoff] row stores the finalized summary (counts, totals, revenue).
+     *
+     * Idempotent: the DailyCutoff row's presence makes a repeated cutoff a
+     * no-op — a second call ends nothing and writes no new rows, so revenue can
+     * never duplicate. Post-cutoff sales already belong to the next business
+     * day via [BusinessDay.key] (computed from the immutable `started`), so the
+     * new day starts with a fresh ledger and reopening a subscription is simply
+     * a new paid event (a new session record, ending at the next cutoff).
+     */
+    suspend fun applyDailyCutoff(now: Long = time()) = db.withTransaction {
+        val lastKey = BusinessDay.lastCutoffKey(now)
+        // Every business day up to the latest passed cutoff gets exactly one
+        // DailyCutoff row: days with still-open sessions are force-ended at
+        // their 18:00, days whose sessions all ended naturally just get their
+        // finalized summary stored. The row's presence makes repeats a no-op.
+        dao.sessions().filter { !it.home }
+            .map { BusinessDay.key(it.started) }.filter { it <= lastKey }
+            .distinct().sorted()
+            .forEach { key -> if (dao.dailyCutoff(key) == null) closeBusinessDay(key, now) }
+    }
+
+    private suspend fun closeBusinessDay(dayKey: String, now: Long) {
+        val cutoffAt = BusinessDay.cutoffInstant(dayKey)
+        val target = dao.sessions().filter { s ->
+            !s.home && s.state in listOf("ACTIVE", "PAUSED") && BusinessDay.key(s.started) == dayKey }
+        target.forEach { old ->
+            // `served` is the ACTUAL elapsed time at 18:00 (not the full
+            // duration), so the record honestly reflects the early cutoff.
+            val next = old.copy(state = "ENDED", served = Rules.served(old.clock(), cutoffAt),
+                recognized = if (old.recognized == 0L) cutoffAt else old.recognized,
+                warned = true, notified = true)
+            if (next != old) dao.updateSession(next)
+        }
+        val paid = dao.sessions().filter { s -> !s.home && s.recognized > 0 && BusinessDay.key(s.started) == dayKey }
+        dao.insertCutoff(DailyCutoff(dayKey = dayKey, cutoffAt = cutoffAt,
+            sessionsEnded = target.size, subscribedCount = paid.size,
+            totalRevenue = paid.sumOf { it.cashEquivalent },
+            cashTotal = paid.filter { it.payment == "CASH" }.sumOf { it.cashEquivalent },
+            bankTotal = paid.filter { it.payment == "BANK" }.sumOf { it.cashEquivalent },
+            createdAt = now))
+    }
+
+    /** §2: a closed business day's subscriptions are frozen — no edits, no deletes. */
+    private suspend fun requireDayOpen(s: Session) {
+        if (dao.dailyCutoff(BusinessDay.key(s.started)) != null)
+            throw IllegalArgumentException("اليوم مغلق (18:00)؛ لا يمكن تعديل اشتراكات يوم مغلق")
+    }
+
     suspend fun changeState(id: String, action: String) = db.withTransaction {
         val now = time()
         val s = dao.session(id)?.let { advance(it, now) } ?: return@withTransaction
@@ -257,12 +313,16 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
             action == "CANCEL" && s.state in listOf("ACTIVE", "PAUSED") -> s.copy(state = "CANCELLED", served = Rules.served(s.clock(), now))
             else -> s
         }
+        // §2: no-op actions stay silent; real changes on a closed day are frozen.
+        if (next != s) requireDayOpen(s)
         dao.updateSession(next)
     }
 
     suspend fun rename(id: String, name: String) = db.withTransaction {
         require(name.isNotBlank() && name.trim().length <= 80) { "اكتب اسمًا من 1 إلى 80 حرفًا" }
-        dao.session(id)?.let { dao.updateSession(it.copy(client = name.trim())) }
+        val s = dao.session(id) ?: return@withTransaction
+        requireDayOpen(s)
+        dao.updateSession(s.copy(client = name.trim()))
     }
 
     suspend fun markNotified(id: String, ending: Boolean) = db.withTransaction {
@@ -316,10 +376,54 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
         require(amount in 0..9999999999900000 && count in 1..100000 && reason.trim().length in 1..200) { "راجع مبلغ التصحيح وعدد الأجهزة وسببه" }
         val ledger = com.example.domain.Finance.ledger(dao.sessions(), dao.manualSales(), emptyList())
         val original = requireNotNull(ledger.find { it.id == source }) { "قيد الإيراد غير موجود أو لم يُثبّت بعد" }
+        // §2: the paid-subscription ledger of a closed day is frozen — no corrections after cutoff.
+        if (source.startsWith("session:")) dao.session(source.removePrefix("session:"))?.let { requireDayOpen(it) }
         val value = if (original.bank) Money.bankToCash(amount, original.premiumBps) else amount
         dao.correct(RevenueCorrection(source = source, amount = amount, cashEquivalent = value, count = if (source.startsWith("session:")) 1 else count,
             voided = voided, at = time(), reason = reason.trim()))
     }
+    /**
+     * §9: records an ACTUAL partial bill payment in USD. The owner buys the
+     * dollars for the Starlink bill in parts — e.g. $30 of $85 at 8100 SDG/USD
+     * while his accounting bankk rate stays fixed at 8500 (owner's rule
+     * 2026-10-04):
+     * - the payment reduces the bill's remaining USD (never the rate);
+     * - realized profit subtracts the ACTUAL SDG outlay ([InvoicePayment.sdgPaid]);
+     * - the remaining-bill display converts remaining USD at the FIXED
+     *   accounting rate, never at the purchase rate.
+     * Idempotent by random id; a payment can never buy more than the bill's
+     * remaining USD.
+     */
+    suspend fun payInvoice(usdCents: Long, ratePerUsd: Long, note: String) = db.withTransaction {
+        require(usdCents in 1..9999999) { "أدخل مبلغ الدولار" }
+        require(ratePerUsd in 1..99999999) { "أدخل سعر الشراء (جنيه للدولار)" }
+        require(note.trim().length <= 200) { "الملاحظة لا تتجاوز 200 حرف" }
+        val settings = dao.settings() ?: BusinessSettings()
+        val cycle = dao.cycles().find { it.id == settings.cycleId }
+            ?: throw IllegalArgumentException("حدد دورة الفوترة واحفظ الإعدادات أولًا")
+        require(settings.usdCents > 0) { "حدد قيمة الفاتورة بالدولار في الإعدادات أولًا" }
+        val boughtUsd = dao.invoicePaymentsForCycle(cycle.id).sumOf { it.usdCents }
+        val remainingUsd = (settings.usdCents - boughtUsd).coerceAtLeast(0)
+        require(usdCents <= remainingUsd) { "المبلغ يتجاوز المتبقي من الفاتورة" }
+        val sdgPaid = usdCents * ratePerUsd / 100
+        dao.insertInvoicePayment(InvoicePayment(id = UUID.randomUUID().toString(), cycleId = cycle.id,
+            at = time(), usdCents = usdCents, ratePerUsd = ratePerUsd, sdgPaid = sdgPaid, note = note.trim()))
+    }
+
+    /**
+     * §5: when the owner marks a device HOME, its existing sessions are excluded
+     * deterministically too — matched by router clientId or by unmasked MAC
+     * (never by IP or name heuristics). Their revenue leaves the finance ledger
+     * immediately because [com.example.domain.Finance.ledger] skips home sessions.
+     */
+    suspend fun excludeHomeSessions(clientId: Long, mac: String) = db.withTransaction {
+        val m = DeviceAlerts.usableMac(mac)
+        dao.sessions().filter { s ->
+            !s.home && ((s.deviceClientId != null && s.deviceClientId == clientId) ||
+                (m != null && DeviceAlerts.usableMac(s.deviceMac) == m))
+        }.forEach { dao.updateSession(it.copy(home = true)) }
+    }
+
     suspend fun saveDebt(debt: Debt) = db.withTransaction {
         require(debt.name.trim().length in 1..80 && debt.total in 1..99999999999 && debt.start > 0 && debt.due >= debt.start) { "راجع اسم الدين وقيمته وفترته" }
         require(debt.total >= dao.debtPayments().filter { it.debtId == debt.id }.sumOf { it.amount }) { "قيمة الدين لا تقل عن المسدّد فعليًا" }
@@ -371,7 +475,7 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
 
     suspend fun exportJson(): String = withContext(Dispatchers.IO) {
         db.withTransaction {
-            val root = org.json.JSONObject().put("version", 8).put("format", "slotra-backup").put("exportedAt", System.currentTimeMillis())
+            val root = org.json.JSONObject().put("version", 9).put("format", "slotra-backup").put("exportedAt", System.currentTimeMillis())
             fun rows(query: String): org.json.JSONArray {
                 val result = org.json.JSONArray()
                 db.openHelper.readableDatabase.query(query).use { c -> while (c.moveToNext()) {

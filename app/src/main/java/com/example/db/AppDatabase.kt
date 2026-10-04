@@ -58,7 +58,7 @@ interface ShortcutDao {
     @Query("SELECT * FROM shortcuts") suspend fun list(): List<Shortcut>
 }
 
-@Database(entities = [Device::class, Shortcut::class, Plan::class, Session::class, BusinessSettings::class, Sequence::class, HomeIp::class, WatchIp::class, ManualSale::class, SlotReservation::class, RevenueCorrection::class, BillingCycle::class, Debt::class, DebtPayment::class, BalanceUpdate::class, DeviceIdentity::class, DailyDeviceConfirmation::class, UnregisteredDaySummary::class], version = 9, exportSchema = true)
+@Database(entities = [Device::class, Shortcut::class, Plan::class, Session::class, BusinessSettings::class, Sequence::class, HomeIp::class, WatchIp::class, ManualSale::class, SlotReservation::class, RevenueCorrection::class, BillingCycle::class, Debt::class, DebtPayment::class, BalanceUpdate::class, DeviceIdentity::class, DailyDeviceConfirmation::class, UnregisteredDaySummary::class, DailyCutoff::class, InvoicePayment::class], version = 10, exportSchema = true)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun deviceDao(): DeviceDao
     abstract fun shortcutDao(): ShortcutDao
@@ -142,10 +142,20 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL("CREATE TABLE IF NOT EXISTS unregistered_day_summary (dayKey TEXT NOT NULL PRIMARY KEY, tariff INTEGER NOT NULL, deviceCount INTEGER NOT NULL, unpaidCount INTEGER NOT NULL, netTotal INTEGER NOT NULL, payment TEXT NOT NULL, updated INTEGER NOT NULL)")
             }
         }
+        /**
+         * 9 → 10 (daily-cutoff + invoice-payment repair): two purely additive
+         * tables. No existing row is touched, rewritten or dropped.
+         */
+        val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS `daily_cutoff` (`dayKey` TEXT NOT NULL, `cutoffAt` INTEGER NOT NULL, `sessionsEnded` INTEGER NOT NULL, `subscribedCount` INTEGER NOT NULL, `totalRevenue` INTEGER NOT NULL, `cashTotal` INTEGER NOT NULL, `bankTotal` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, PRIMARY KEY(`dayKey`))")
+                db.execSQL("CREATE TABLE IF NOT EXISTS `invoice_payments` (`id` TEXT NOT NULL, `cycleId` TEXT NOT NULL, `at` INTEGER NOT NULL, `usdCents` INTEGER NOT NULL, `ratePerUsd` INTEGER NOT NULL, `sdgPaid` INTEGER NOT NULL, `note` TEXT NOT NULL, PRIMARY KEY(`id`))")
+            }
+        }
         fun getDatabase(context: Context): AppDatabase =
             instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, "app_db")
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
                     .build().also { instance = it }
             }
     }
