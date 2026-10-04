@@ -59,7 +59,7 @@ private fun dateLabel(at: Long, pattern: String = "EEEE، d MMMM yyyy") = Simple
     val report = snapshot.revenue
     val daily = snapshot.today
     var calendar by rememberSaveable { mutableStateOf(false) }
-    var invoiceDialog by rememberSaveable { mutableStateOf(false) }
+    val invoiceDialogState = rememberSaveable { mutableStateOf(false) }
     var selectedDay by rememberSaveable { mutableLongStateOf(snapshot.day) }
     val history = remember(report, snapshot.day) {
         val byDay = report.days.associateBy { it.day }
@@ -237,7 +237,7 @@ private fun dateLabel(at: Long, pattern: String = "EEEE، d MMMM yyyy") = Simple
                         }
                     }
                 }
-                TextButton(onClick = { invoiceDialog = true }, modifier = Modifier.testTag("open-invoice-payment")) {
+                TextButton(onClick = { invoiceDialogState.value = true }, modifier = Modifier.testTag("open-invoice-payment")) {
                     Icon(Icons.Default.Payments, null, Modifier.size(20.dp)); Spacer(Modifier.width(8.dp)); Text("تسجيل شراء دولار للفاتورة")
                 }
             }
@@ -257,8 +257,8 @@ private fun dateLabel(at: Long, pattern: String = "EEEE، d MMMM yyyy") = Simple
             Text("تصحيح إيراد سابق أو تعديل تكلفة الدورة يعيد حساب الخطة. الحساب تقديري، ولا يثبت رصيد الكاش أو سداد الفاتورة.", style = MaterialTheme.typography.bodySmall)
         } }
     }
-    if (invoiceDialog) InvoicePaymentDialog(onDismiss = { invoiceDialog = false }) { usdCents, ratePerUsd, note ->
-        payInvoice(usdCents, ratePerUsd, note); invoiceDialog = false
+    if (invoiceDialogState.value) InvoicePaymentDialog(onDismiss = { invoiceDialogState.value = false }) { usdCents, ratePerUsd, note ->
+        payInvoice(usdCents, ratePerUsd, note); invoiceDialogState.value = false
     }
 }
 
