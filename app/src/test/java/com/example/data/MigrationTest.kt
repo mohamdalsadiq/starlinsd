@@ -29,7 +29,7 @@ class MigrationTest {
             old.execSQL("INSERT INTO shortcuts VALUES (9, 'قديم', 'الساعة %time+2h%')")
             old.version = 1
         }
-        val db = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_1_2, AppDatabase.MIGRATION_2_3, AppDatabase.MIGRATION_3_4, AppDatabase.MIGRATION_4_5, AppDatabase.MIGRATION_5_6, AppDatabase.MIGRATION_6_7, AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9).build()
+        val db = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_1_2, AppDatabase.MIGRATION_2_3, AppDatabase.MIGRATION_3_4, AppDatabase.MIGRATION_4_5, AppDatabase.MIGRATION_5_6, AppDatabase.MIGRATION_6_7, AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9, AppDatabase.MIGRATION_9_10).build()
         try {
             val device = db.deviceDao().getByIp("192.168.1.2")!!
             assertEquals(7, device.id); assertEquals("جهاز البيت", device.name)
@@ -58,7 +58,7 @@ class MigrationTest {
             old.execSQL("INSERT INTO sessions VALUES ('original', 'محمد', '3 ساعات', 1700000000000, 1700000000000, 10800000, 0, 'ACTIVE', 125000, 100000, 'BANK', 2500, 0, 1800000, 1700001800000, 0, 0, 'mm')")
             old.version = 2
         }
-        val db = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_2_3, AppDatabase.MIGRATION_3_4, AppDatabase.MIGRATION_4_5, AppDatabase.MIGRATION_5_6, AppDatabase.MIGRATION_6_7, AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9).build()
+        val db = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_2_3, AppDatabase.MIGRATION_3_4, AppDatabase.MIGRATION_4_5, AppDatabase.MIGRATION_5_6, AppDatabase.MIGRATION_6_7, AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9, AppDatabase.MIGRATION_9_10).build()
         try {
             val row = db.businessDao().session("original")!!
             assertEquals("محمد", row.client); assertEquals(125000L, row.amount)
@@ -83,7 +83,7 @@ class MigrationTest {
             old.execSQL("INSERT INTO sessions VALUES ('original', 'محمد', '3 ساعات', 1700000000000, 1700000000000, 10800000, 120000, 'PAUSED', 125000, 100000, 'BANK', 2500, 0, 1800000, 0, 0, 0, 'mm', '7')")
             old.version = 5
         }
-        val db = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_5_6, AppDatabase.MIGRATION_6_7, AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9).build()
+        val db = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_5_6, AppDatabase.MIGRATION_6_7, AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9, AppDatabase.MIGRATION_9_10).build()
         try {
             val repo = SubscriptionRepository(context, db); repo.initialize()
             val row = repo.dao.session("original")!!
@@ -110,7 +110,7 @@ class MigrationTest {
             old.execSQL("INSERT INTO devices VALUES (7, '192.168.1.2', 'جهاز البيت', 123456, 1, 60000)")
             old.version = 6
         }
-        val db = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_6_7, AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9).build()
+        val db = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_6_7, AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9, AppDatabase.MIGRATION_9_10).build()
         try {
             // Existing rows survive with their values; new device columns start empty/null.
             val row = db.businessDao().session("original")!!
@@ -150,7 +150,7 @@ class MigrationTest {
             old.execSQL("INSERT INTO watch_ips VALUES ('192.168.1.139', 'realme-C55', 1700000000000)")
             old.version = 7
         }
-        val db = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9).build()
+        val db = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9, AppDatabase.MIGRATION_9_10).build()
         try {
             // Legacy IP rows survive the identity migration untouched; identity tables exist empty.
             assertEquals(listOf("192.168.1.69"), db.businessDao().homeIps().map { it.ip })
@@ -179,7 +179,7 @@ class MigrationTest {
             old.execSQL("INSERT INTO manual_sales VALUES ('rev-2026-09-28:devices', 1700000000000, 2, 50000, 100000, 100000, 'CASH', 2500)")
             old.version = 8
         }
-        val db = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_8_9).build()
+        val db = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_8_9, AppDatabase.MIGRATION_9_10).build()
         try {
             // Existing rows survive; the new summary table exists empty and is usable.
             val row = db.businessDao().session("original")!!
@@ -189,6 +189,33 @@ class MigrationTest {
             db.businessDao().upsertUnregisteredSummary(
                 com.example.db.UnregisteredDaySummary("2026-09-28", 50000L, 2, 0, 100000L, "CASH", 1))
             assertEquals(100000L, db.businessDao().unregisteredSummary("2026-09-28")!!.netTotal)
+        } finally { db.close(); context.deleteDatabase(name) }
+    }
+
+    @Test fun migration9to10CreatesCutoffAndUsdInvoiceTables() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val name = "migration-v9-10-${System.nanoTime()}"
+        val path = context.getDatabasePath(name); path.parentFile!!.mkdirs()
+        val schema = org.json.JSONObject(java.io.File("schemas/com.example.db.AppDatabase/9.json").readText()).getJSONObject("database").getJSONArray("entities")
+        SQLiteDatabase.openOrCreateDatabase(path, null).use { old ->
+            for (index in 0 until schema.length()) {
+                val entity = schema.getJSONObject(index)
+                old.execSQL(entity.getString("createSql").replace("\${TABLE_NAME}", entity.getString("tableName")))
+            }
+            old.version = 9
+        }
+        val db = Room.databaseBuilder(context, AppDatabase::class.java, name).addMigrations(AppDatabase.MIGRATION_9_10).build()
+        try {
+            // New tables exist empty; the USD invoice shape round-trips.
+            assertTrue(db.businessDao().invoicePayments().isEmpty())
+            db.businessDao().insertInvoicePayment(
+                com.example.db.InvoicePayment("p1", "c1", 1700000000000, 3000, 8100, 243000, ""))
+            val row = db.businessDao().invoicePayments().single()
+            assertEquals(3000L, row.usdCents); assertEquals(8100L, row.ratePerUsd); assertEquals(243000L, row.sdgPaid)
+            assertNull(db.businessDao().dailyCutoff("2026-10-05"))
+            db.businessDao().insertCutoff(
+                com.example.db.DailyCutoff("2026-10-05", 1700000000000, 2, 2, 250000, 250000, 0, 1700000000001))
+            assertEquals(2, db.businessDao().dailyCutoff("2026-10-05")!!.subscribedCount)
         } finally { db.close(); context.deleteDatabase(name) }
     }
 
