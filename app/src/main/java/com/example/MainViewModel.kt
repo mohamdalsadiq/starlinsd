@@ -47,6 +47,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
     fun saveDebt(debt: Debt) = work { repo.saveDebt(debt); message.value = "تم حفظ خطة الدين" }
     fun payDebt(id: String, debtId: String, amount: Long) = work { repo.payDebt(id, debtId, amount); message.value = "تم تسجيل السداد الفعلي" }
+    /**
+     * §9: records an actual partial bill payment in USD (owner's rule
+     * 2026-10-04): [usdCents] of the bill bought at [ratePerUsd] SDG per USD.
+     * Only real, recorded payments move the realized profit — the projected
+     * profit never changes.
+     */
+    fun payInvoice(usdCents: Long, ratePerUsd: Long, note: String) = work {
+        repo.payInvoice(usdCents, ratePerUsd, note); message.value = "تم تسجيل شراء الدولار للفاتورة"
+    }
     val manualSales = repo.dao.observeManualSales().stateIn(viewModelScope, sharing, emptyList())
     val pendingRestore = MutableStateFlow<BackupData?>(null)
     private var restoreText: String? = null
@@ -58,11 +67,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val settings = repo.dao.observeSettings().stateIn(viewModelScope, sharing, null)
     val clock = MutableStateFlow(System.currentTimeMillis())
     private val reportCache = FinancialReportCache()
+    // kotlinx.coroutines' typed combine overloads stop at 5 flows: a 6-flow
+    // call does not compile. Two nested 3-flow combines are equivalent and safe.
     private val accountingBase = combine(
-        repo.dao.observeSessions(), repo.dao.observeManualSales(), repo.dao.observeCorrections(),
-        repo.dao.observeSettings(), repo.dao.observeCycles()
-    ) { sessions, sales, corrections, settings, cycles ->
-        FinancialData(sessions, sales, corrections, settings ?: BusinessSettings(), cycles, emptyList(), emptyList())
+        combine(
+            repo.dao.observeSessions(), repo.dao.observeManualSales(), repo.dao.observeCorrections(),
+        ) { sessions, sales, corrections -> Triple(sessions, sales, corrections) },
+        combine(
+            repo.dao.observeSettings(), repo.dao.observeCycles(), repo.dao.observeInvoicePayments(),
+        ) { settings, cycles, invoicePayments -> Triple(settings, cycles, invoicePayments) },
+    ) { first, second ->
+        val (sessions, sales, corrections) = first
+        val (settings, cycles, invoicePayments) = second
+        FinancialData(sessions, sales, corrections, settings ?: BusinessSettings(), cycles, emptyList(), emptyList(),
+            invoicePayments = invoicePayments)
     }
     val financial = combine(accountingBase, repo.dao.observeDebts(), repo.dao.observeDebtPayments(), repo.dao.observeBalanceUpdates(), clock) { base, debts, payments, balances, _ ->
         // Fresh writes must be included immediately, not at the next fifteen-second tick.
@@ -119,6 +137,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // MAC and last-known IP as display data, so DHCP IP changes cannot reclassify.
     fun addHomeDevice(device: TrackedDevice) = work {
         lists.setHomeIdentity(device.clientId, device.name, device.mac, device.ip)
+        // §5: the device's existing sessions leave the finance ledger too.
+        repo.excludeHomeSessions(device.clientId, device.mac)
         message.value = "تمت إضافة الجهاز لأهل البيت بمعرّفه الثابت"
     }
     fun addWatchDevice(device: TrackedDevice) = work {
@@ -209,14 +229,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun confirmDay(
         dayKey: String,
+        eveningDayKey: String,
         subscribed: List<SubscriptionRepository.DailyDeviceAmount>,
         unregisteredCount: Int,
         tariff: Long,
         unpaidCount: Int,
         payment: String,
     ) = work {
+        // Subscribed audit rows belong to the BUSINESS day under review; the
+        // unregistered aggregate (and its single ledger row) stays on the
+        // evening's calendar date, exactly as before — no accounting change.
         repo.confirmDailyDevices(dayKey, subscribed, payment)
-        repo.confirmUnregisteredSummary(dayKey, unregisteredCount, tariff, unpaidCount, payment)
+        repo.confirmUnregisteredSummary(eveningDayKey, unregisteredCount, tariff, unpaidCount, payment)
         DeviceAlertsCoordinator.setUnregisteredTariff(getApplication(), tariff)
         message.value = "تم تأكيد إيراد $dayKey وإضافته إلى المالية"
     }

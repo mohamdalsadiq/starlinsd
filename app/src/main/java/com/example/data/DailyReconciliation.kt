@@ -94,6 +94,75 @@ object DailyReconciliation {
         }
     }
 
+    // ---- Event-driven subscription confirmation (§1) ----
+
+    /**
+     * One paid subscription's confirmation line: the session is the money
+     * identity, its [com.example.db.Session.amount] the LOCKED subscribed amount
+     * (the shortcut price captured at sale time — never editable here).
+     * [deviceLabel] is optional display enrichment from device history; a
+     * missing or unknown device never hides a paid subscription.
+     */
+    data class SubscriptionConfirmation(val session: com.example.db.Session, val deviceLabel: String?)
+
+    /**
+     * Stable audit key for an unbound session's daily-confirmation row. The old
+     * code used the negative list index (-(index+1)), so inserting or
+     * reordering sessions rewrote/misassociated audit rows. Session ids are
+     * UUIDs: their bits, forced into the negative range, are stable per
+     * session and can never collide with real router clientIds (> 0).
+     */
+    fun stableAuditDeviceId(sessionId: String): Long {
+        val bits = try { java.util.UUID.fromString(sessionId).leastSignificantBits }
+        catch (_: IllegalArgumentException) { sessionId.hashCode().toLong() shl 32 }
+        val mag = if (bits == Long.MIN_VALUE) Long.MAX_VALUE else kotlin.math.abs(bits)
+        return -(mag % Long.MAX_VALUE + 1)
+    }
+
+    /**
+     * §1: the Daily Confirmation's subscribed section is built from the PAID
+     * subscription list — never from device history. Every recognized, non-HOME
+     * session of the business day appears exactly once, in every state that
+     * still represents sold time (ACTIVE, PAUSED/disconnected, ENDED/expired).
+     * Unrecognized (under-five-minute), CANCELLED, and HOME sessions never
+     * appear; their money is not confirmed revenue.
+     *
+     * The device match below is display-only (clientId → unmasked MAC → today's
+     * subscriber stamp, the same deterministic identities used everywhere else)
+     * and only supplies the label shown next to the locked amount.
+     */
+    fun subscriptionConfirmations(
+        sessions: List<com.example.db.Session>,
+        devices: List<DeviceAlerts.DayDevice>,
+        businessDayKey: String,
+    ): List<SubscriptionConfirmation> {
+        val paid = sessions.filter { session ->
+            !session.home && session.recognized > 0 &&
+                session.state in listOf("ACTIVE", "PAUSED", "ENDED") &&
+                com.example.domain.BusinessDay.key(session.started) == businessDayKey
+        }.sortedBy { it.started }
+        return paid.map { session ->
+            val label = devices.firstOrNull { device -> confirmsDevice(device, session) }
+                ?.let { it.name.ifBlank { "جهاز ${it.clientId}" } }
+            SubscriptionConfirmation(session, label)
+        }
+    }
+
+    /**
+     * Display-only session↔device match. The subscriber stamp "[N]" is unique
+     * per calendar day (references reset at calendar midnight in
+     * [SubscriptionRepository.prepare]), so the stamp fallback also scopes to
+     * the session's calendar day — never to the business-day key.
+     */
+    private fun confirmsDevice(device: DeviceAlerts.DayDevice, session: com.example.db.Session): Boolean {
+        if (session.deviceClientId != null && session.deviceClientId == device.clientId) return true
+        val deviceMac = DeviceAlerts.usableMac(device.mac)
+        if (deviceMac != null && DeviceAlerts.usableMac(session.deviceMac) == deviceMac) return true
+        val stamp = DeviceAlerts.stampOf(device.name)
+        return stamp != null && session.reference.isNotBlank() && stamp == session.reference &&
+            DeviceAlerts.dayKey(session.started) == DeviceAlerts.dayKey(device.firstSeen)
+    }
+
     // ---- Per-device confirmation (device-identity-reconciliation-v1) ----
 
     /** The ONE deterministic manual-sales id for [dayKey]'s device-level ledger row. */
