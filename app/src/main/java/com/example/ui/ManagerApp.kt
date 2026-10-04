@@ -152,7 +152,10 @@ internal fun usdLabel(usdCents: Long): String {
                                     tab == 2 -> DebtsScreen(ready.data.debts, ready.data.payments, ready.budget, ready.day, busy, vm::saveDebt, vm::payDebt)
                                     else -> Dashboard(ready, { bulk = true }, { detail = "التقارير" }, vm::correctRevenue,
                                         live = { LiveOverview(vm) { tab = 1 }; DailyReviewCard(vm) { detail = "تأكيد الأجهزة اليومية" } },
-                                        onPayInvoice = vm::payInvoice) { newSession = true }
+                                        payer = object : InvoicePayer {
+                                            override fun pay(usdCents: Long, ratePerUsd: Long, note: String) =
+                                                vm.payInvoice(usdCents, ratePerUsd, note)
+                                        }) { newSession = true }
                                 }
                             }
                             tab == 1 -> {
