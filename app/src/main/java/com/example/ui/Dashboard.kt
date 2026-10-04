@@ -52,7 +52,7 @@ import java.util.*
 private fun dateLabel(at: Long, pattern: String = "EEEE، d MMMM yyyy") = SimpleDateFormat(pattern, Locale.forLanguageTag("ar")).format(Date(at))
 
 
-/** Handler for recording a USD bill payment. Interface (not function type) to avoid a compiler resolution quirk. */
+/** Handler for recording a USD bill payment. */
 interface InvoicePayer { fun pay(usdCents: Long, ratePerUsd: Long, note: String) }
 
 /** No-op payer for previews/tests. */
@@ -60,9 +60,12 @@ private object NoOpPayer : InvoicePayer {
     override fun pay(usdCents: Long, ratePerUsd: Long, note: String) {}
 }
 
+/** Provides the [InvoicePayer] via CompositionLocal to avoid a compiler scope-resolution quirk with Dashboard parameters inside LazyColumn items. */
+val LocalInvoicePayer = compositionLocalOf<InvoicePayer> { NoOpPayer }
+
 @Composable internal fun Dashboard(snapshot: FinancialSnapshot, addSales: () -> Unit = {},
     openReports: () -> Unit = {}, correct: (String, Long, Int, Boolean, String) -> Unit = { _, _, _, _, _ -> },
-    live: @Composable () -> Unit = {}, payer: InvoicePayer = NoOpPayer, add: () -> Unit) {
+    live: @Composable () -> Unit = {}, add: () -> Unit) {
     val config = snapshot.data.config
     val report = snapshot.revenue
     val daily = snapshot.today
@@ -251,8 +254,8 @@ private object NoOpPayer : InvoicePayer {
                 Text("$left يومًا متبقيًا", style = MaterialTheme.typography.titleMedium)
             }
         } }
-        // §9: USD payment button as its own item (shallow nesting for compiler).
-        if (report.cost != null) item { InvoicePaymentButton(payer) }
+        // §9: USD payment button as its own item (reads payer via CompositionLocal).
+        if (report.cost != null) item { InvoicePaymentButton(LocalInvoicePayer.current) }
         item { Panel {
             SectionHeading(Icons.Default.PieChart, "توزيع اليوم", "مخصصات تقديرية · ليست ربح الدورة")
             BudgetSummary(snapshot.budget.day(snapshot.day))

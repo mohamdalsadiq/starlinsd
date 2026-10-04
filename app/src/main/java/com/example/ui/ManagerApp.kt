@@ -150,13 +150,16 @@ internal fun usdLabel(usdCents: Long): String {
                                 else when {
                                     detail == "التقارير" -> ReportsScreen(ready, vm::correctRevenue)
                                     tab == 2 -> DebtsScreen(ready.data.debts, ready.data.payments, ready.budget, ready.day, busy, vm::saveDebt, vm::payDebt)
-                                    else -> Dashboard(ready, { bulk = true }, { detail = "التقارير" }, vm::correctRevenue,
-                                        live = { LiveOverview(vm) { tab = 1 }; DailyReviewCard(vm) { detail = "تأكيد الأجهزة اليومية" } },
-                                        payer = object : InvoicePayer {
+                                    else -> CompositionLocalProvider(
+                                        LocalInvoicePayer provides object : InvoicePayer {
                                             override fun pay(usdCents: Long, ratePerUsd: Long, note: String) {
                                                 vm.payInvoice(usdCents, ratePerUsd, note)
                                             }
-                                        }) { newSession = true }
+                                        }
+                                    ) {
+                                        Dashboard(ready, { bulk = true }, { detail = "التقارير" }, vm::correctRevenue,
+                                            live = { LiveOverview(vm) { tab = 1 }; DailyReviewCard(vm) { detail = "تأكيد الأجهزة اليومية" } }) { newSession = true }
+                                    }
                                 }
                             }
                             tab == 1 -> {
