@@ -75,6 +75,11 @@ object SubscriptionAlarms {
         val closeMinute = dailyCloseMinute(app)
         // Phase 3 defaults are seeded once, on the existing refresh path (spec 7/15/36).
         try { DeviceAlertsCoordinator.seedDefaults(app) } catch (e: CancellationException) { throw e } catch (_: Exception) { }
+        // §2: the fixed automatic 18:00 daily cutoff runs on this SAME single
+        // scheduler — no second scheduler, no WorkManager, no new background
+        // loop. Idempotent by the DailyCutoff row: a repeated run ends nothing
+        // and writes nothing new. Best-effort here; the next refresh retries.
+        try { repo.applyDailyCutoff(now) } catch (e: CancellationException) { throw e } catch (_: Exception) { }
         // Background device monitoring (spec 21): the single scheduler performs one
         // bounded CLIENTS poll so pause/resume, the unregistered-delay evaluation,
         // and NEW-device discovery work while the UI is closed. Skipped only when
@@ -124,16 +129,19 @@ object SubscriptionAlarms {
         // Midnight refresh keeps day totals correct even when no timer is active.
         val midnight = if (StatusPanel.enabled(app) && StatusPanel.allowed(app)) StatusPanel.nextMidnight(now) else null
         val dailyClose = nextDailyClose(now, closeMinute)
+        // §2: the fixed 18:00 business-day cutoff always has a wakeup, even with
+        // no active sessions — the day must close on time, every time.
+        val cutoff = com.example.domain.BusinessDay.nextCutoffInstant(now)
         // Phase 3 device alerts ride the same single alarm: evaluate now, then merge
         // their next wakeup into the one-schedule-for-everything mechanism (spec 5/39).
         // Only a FRESH snapshot drives evaluation: stale data is treated as a
         // discovery failure (monitoring freezes, never acts on old data).
         val deviceWakeups = try { DeviceAlertsCoordinator.onRefresh(app, now,
-            DeviceTrackerBridge.freshSnapshot(), DeviceTrackerBridge.activeBindings(app)) } catch (e: CancellationException) { throw e } catch (_: Exception) { emptyList() }
+            DeviceTrackerBridge.freshSnapshot(), DeviceTrackerBridge.activeBindings(app, now)) } catch (e: CancellationException) { throw e } catch (_: Exception) { emptyList() }
         // Background discovery tick (spec 21): keeps new-device observation alive
         // while the app is closed, on the SAME alarm — never a second scheduler.
         val monitoringWakeup = DeviceTrackerBridge.monitoringWakeup(now)
-        val next = (listOfNotNull(deadline, midnight, dailyClose, monitoringWakeup) + deviceWakeups).minOrNull()
+        val next = (listOfNotNull(deadline, midnight, dailyClose, cutoff, monitoringWakeup) + deviceWakeups).minOrNull()
         val manager = app.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         manager.cancel(pending(app))
         if (next != null) {
@@ -226,11 +234,19 @@ object DeviceTrackerBridge {
         lastPollAttemptAt = 0L
     }
 
-    /** clientId -> session id for sessions currently ACTIVE/PAUSED with a bound device. */
-    fun activeBindings(app: Context): Map<Long, String> = try {
+    /**
+     * clientId -> session id for sessions with a bound device that still count
+     * as subscribed today: ACTIVE/PAUSED, plus sessions that ENDED today
+     * (timer expiry or the 18:00 cutoff) — a subscribed device must never slip
+     * into the unregistered list the same day its subscription ended.
+     */
+    fun activeBindings(app: Context, now: Long = System.currentTimeMillis()): Map<Long, String> = try {
         kotlinx.coroutines.runBlocking {
+            val today = com.example.data.DeviceAlerts.dayKey(now)
             AppDatabase.getDatabase(app).businessDao().sessions()
-                .filter { !it.home && it.state in listOf("ACTIVE", "PAUSED") && it.deviceClientId != null }
+                .filter { !it.home && it.deviceClientId != null &&
+                    (it.state in listOf("ACTIVE", "PAUSED") ||
+                        (it.state == "ENDED" && com.example.data.DeviceAlerts.dayKey(it.started) == today)) }
                 .associate { it.deviceClientId!! to it.id }
         }
     } catch (e: CancellationException) { throw e } catch (_: Exception) { emptyMap() }
