@@ -59,7 +59,6 @@ private fun dateLabel(at: Long, pattern: String = "EEEE، d MMMM yyyy") = Simple
     val report = snapshot.revenue
     val daily = snapshot.today
     var calendar by rememberSaveable { mutableStateOf(false) }
-    val invoiceDialogState = rememberSaveable { mutableStateOf(false) }
     var selectedDay by rememberSaveable { mutableLongStateOf(snapshot.day) }
     val history = remember(report, snapshot.day) {
         val byDay = report.days.associateBy { it.day }
@@ -237,9 +236,7 @@ private fun dateLabel(at: Long, pattern: String = "EEEE، d MMMM yyyy") = Simple
                         }
                     }
                 }
-                TextButton(onClick = { invoiceDialogState.value = true }, modifier = Modifier.testTag("open-invoice-payment")) {
-                    Icon(Icons.Default.Payments, null, Modifier.size(20.dp)); Spacer(Modifier.width(8.dp)); Text("تسجيل شراء دولار للفاتورة")
-                }
+                InvoicePaymentButton(payInvoice)
             }
             if (config.cycleEnd > config.cycleStart && config.cycleStart > 0) {
                 Text("${dateLabel(config.cycleStart, "d MMM yyyy")} — ${dateLabel(config.cycleEnd - 1, "d MMM yyyy")}")
@@ -257,9 +254,23 @@ private fun dateLabel(at: Long, pattern: String = "EEEE، d MMMM yyyy") = Simple
             Text("تصحيح إيراد سابق أو تعديل تكلفة الدورة يعيد حساب الخطة. الحساب تقديري، ولا يثبت رصيد الكاش أو سداد الفاتورة.", style = MaterialTheme.typography.bodySmall)
         } }
     }
-    if (invoiceDialogState.value) InvoicePaymentDialog(onDismiss = { invoiceDialogState.value = false }) { usdCents, ratePerUsd, note ->
-        payInvoice(usdCents, ratePerUsd, note); invoiceDialogState.value = false
+}
+
+/**
+ * §9: button + dialog for recording a partial USD bill payment. Self-contained:
+ * the dialog visibility state lives here so no outer scope capture is needed.
+ */
+@Composable private fun InvoicePaymentButton(payInvoice: (Long, Long, String) -> Unit) {
+    val showDialog = rememberSaveable { mutableStateOf(false) }
+    TextButton(onClick = { showDialog.value = true }, modifier = Modifier.testTag("open-invoice-payment")) {
+        Icon(Icons.Default.Payments, null, Modifier.size(20.dp)); Spacer(Modifier.width(8.dp)); Text("تسجيل شراء دولار للفاتورة")
     }
+    if (showDialog.value) InvoicePaymentDialog(
+        onDismiss = { showDialog.value = false },
+        onSave = { usdCents, ratePerUsd, note ->
+            payInvoice(usdCents, ratePerUsd, note); showDialog.value = false
+        }
+    )
 }
 
 /**
