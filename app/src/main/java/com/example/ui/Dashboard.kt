@@ -54,7 +54,7 @@ private fun dateLabel(at: Long, pattern: String = "EEEE، d MMMM yyyy") = Simple
 
 @Composable internal fun Dashboard(snapshot: FinancialSnapshot, addSales: () -> Unit = {},
     openReports: () -> Unit = {}, correct: (String, Long, Int, Boolean, String) -> Unit = { _, _, _, _, _ -> },
-    live: @Composable () -> Unit = {}, payInvoice: (Long, Long, String) -> Unit = { _, _, _ -> }, add: () -> Unit) {
+    live: @Composable () -> Unit = {}, onPayInvoice: (Long, Long, String) -> Unit = { _, _, _ -> }, add: () -> Unit) {
     val config = snapshot.data.config
     val report = snapshot.revenue
     val daily = snapshot.today
@@ -237,9 +237,9 @@ private fun dateLabel(at: Long, pattern: String = "EEEE، d MMMM yyyy") = Simple
                     }
                 }
             }
-            // §9: the USD payment button lives outside cost?.let — the payInvoice
+            // §9: the USD payment button lives outside cost?.let — the onPayInvoice
             // reference must not be captured inside the let lambda.
-            if (report.cost != null) InvoicePaymentButton(payInvoice)
+            if (report.cost != null) InvoicePaymentButton(onPayInvoice)
             if (config.cycleEnd > config.cycleStart && config.cycleStart > 0) {
                 Text("${dateLabel(config.cycleStart, "d MMM yyyy")} — ${dateLabel(config.cycleEnd - 1, "d MMM yyyy")}")
                 val left = if (snapshot.day >= config.cycleEnd) 0 else Finance.days(maxOf(snapshot.day, config.cycleStart), config.cycleEnd)
@@ -262,7 +262,7 @@ private fun dateLabel(at: Long, pattern: String = "EEEE، d MMMM yyyy") = Simple
  * §9: button + dialog for recording a partial USD bill payment. Self-contained:
  * the dialog visibility state lives here so no outer scope capture is needed.
  */
-@Composable private fun InvoicePaymentButton(payInvoice: (Long, Long, String) -> Unit) {
+@Composable private fun InvoicePaymentButton(onPayInvoice: (Long, Long, String) -> Unit) {
     val showDialog = rememberSaveable { mutableStateOf(false) }
     TextButton(onClick = { showDialog.value = true }, modifier = Modifier.testTag("open-invoice-payment")) {
         Icon(Icons.Default.Payments, null, Modifier.size(20.dp)); Spacer(Modifier.width(8.dp)); Text("تسجيل شراء دولار للفاتورة")
@@ -270,7 +270,7 @@ private fun dateLabel(at: Long, pattern: String = "EEEE، d MMMM yyyy") = Simple
     if (showDialog.value) InvoicePaymentDialog(
         onDismiss = { showDialog.value = false },
         onSave = { usdCents, ratePerUsd, note ->
-            payInvoice(usdCents, ratePerUsd, note); showDialog.value = false
+            onPayInvoice(usdCents, ratePerUsd, note); showDialog.value = false
         }
     )
 }
