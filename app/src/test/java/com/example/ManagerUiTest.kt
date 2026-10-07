@@ -49,9 +49,8 @@ class ManagerUiTest {
         compose.onNodeWithTag("daily-bill-target").assertTextEquals("16.67 ج.س")
         compose.onNodeWithTag("daily-bill-target-bank").assertTextEquals("بنكك: 20.84 ج.س")
         compose.onNodeWithTag("daily-shortfall").assertTextEquals("0 ج.س")
-        compose.onNodeWithTag("dashboard-list").performScrollToNode(hasTestTag("cycle-profit-explanation"))
+        compose.onNodeWithTag("dashboard-list").performScrollToNode(hasTestTag("cycle-profit"))
         compose.onNodeWithTag("cycle-profit").assertTextEquals("500 ج.س").assertIsDisplayed()
-        compose.onNodeWithTag("cycle-profit-explanation").assertTextEquals("الربح بعد تغطية الفاتورة والمصروفات كاملة. التغطية المحسوبة لا تعني سداد الفاتورة.")
         compose.onRoot().captureRoboImage("build/reports/ui/dashboard.png")
         compose.onNodeWithTag("dashboard-list").performScrollToNode(hasTestTag("open-history"))
         compose.onRoot().captureRoboImage("build/reports/ui/recent-days.png")
@@ -104,8 +103,8 @@ class ManagerUiTest {
             compose.onNodeWithTag("nav-1").performClick()
             compose.onNodeWithText("ابحث بالاسم أو الرقم أو الباقة").performTextInput("١٢")
             compose.onNodeWithTag("nav-2").performClick()
-            compose.waitUntil(10000) { compose.onAllNodesWithText("خطة السداد مستقلة عن ربح الدورة").fetchSemanticsNodes().isNotEmpty() }
-            compose.onNodeWithText("خطة السداد مستقلة عن ربح الدورة").assertIsDisplayed()
+            compose.waitUntil(10000) { compose.onAllNodesWithText("ديون عليك — تُسدَّد من الربح").fetchSemanticsNodes().isNotEmpty() }
+            compose.onNodeWithText("ديون عليك — تُسدَّد من الربح").assertIsDisplayed()
             compose.onNodeWithTag("nav-1").performClick()
             compose.onNodeWithText("١٢").assertIsDisplayed()
             compose.onNodeWithTag("nav-4").performClick()

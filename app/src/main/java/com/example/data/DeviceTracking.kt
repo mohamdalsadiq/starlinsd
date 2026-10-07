@@ -5,11 +5,13 @@ package com.example.data
  *
  * - clientId (StarlinkProtocol.Client.id, field 43) is the ONLY identity that binds a
  *   subscription to a device. MAC can be spoofed and IP rotates with DHCP.
- * - IP is the management key for the home and watch lists (simple user-facing management),
- *   and for excluding the management phone from tracking.
- * - These are two different systems: subscriptions bind by clientId; list management
- *   and classification bind by IP. One IP classification, though, still decides whether
- *   the clientId currently sitting at that IP gets tracked.
+ * - HOME/WATCH classification is IDENTITY-based (schema v8 device_identities):
+ *   clientId first, MAC second, and only then a LIMITED legacy fallback to the
+ *   owner's manually saved IP rows — promoted one-shot to a clientId record by
+ *   DeviceIdentityEngine so the IP is never needed again for that device.
+ * - These are two different systems: subscriptions bind by clientId; identity records
+ *   (clientId/MAC) classify; IP is display/last-known only. An IP can never move a
+ *   device between lists by itself once its clientId is stored.
  */
 object IpLists {
     /** Priority: HOME before WATCH, so a HOME device is never tracked even if both lists match. */
@@ -28,6 +30,48 @@ object IpLists {
         ip in watchIps -> Category.WATCH
         else -> Category.UNKNOWN
     }
+
+    /** Home-identity clientIds from the stored identity records. */
+    fun homeClientIds(identities: Collection<com.example.db.DeviceIdentity>): Set<Long> =
+        identities.filter { it.list == "HOME" }.map { it.deviceId }.toSet()
+
+    /** Watch-identity clientIds from the stored identity records. */
+    fun watchClientIds(identities: Collection<com.example.db.DeviceIdentity>): Set<Long> =
+        identities.filter { it.list == "WATCH" }.map { it.deviceId }.toSet()
+
+    /**
+     * MACs bound to HOME identity records (secondary identity). Only REAL
+     * (unmasked) MACs are returned — masked values ("60:74:f4:XX:XX:XX") would
+     * match every same-vendor device and must never identify anyone.
+     */
+    fun homeMacs(identities: Collection<com.example.db.DeviceIdentity>): Set<String> =
+        identities.filter { it.list == "HOME" }.mapNotNull { DeviceAlerts.usableMac(it.mac) }.toSet()
+
+    /** MACs bound to WATCH identity records (secondary identity); usable only. */
+    fun watchMacs(identities: Collection<com.example.db.DeviceIdentity>): Set<String> =
+        identities.filter { it.list == "WATCH" }.mapNotNull { DeviceAlerts.usableMac(it.mac) }.toSet()
+
+    /**
+     * Identity-based classification: stored clientId record wins, then a stored MAC
+     * record, then the LIMITED legacy IP fallback (the owner's manual rows, which
+     * DeviceIdentityEngine promotes to clientId records on first sight).
+ */
+    fun classifyByIdentity(
+        clientId: Long,
+        mac: String,
+        ip: String,
+        identities: Collection<com.example.db.DeviceIdentity>,
+        legacyHome: Collection<String>,
+        legacyWatch: Collection<String>,
+    ): Category = when {
+        clientId in homeClientIds(identities) -> Category.HOME
+        clientId in watchClientIds(identities) -> Category.WATCH
+        mac.isNotBlank() && mac in homeMacs(identities) -> Category.HOME
+        mac.isNotBlank() && mac in watchMacs(identities) -> Category.WATCH
+        ip in legacyHome -> Category.HOME
+        ip in legacyWatch -> Category.WATCH
+        else -> Category.UNKNOWN
+    }
 }
 
 /** One snapshot of a router client, normalized for tracking and suggestion logic. */
@@ -39,6 +83,26 @@ data class TrackedDevice(
     val category: IpLists.Category,
     val blocked: Boolean? = null,
 )
+
+/**
+ * Immutable classification inputs at one instant: identity records plus the owner's
+ * legacy manual IP rows. Classification uses one consistent set (replaces the old
+ * pair of raw IP sets).
+ */
+data class IdentityLists(
+    val identities: List<com.example.db.DeviceIdentity> = emptyList(),
+    val legacyHome: Set<String> = emptySet(),
+    val legacyWatch: Set<String> = emptySet(),
+) {
+    fun classify(device: TrackedDevice): IpLists.Category =
+        IpLists.classifyByIdentity(device.clientId, device.mac, device.ip, identities, legacyHome, legacyWatch)
+
+    /** clientIds classified HOME right now (tracking exclusion, recovery options). */
+    val homeClientIds: Set<Long> get() = IpLists.homeClientIds(identities)
+
+    /** Raw legacy HOME IPs, for the pre-clientId promotion path only. */
+    val legacyHomeIps: Set<String> get() = legacyHome
+}
 
 /**
  * Pure device-selection rules for the new-session binding flow. Never picks a device

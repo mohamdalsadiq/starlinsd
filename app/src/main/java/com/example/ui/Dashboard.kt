@@ -52,6 +52,17 @@ import java.util.*
 private fun dateLabel(at: Long, pattern: String = "EEEE، d MMMM yyyy") = SimpleDateFormat(pattern, Locale.forLanguageTag("ar")).format(Date(at))
 
 
+/** Handler for recording a USD bill payment. */
+interface InvoicePayer { fun pay(usdCents: Long, ratePerUsd: Long, note: String) }
+
+/** No-op payer for previews/tests. */
+private object NoOpPayer : InvoicePayer {
+    override fun pay(usdCents: Long, ratePerUsd: Long, note: String) {}
+}
+
+/** Provides the [InvoicePayer] via CompositionLocal to avoid a compiler scope-resolution quirk with Dashboard parameters inside LazyColumn items. */
+val LocalInvoicePayer = compositionLocalOf<InvoicePayer> { NoOpPayer }
+
 @Composable internal fun Dashboard(snapshot: FinancialSnapshot, addSales: () -> Unit = {},
     openReports: () -> Unit = {}, correct: (String, Long, Int, Boolean, String) -> Unit = { _, _, _, _, _ -> },
     live: @Composable () -> Unit = {}, add: () -> Unit) {
@@ -89,24 +100,24 @@ private fun dateLabel(at: Long, pattern: String = "EEEE، d MMMM yyyy") = Simple
         }
         item(key = "daily-target") {
             val budget = snapshot.budget.day(snapshot.day)
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                DailyTargetCards(budget, config.premiumBps)
-                Text(if (snapshot.balance == null) "الكاش وبنكك قيمتان بديلتان لنفس المطلوب حسب نسبة التحويل."
-                    else "الكاش وبنكك بديلان لنفس المطلوب. تحصيلات اليوم قبل تحديث الرصيد وبعده محسوبة في تقدم الهدف مرة واحدة.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
+            DailyTargetCards(budget, config.premiumBps)
         }
         item(key = "profit") { Panel {
-            SectionHeading(Icons.Default.ReceiptLong, "تغطية الفاتورة", "حساب الدورة كاملة · قبل الديون")
+            SectionHeading(Icons.Default.ReceiptLong, "الفاتورة", "دخل الدورة مقابل التكلفة")
             if (report.cost != null) {
-                MoneyLine("المتبقي من تكلفة الدورة كاملة", snapshot.remainingForBill!!, "cycle-remaining", true)
-                Text("بنكك المكافئ: ${amount(Money.cashToBank(snapshot.remainingForBill!!, config.premiumBps))}", Modifier.testTag("cycle-remaining-bank"), style = MaterialTheme.typography.bodySmall)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    MoneyLine("المتبقي", snapshot.remainingForBill!!, "cycle-remaining", true)
+                    if (config.cycleEnd > config.cycleStart && config.cycleStart > 0) {
+                        val left = if (snapshot.day >= config.cycleEnd) 0 else Finance.days(maxOf(snapshot.day, config.cycleStart), config.cycleEnd)
+                        Text("$left يومًا متبقيًا", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                    }
+                }
+                Text("بنكك المكافئ: ${amount(Money.cashToBank(snapshot.remainingForBill!!, config.premiumBps))}", style = MaterialTheme.typography.bodySmall)
                 LinearProgressIndicator(progress = { if (report.cost == 0L) 1f else (snapshot.coveredForBill.toDouble() / report.cost).toFloat().coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth())
-                Text(if (snapshot.balance == null) "دخل الدورة ${amount(report.cycleRevenue)} من تكلفة ${amount(report.cost)}"
+                Text(if (snapshot.balance == null) "دخل الدورة ${amount(report.cycleRevenue)} من ${amount(report.cost)}"
                     else "الخطة من الرصيد الموجود · آخر تحديث ${stamp(snapshot.balance.update.at)}", style = MaterialTheme.typography.bodySmall)
                 HorizontalDivider()
-                MoneyLine("ربح الدورة بعد كامل التكلفة", report.cycleProfit!!, "cycle-profit")
-                Text("الربح بعد تغطية الفاتورة والمصروفات كاملة. التغطية المحسوبة لا تعني سداد الفاتورة.",
-                    Modifier.testTag("cycle-profit-explanation"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                MoneyLine("الربح المتوقع", report.cycleProfit!!, "cycle-profit")
             } else Text("حدد تكلفة الدورة وفترتها من الإعدادات لحساب التغطية والربح.")
             TextButton(onClick = openReports, modifier = Modifier.testTag("open-reports")) { Icon(Icons.Default.BarChart, null); Spacer(Modifier.width(8.dp)); Text("التقارير وتفاصيل الدورة") }
         } }
@@ -192,25 +203,120 @@ private fun dateLabel(at: Long, pattern: String = "EEEE، d MMMM yyyy") = Simple
             Button(onClick = { calendar = true }) { Text("مراجعة الأيام وتعديل الإيرادات") }
         } }
         item { Panel {
-            SectionHeading(Icons.Default.TrendingUp, "حساب الدورة", "الربح بعد التكلفة كاملة · قبل الديون")
+            SectionHeading(Icons.Default.TrendingUp, "حساب الدورة", "المتوقع بعد التكلفة كاملة · المحقق بعد المسدد فعليًا")
             MoneyLine("دخل الدورة", report.cycleRevenue)
-            report.cost?.let { MoneyLine("التكلفة مع المصروفات", it); MoneyLine("الربح الفعلي", report.cycleProfit!!, strong = true); MoneyLine("المتبقي للتغطية", report.remainingCost!!) }
+            report.cost?.let {
+                MoneyLine("التكلفة مع المصروفات", it)
+                // §9: "الربح الفعلي" used to show the PROJECTED full-cost profit —
+                // that mislabels a projection as realized. Now: realized (strong)
+                // is collected minus ACTUALLY recorded bill payments; the
+                // projection keeps its honest name.
+                MoneyLine("المسدد فعليًا من الفاتورة", report.invoicePaid, "invoice-paid")
+                MoneyLine("الربح المحقق", report.realizedProfit!!, "realized-profit", strong = true)
+                MoneyLine("الربح المتوقع بعد كامل التكلفة", report.cycleProfit!!)
+                MoneyLine("المتبقي للتغطية", report.remainingCost!!)
+                // §9 (owner's rule 2026-10-04): partial USD bill payments. The
+                // bill is paid in parts at the ACTUAL purchase rate; the
+                // remaining USD is shown at the FIXED accounting rate.
+                // Additive display only — the accounting above is untouched.
+                snapshot.billProgress?.let { bp ->
+                    HorizontalDivider()
+                    SectionHeading(Icons.Default.Payments, "سداد الفاتورة بالدولار", "شراء جزئي بسعر الشراء الفعلي")
+                    Text("الفاتورة: ${usdLabel(bp.billUsdCents)}",
+                        style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                    Text("تم شراء: ${usdLabel(bp.boughtUsdCents)} · دفعت فعليًا ${amount(bp.totalPaidSdg)}",
+                        style = MaterialTheme.typography.bodyMedium)
+                    if (bp.isFullyPaid)
+                        Text("الفاتورة مدفوعة بالكامل ✓",
+                            style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary)
+                    else
+                        Text("المتبقي: ${usdLabel(bp.remainingUsdCents)} = ${amount(bp.remainingSdg)} (بالسعر المثبت ${Money.show(bp.fixedRate)})",
+                            style = MaterialTheme.typography.bodyMedium)
+                    val payments = snapshot.data.invoicePayments
+                        .filter { it.cycleId == config.cycleId }.sortedByDescending { it.at }
+                    if (payments.isNotEmpty()) {
+                        Text("سجل الشراء:", style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        payments.forEach { p ->
+                            Text("· ${usdLabel(p.usdCents)} بسعر ${p.ratePerUsd} = ${amount(p.sdgPaid)} · ${dateLabel(p.at, "d MMM")}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+            }
             if (config.cycleEnd > config.cycleStart && config.cycleStart > 0) {
                 Text("${dateLabel(config.cycleStart, "d MMM yyyy")} — ${dateLabel(config.cycleEnd - 1, "d MMM yyyy")}")
                 val left = if (snapshot.day >= config.cycleEnd) 0 else Finance.days(maxOf(snapshot.day, config.cycleStart), config.cycleEnd)
                 Text("$left يومًا متبقيًا", style = MaterialTheme.typography.titleMedium)
             }
         } }
+        // §9: USD payment button as its own item (reads payer via CompositionLocal).
+        if (report.cost != null) item { InvoicePaymentButton(LocalInvoicePayer.current) }
         item { Panel {
             SectionHeading(Icons.Default.PieChart, "توزيع اليوم", "مخصصات تقديرية · ليست ربح الدورة")
             BudgetSummary(snapshot.budget.day(snapshot.day))
         } }
-        item { Panel {
-            SectionHeading(Icons.Default.Info, "كيف يُحسب هدف اليوم؟")
-            Text("المتبقي من تكلفة الدورة قبل بداية اليوم ÷ الأيام الباقية، مع احتساب اليوم. يبقى الهدف ثابتًا أثناء تسجيل دخل اليوم.")
-            Text("تصحيح إيراد سابق أو تعديل تكلفة الدورة يعيد حساب الخطة. الحساب تقديري، ولا يثبت رصيد الكاش أو سداد الفاتورة.", style = MaterialTheme.typography.bodySmall)
-        } }
     }
+}
+
+/**
+ * §9: button + dialog for recording a partial USD bill payment. Self-contained:
+ * the dialog visibility state lives here so no outer scope capture is needed.
+ */
+@Composable private fun InvoicePaymentButton(payer: InvoicePayer) {
+    val showDialog = rememberSaveable { mutableStateOf(false) }
+    TextButton(onClick = { showDialog.value = true }, modifier = Modifier.testTag("open-invoice-payment")) {
+        Icon(Icons.Default.Payments, null, Modifier.size(20.dp)); Spacer(Modifier.width(8.dp)); Text("تسجيل شراء دولار للفاتورة")
+    }
+    if (showDialog.value) InvoicePaymentDialog(
+        onDismiss = { showDialog.value = false },
+        onSave = { usdCents, ratePerUsd, note ->
+            payer.pay(usdCents, ratePerUsd, note); showDialog.value = false
+        }
+    )
+}
+
+/**
+ * §9: records buying part of the USD bill at the ACTUAL purchase rate
+ * (owner's rule 2026-10-04): e.g. $30 at 8100 SDG/USD while the accounting
+ * bankk rate stays fixed at 8500. Shows the computed SDG outlay live.
+ */
+@Composable private fun InvoicePaymentDialog(onDismiss: () -> Unit, onSave: (usdCents: Long, ratePerUsd: Long, note: String) -> Unit) {
+    var usdText by rememberSaveable { mutableStateOf("") }
+    var rateText by rememberSaveable { mutableStateOf("") }
+    var noteText by rememberSaveable { mutableStateOf("") }
+    val usdCents = Money.parse(usdText) ?: 0L
+    val ratePerUsd = rateText.trim().toLongOrNull() ?: 0L
+    val valid = usdCents in 1..9999999 && ratePerUsd in 1..99999999
+    // Computed only inside the validated ranges: unbounded input could overflow Long.
+    val sdgPaid = if (valid) usdCents * ratePerUsd / 100 else 0L
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("تسجيل شراء دولار للفاتورة") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("شراء جزئي من فاتورة الدورة بالدولار. الربح المحقق = الدخل − ما دفعته فعليًا.",
+                    style = MaterialTheme.typography.bodySmall)
+                Field("المبلغ بالدولار (مثال: 30)", usdText, { usdText = it }, numeric = true)
+                Field("سعر الشراء — جنيه للدولار (مثال: 8100)", rateText, { rateText = it }, numeric = true)
+                Field("ملاحظة (اختياري)", noteText, { noteText = it })
+                if (sdgPaid > 0)
+                    Text("ستدفع فعليًا: ${amount(sdgPaid)}",
+                        style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary)
+                else if (usdText.isNotBlank() || rateText.isNotBlank())
+                    Text("أدخل مبلغ الدولار وسعر الشراء.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            }
+        },
+        confirmButton = {
+            TextButton(enabled = valid, onClick = { onSave(usdCents, ratePerUsd, noteText) }, modifier = Modifier.testTag("save-invoice-payment")) {
+                Text("حفظ")
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("إلغاء") } },
+    )
 }
 
 @Composable internal fun DebtPaymentIndicator(balance: DebtBalance) {

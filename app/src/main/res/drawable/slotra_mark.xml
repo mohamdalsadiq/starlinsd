@@ -1,0 +1,35 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="48"
+    android:viewportHeight="48">
+    <path
+        android:fillColor="#0A0E1A"
+        android:pathData="M0,0h48v48h-48z" />
+    <!-- Slotra mark: satellite dish (side view) + orbit ring (matches the launcher icon) -->
+    <group
+        android:pivotX="24"
+        android:pivotY="25.8"
+        android:rotation="-18">
+        <path
+            android:fillColor="#00000000"
+            android:strokeColor="#29B6F6"
+            android:strokeWidth="2"
+            android:pathData="M7.1,25.8 a16.9,5.8 0 1,0 33.8,0 a16.9,5.8 0 1,0 -33.8,0" />
+    </group>
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2.5"
+        android:strokeLineCap="round"
+        android:pathData="M13.3,22.2 Q24,35.5 34.7,22.2" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#29B6F6"
+        android:strokeWidth="2.5"
+        android:strokeLineCap="round"
+        android:pathData="M24,28 L30.2,18.6" />
+    <path
+        android:fillColor="#29B6F6"
+        android:pathData="M29.1,17.8 a2,2 0 1,0 4,0 a2,2 0 1,0 -4,0" />
+</vector>

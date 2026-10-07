@@ -53,9 +53,17 @@ class DeviceTrackerTest {
         assertTrue(plan.pause.isEmpty()); assertTrue(plan.resume.isEmpty())
     }
 
-    @Test fun sessionWhoseStoredDeviceIpBecameHomeStopsBeingTracked() {
-        val plan = DeviceTracker.compare(listOf(session("a", "ACTIVE", 102, deviceIp = "192.168.1.7")), emptyList(), homeIps = setOf("192.168.1.7"))
+    @Test fun sessionWhoseBoundDeviceIsHomeByIdentityStopsBeingTracked() {
+        val plan = DeviceTracker.compare(listOf(session("a", "ACTIVE", 102, deviceIp = "192.168.1.7")), emptyList(), homeClientIds = setOf(102L))
         assertTrue(plan.pause.isEmpty()); assertTrue(plan.resume.isEmpty())
+    }
+
+    // Identity reconciliation: a bound session whose device's IP changed is still tracked
+    // normally — the old IP-keyed exclusion could never pause/miss it.
+    @Test fun subscribedDeviceIpChangeKeepsSubscriptionTracking() {
+        val live = listOf(TrackedDevice(102, "a", "192.168.1.101", "mac", IpLists.Category.UNKNOWN, null))
+        val plan = DeviceTracker.compare(listOf(session("a", "ACTIVE", 102, deviceIp = "192.168.1.69")), live, homeClientIds = setOf(999L))
+        assertTrue(plan.pause.isEmpty()); assertTrue(plan.resume.isEmpty()) // still live, same device
     }
 
     // Case 14: duplicate polling cycle => no repeated state mutation.
