@@ -372,6 +372,41 @@ class SubscriptionRepository(private val context: Context, private val db: AppDa
         } else dao.settings(s.copy(graceMinutes = Rules.RECOGNITION_MINUTES))
     }
 
+    /**
+     * §10: automatic billing-cycle rollover (owner's rule 2026-10-07).
+     * When the current day reaches or passes the configured cycle end, a new
+     * cycle starts automatically with the same length: the finished cycle is
+     * kept in history, and the new one starts at zero — no carried income,
+     * no carried bill payments. Cost is recomputed from the current settings
+     * so price changes apply to the new cycle. Returns true when a rollover
+     * happened.
+     */
+    suspend fun ensureCurrentCycle(now: Long = time()): Boolean = db.withTransaction {
+        val s = dao.settings() ?: return@withTransaction false
+        if (s.cycleStart <= 0 || s.cycleEnd <= s.cycleStart) return@withTransaction false
+        if (s.usdCents <= 0 || s.bankRate <= 0) return@withTransaction false
+        val today = com.example.domain.Revenue.day(now)
+        if (today < s.cycleEnd) return@withTransaction false
+        var start = s.cycleStart
+        var end = s.cycleEnd
+        var id = s.cycleId
+        var rolled = false
+        var guard = 0
+        while (today >= end && guard < 1200) {
+            guard++
+            val duration = end - start
+            start = end
+            end = start + duration
+            id = UUID.randomUUID().toString()
+            val cost = Math.addExact(
+                Money.bankToCash(Money.bill(s.usdCents, s.bankRate), s.premiumBps), s.expenses)
+            dao.cycle(BillingCycle(id, start, end, cost))
+            rolled = true
+        }
+        if (rolled) dao.settings(s.copy(cycleStart = start, cycleEnd = end, cycleId = id))
+        rolled
+    }
+
     suspend fun correctRevenue(source: String, amount: Long, count: Int, voided: Boolean, reason: String) = db.withTransaction {
         require(amount in 0..9999999999900000 && count in 1..100000 && reason.trim().length in 1..200) { "راجع مبلغ التصحيح وعدد الأجهزة وسببه" }
         val ledger = com.example.domain.Finance.ledger(dao.sessions(), dao.manualSales(), emptyList())

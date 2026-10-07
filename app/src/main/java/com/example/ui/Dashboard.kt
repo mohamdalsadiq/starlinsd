@@ -100,24 +100,22 @@ val LocalInvoicePayer = compositionLocalOf<InvoicePayer> { NoOpPayer }
         }
         item(key = "daily-target") {
             val budget = snapshot.budget.day(snapshot.day)
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                DailyTargetCards(budget, config.premiumBps)
-                Text(if (snapshot.balance == null) "الكاش وبنكك قيمتان بديلتان لنفس المطلوب حسب نسبة التحويل."
-                    else "الكاش وبنكك بديلان لنفس المطلوب. تحصيلات اليوم قبل تحديث الرصيد وبعده محسوبة في تقدم الهدف مرة واحدة.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
+            DailyTargetCards(budget, config.premiumBps)
         }
         item(key = "profit") { Panel {
-            SectionHeading(Icons.Default.ReceiptLong, "تغطية الفاتورة", "حساب الدورة كاملة · قبل الديون")
+            SectionHeading(Icons.Default.ReceiptLong, "الفاتورة", "دخل الدورة مقابل التكلفة")
             if (report.cost != null) {
-                MoneyLine("المتبقي من تكلفة الدورة كاملة", snapshot.remainingForBill!!, "cycle-remaining", true)
-                Text("بنكك المكافئ: ${amount(Money.cashToBank(snapshot.remainingForBill!!, config.premiumBps))}", Modifier.testTag("cycle-remaining-bank"), style = MaterialTheme.typography.bodySmall)
-                LinearProgressIndicator(progress = { if (report.cost == 0L) 1f else (snapshot.coveredForBill.toDouble() / report.cost).toFloat().coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth())
-                Text(if (snapshot.balance == null) "دخل الدورة ${amount(report.cycleRevenue)} من تكلفة ${amount(report.cost)}"
-                    else "الخطة من الرصيد الموجود · آخر تحديث ${stamp(snapshot.balance.update.at)}", style = MaterialTheme.typography.bodySmall)
+                Text("دخل الدورة ${amount(report.cycleRevenue)} من ${amount(report.cost)}", style = MaterialTheme.typography.bodyMedium)
+                LinearProgressIndicator(progress = { if (report.cost == 0L) 1f else (report.cycleRevenue.toDouble() / report.cost).toFloat().coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth())
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    MoneyLine("المتبقي", report.remainingCost!!, "cycle-remaining", true)
+                    if (config.cycleEnd > config.cycleStart && config.cycleStart > 0) {
+                        val left = if (snapshot.day >= config.cycleEnd) 0 else Finance.days(maxOf(snapshot.day, config.cycleStart), config.cycleEnd)
+                        Text("$left يومًا متبقيًا", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                    }
+                }
                 HorizontalDivider()
-                MoneyLine("الربح المتوقع بعد كامل التكلفة", report.cycleProfit!!, "cycle-profit")
-                Text("الربح بعد تغطية الفاتورة والمصروفات كاملة. التغطية المحسوبة لا تعني سداد الفاتورة.",
-                    Modifier.testTag("cycle-profit-explanation"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                MoneyLine("الربح المتوقع", report.cycleProfit!!, "cycle-profit")
             } else Text("حدد تكلفة الدورة وفترتها من الإعدادات لحساب التغطية والربح.")
             TextButton(onClick = openReports, modifier = Modifier.testTag("open-reports")) { Icon(Icons.Default.BarChart, null); Spacer(Modifier.width(8.dp)); Text("التقارير وتفاصيل الدورة") }
         } }
@@ -215,8 +213,6 @@ val LocalInvoicePayer = compositionLocalOf<InvoicePayer> { NoOpPayer }
                 MoneyLine("الربح المحقق", report.realizedProfit!!, "realized-profit", strong = true)
                 MoneyLine("الربح المتوقع بعد كامل التكلفة", report.cycleProfit!!)
                 MoneyLine("المتبقي للتغطية", report.remainingCost!!)
-                Text("المحقق = الدخل − ما سددته فعليًا من الفاتورة. المتوقع = الدخل − كامل التكلفة (يفترض تغطيتها كلها).",
-                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 // §9 (owner's rule 2026-10-04): partial USD bill payments. The
                 // bill is paid in parts at the ACTUAL purchase rate; the
                 // remaining USD is shown at the FIXED accounting rate.
@@ -233,7 +229,7 @@ val LocalInvoicePayer = compositionLocalOf<InvoicePayer> { NoOpPayer }
                             style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.primary)
                     else
-                        Text("المتبقي: ${usdLabel(bp.remainingUsdCents)} = ${amount(bp.remainingSdg)} (بالسعر المثبت ${bp.fixedRate})",
+                        Text("المتبقي: ${usdLabel(bp.remainingUsdCents)} = ${amount(bp.remainingSdg)} (بالسعر المثبت ${Money.show(bp.fixedRate)})",
                             style = MaterialTheme.typography.bodyMedium)
                     val payments = snapshot.data.invoicePayments
                         .filter { it.cycleId == config.cycleId }.sortedByDescending { it.at }
@@ -259,11 +255,6 @@ val LocalInvoicePayer = compositionLocalOf<InvoicePayer> { NoOpPayer }
         item { Panel {
             SectionHeading(Icons.Default.PieChart, "توزيع اليوم", "مخصصات تقديرية · ليست ربح الدورة")
             BudgetSummary(snapshot.budget.day(snapshot.day))
-        } }
-        item { Panel {
-            SectionHeading(Icons.Default.Info, "كيف يُحسب هدف اليوم؟")
-            Text("المتبقي من تكلفة الدورة قبل بداية اليوم ÷ الأيام الباقية، مع احتساب اليوم. يبقى الهدف ثابتًا أثناء تسجيل دخل اليوم.")
-            Text("تصحيح إيراد سابق أو تعديل تكلفة الدورة يعيد حساب الخطة. الحساب تقديري، ولا يثبت رصيد الكاش أو سداد الفاتورة.", style = MaterialTheme.typography.bodySmall)
         } }
     }
 }

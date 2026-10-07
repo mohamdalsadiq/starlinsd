@@ -159,7 +159,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val message = MutableStateFlow<String?>(null)
     val busy = MutableStateFlow(false)
     private val commands = Mutex()
-    init { work { repo.initialize() } }
+    init { work { repo.initialize(); if (repo.ensureCurrentCycle()) message.value = "بدأت دورة فوترة جديدة تلقائيًا" } }
     private fun work(block: suspend () -> Unit): kotlinx.coroutines.Job =
         viewModelScope.launch { commands.withLock {
             busy.value = true
@@ -172,7 +172,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         clock.value = System.currentTimeMillis()
         viewModelScope.launch {
             if (!commands.tryLock()) return@launch
-            try { withContext(Dispatchers.IO) { SubscriptionAlarms.refresh(getApplication()) } }
+            try { withContext(Dispatchers.IO) {
+                if (repo.ensureCurrentCycle()) message.value = "بدأت دورة فوترة جديدة تلقائيًا"
+                SubscriptionAlarms.refresh(getApplication())
+            } }
             catch (e: CancellationException) { throw e }
             catch (_: Exception) { message.value = "تعذّر تحديث المواعيد؛ أعد فتح التطبيق للمحاولة." }
             finally { commands.unlock() }
