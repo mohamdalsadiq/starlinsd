@@ -105,15 +105,17 @@ val LocalInvoicePayer = compositionLocalOf<InvoicePayer> { NoOpPayer }
         item(key = "profit") { Panel {
             SectionHeading(Icons.Default.ReceiptLong, "الفاتورة", "دخل الدورة مقابل التكلفة")
             if (report.cost != null) {
-                Text("دخل الدورة ${amount(report.cycleRevenue)} من ${amount(report.cost)}", style = MaterialTheme.typography.bodyMedium)
-                LinearProgressIndicator(progress = { if (report.cost == 0L) 1f else (report.cycleRevenue.toDouble() / report.cost).toFloat().coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth())
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    MoneyLine("المتبقي", report.remainingCost!!, "cycle-remaining", true)
+                    MoneyLine("المتبقي", snapshot.remainingForBill!!, "cycle-remaining", true)
                     if (config.cycleEnd > config.cycleStart && config.cycleStart > 0) {
                         val left = if (snapshot.day >= config.cycleEnd) 0 else Finance.days(maxOf(snapshot.day, config.cycleStart), config.cycleEnd)
                         Text("$left يومًا متبقيًا", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
                     }
                 }
+                Text("بنكك المكافئ: ${amount(Money.cashToBank(snapshot.remainingForBill!!, config.premiumBps))}", style = MaterialTheme.typography.bodySmall)
+                LinearProgressIndicator(progress = { if (report.cost == 0L) 1f else (snapshot.coveredForBill.toDouble() / report.cost).toFloat().coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth())
+                Text(if (snapshot.balance == null) "دخل الدورة ${amount(report.cycleRevenue)} من ${amount(report.cost)}"
+                    else "الخطة من الرصيد الموجود · آخر تحديث ${stamp(snapshot.balance.update.at)}", style = MaterialTheme.typography.bodySmall)
                 HorizontalDivider()
                 MoneyLine("الربح المتوقع", report.cycleProfit!!, "cycle-profit")
             } else Text("حدد تكلفة الدورة وفترتها من الإعدادات لحساب التغطية والربح.")
